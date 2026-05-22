@@ -524,3 +524,15 @@
 [2026-05-17T20:29:13Z mega]   [O11.D5] DEBUG dispatch on file: reference/lua-c/testes/attrib.lua [parallel]
 [2026-05-17T20:29:13Z mega]   [O11.D6] DEBUG dispatch on file: reference/lua-c/testes/main.lua [parallel]
 [2026-05-17T20:31:23Z mega]   [O11.D7] DEBUG dispatch on file: reference/lua-c/testes/events.lua [parallel]
+[2026-05-17T20:45:26Z mega]   [O11.D1] DEBUG done. iter cost=$1.24946425  total=$90.2262
+[2026-05-17T20:45:26Z mega]   [O11.D2] DEBUG done. iter cost=$2.4976269999999996  total=$92.7238
+[2026-05-17T20:45:26Z mega]   [O11.D4] DEBUG done. iter cost=$2.8677962499999996  total=$95.5916
+[2026-05-17T20:45:26Z mega]   [O11.D5] DEBUG done. iter cost=$0.7995764999999999  total=$96.3912
+[2026-05-17T20:45:26Z mega]   [O11.D7] DEBUG done. iter cost=$2.2531072500000007  total=$98.6443
+[2026-05-17T20:45:26Z mega]   [O11.D3] DEBUG done. iter cost=$7.273188750000001  total=$105.9175
+[2026-05-17T20:45:26Z mega]   [O11.D6] DEBUG done. iter cost=$6.861218  total=$112.7787
+[2026-05-17T20:45:26Z mega] ─── outer round 12 (spent: $112.7787) ───
+[2026-05-17T20:45:57Z mega]   scan: 58/75 programs pass cleanly
+[2026-05-17T20:45:57Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T20:45:57Z mega]   grouped into 1 disjoint-file agents (parallel cap 4)
+[2026-05-17T20:45:57Z mega]   [O12.1] dispatch on 'new_thread' @ crates/lua-stdlib/src/state_stub.rs:289:70 (budget $15) [parallel]

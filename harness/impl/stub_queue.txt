@@ -1,2 +1,1 @@
-is_mm_mode	crates/lua-vm/src/vm.rs:180:36
-upvalue_id	crates/lua-stdlib/src/state_stub.rs:268:94
+new_thread	crates/lua-stdlib/src/state_stub.rs:289:70

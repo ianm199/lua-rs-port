@@ -953,6 +953,17 @@ impl LuaStateStubExt for LuaState {
         lua_vm::api::status(self)
     }
 
+    fn new_thread(&mut self) -> Result<GcRef<LuaThread>, LuaError> {
+        lua_vm::state::new_thread(self)?;
+        let th = lua_vm::api::to_thread(self, -1)
+            .ok_or_else(|| LuaError::runtime(format_args!("new_thread: missing thread on top")))?;
+        Ok(th)
+    }
+
+    fn is_same_thread(&mut self, other: &LuaState) -> bool {
+        std::ptr::eq(self as *const LuaState, other as *const LuaState)
+    }
+
     fn load_buffer(&mut self, buf: &[u8], name: &[u8], mode: Option<&[u8]>) -> Result<LuaStatus, LuaError> {
         let mut remaining = Some(buf.to_vec());
         let reader: Box<dyn FnMut() -> Option<Vec<u8>>> = Box::new(move || remaining.take());
