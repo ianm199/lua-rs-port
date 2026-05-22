@@ -777,9 +777,11 @@ pub fn sort(state: &mut LuaState) -> Result<usize, LuaError> {
         if !matches!(state.type_at(2), LuaType::None | LuaType::Nil) {
             state.check_arg_type(2, LuaType::Function)?;
         }
-        // C: lua_settop(L, 2) — discard any extra arguments
-        // TODO(port): state.set_top → lua_settop; verify method name
-        state.set_top(2);
+        // C: lua_settop(L, 2) — discard any extra arguments.
+        // Must go through the public C-API set_top (relative to the call
+        // frame); the inherent LuaState::set_top treats its argument as
+        // an absolute stack slot and would corrupt the frame.
+        lua_vm::api::set_top(state, 2)?;
         aux_sort(state, 1, n as IdxT, 0)?;
     }
     Ok(0)

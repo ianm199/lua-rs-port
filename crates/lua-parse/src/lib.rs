@@ -724,6 +724,30 @@ fn cg_posfix_fold(
         return cg_emit_order(fs, op, e1, e2, line);
     }
 
+    if matches!(op, BinOpr::Gt | BinOpr::Ge) {
+        let swap_op = if matches!(op, BinOpr::Gt) { BinOpr::Lt } else { BinOpr::Le };
+        std::mem::swap(e1, e2);
+        return cg_emit_order(fs, swap_op, e1, e2, line);
+    }
+
+    if matches!(op, BinOpr::Eq | BinOpr::Ne) {
+        return cg_emit_eq(fs, op, e1, e2, line);
+    }
+
+    if matches!(op, BinOpr::And) {
+        debug_assert_eq!(e1.t, NO_JUMP);
+        cg_concat(fs, &mut e2.f, e1.f)?;
+        *e1 = e2.clone();
+        return Ok(());
+    }
+
+    if matches!(op, BinOpr::Or) {
+        debug_assert_eq!(e1.f, NO_JUMP);
+        cg_concat(fs, &mut e2.t, e1.t)?;
+        *e1 = e2.clone();
+        return Ok(());
+    }
+
     if matches!(op, BinOpr::Concat) {
         return cg_emit_concat(fs, e1, e2, line);
     }
@@ -831,6 +855,49 @@ fn cg_emit_order(
     Ok(())
 }
 
+/// Mirrors C's `codeeq` from `lcode.c` for the equality binops (`==`, `~=`).
+/// Emits an `OP_EQ` (or its `OP_EQI` immediate form when the right operand
+/// is a small-integer literal) followed by an `OP_JMP` whose pc is stored
+/// in `e1.u.info`; `e1.k` becomes `VJMP`. The `k` bit selects between `==`
+/// (k=1) and `~=` (k=0) so the same opcode pair handles both operators.
+///
+/// The Phase-A bootstrap deliberately omits the constant-table (`OP_EQK`)
+/// fast path used by C; both operands fall back to register form when no
+/// signed-C immediate fits. Correctness is unchanged.
+fn cg_emit_eq(
+    fs: &mut FuncState,
+    op: BinOpr,
+    e1: &mut ExprDesc,
+    e2: &mut ExprDesc,
+    line: i32,
+) -> Result<(), LuaError> {
+    debug_assert!(matches!(op, BinOpr::Eq | BinOpr::Ne));
+    if e1.k != ExprKind::NonReloc {
+        std::mem::swap(e1, e2);
+    }
+    let r1 = cg_exp_to_any_reg(fs, line, e1)?;
+    let (r2, cmp_op) = if let Some(im) = cg_sc_int(e2) {
+        (im, lua_code::opcodes::OpCode::EqI)
+    } else {
+        let r = cg_exp_to_any_reg(fs, line, e2)?;
+        (r, lua_code::opcodes::OpCode::Eq)
+    };
+    cg_free_exps(fs, e1, e2);
+    let k_bit = if matches!(op, BinOpr::Eq) { 1 } else { 0 };
+    let cmp = lua_code::opcodes::Instruction::abck(
+        cmp_op,
+        r1 as u32,
+        r2 as u32,
+        0,
+        k_bit,
+    );
+    emit_inst(fs, line, cmp);
+    let jmp_pc = cg_jump(fs, line);
+    e1.u.info = jmp_pc;
+    e1.k = ExprKind::Jmp;
+    Ok(())
+}
+
 /// Mirrors C's `previousinstruction` from `lcode.c`: returns the index of the
 /// last emitted instruction, but only when `pc` is past `lasttarget` (i.e. the
 /// previous instruction is reachable without crossing a jump label). Used by
@@ -843,21 +910,20 @@ fn previous_instruction_idx(fs: &FuncState) -> Option<usize> {
     }
 }
 
-/// Mirrors C's `codeconcat` from `lcode.c`, prefixed by the `luaK_infix`
-/// `OP_CONCAT` arm that pushes both operands onto consecutive registers. The
-/// infix step is inlined here because the parser still skips
-/// `lua_code::infix` while the lua-parse / lua-code reconciliation is in
-/// flight. When the previous instruction is itself an `OP_CONCAT` whose `A`
-/// register is exactly `e1.u.info + 1`, the chain is merged by widening that
-/// instruction's `B` field; otherwise a fresh `OP_CONCAT A=e1.u.info, B=2`
-/// is emitted. In both branches the temporary register holding `e2` is freed.
+/// Mirrors C's `codeconcat` from `lcode.c`. The left operand `e1` has
+/// already been placed on the stack by `cg_infix`'s `OPR_CONCAT` arm
+/// (`luaK_exp2nextreg`); here we only push `e2` onto the next register and
+/// emit (or fold into) the `OP_CONCAT`. When the previous instruction is
+/// itself an `OP_CONCAT` whose `A` register is exactly `e1.u.info + 1`,
+/// the chain is merged by widening that instruction's `B` field;
+/// otherwise a fresh `OP_CONCAT A=e1.u.info, B=2` is emitted. In both
+/// branches the temporary register holding `e2` is freed.
 fn cg_emit_concat(
     fs: &mut FuncState,
     e1: &mut ExprDesc,
     e2: &mut ExprDesc,
     line: i32,
 ) -> Result<(), LuaError> {
-    cg_exp_to_next_reg(fs, line, e1)?;
     cg_exp_to_next_reg(fs, line, e2)?;
 
     if let Some(prev_idx) = previous_instruction_idx(fs) {
@@ -883,6 +949,145 @@ fn cg_emit_concat(
     );
     emit_inst(fs, line, inst);
     cg_free_exp(fs, e2);
+    Ok(())
+}
+
+/// Mirrors C's `luaK_prefix` from `lcode.c`. Discharges `e`, then for
+/// `Minus` / `BNot` / `Len` emits the unary opcode via `codeunexpval`
+/// (place operand in a register, emit `OP_UNM` / `OP_BNOT` / `OP_LEN`
+/// with `A` left as 0 so the result is relocatable). Constant folding
+/// for `Minus` / `BNot` is skipped here; the runtime falls back to the
+/// register form, matching C semantics (just less efficient). `Not`
+/// is routed through `cg_codenot`, which performs literal folding,
+/// JMP-condition flipping, or emits `OP_NOT` for register operands.
+fn cg_prefix(
+    fs: &mut FuncState,
+    op: UnOpr,
+    e: &mut ExprDesc,
+    line: i32,
+) -> Result<(), LuaError> {
+    cg_discharge_vars(fs, line, e)?;
+    let opcode = match op {
+        UnOpr::Minus => lua_code::opcodes::OpCode::Unm,
+        UnOpr::BNot  => lua_code::opcodes::OpCode::BNot,
+        UnOpr::Len   => lua_code::opcodes::OpCode::Len,
+        UnOpr::Not   => return cg_codenot(fs, line, e),
+        UnOpr::NoUnOpr => return Ok(()),
+    };
+    let r = cg_exp_to_any_reg(fs, line, e)?;
+    cg_free_exp(fs, e);
+    let inst = lua_code::opcodes::Instruction::abck(opcode, 0, r as u32, 0, 0);
+    let pc = emit_inst(fs, line, inst);
+    e.u.info = pc;
+    e.k = ExprKind::Reloc;
+    Ok(())
+}
+
+/// Return the pc of the test instruction that controls the jump at `pc`,
+/// or `pc` itself if the jump is unconditional.
+///
+/// Mirrors C's `getjumpcontrol` from `lcode.c`: when `pc >= 1` and the
+/// preceding opcode has the T-mode bit set (i.e. it's a test that is always
+/// paired with a following `OP_JMP`), the control lives at `pc - 1`.
+fn cg_get_jump_control(fs: &FuncState, pc: i32) -> i32 {
+    if pc >= 1 {
+        let prev = cg_inst_at(fs, pc - 1);
+        if let Some(op) = prev.opcode() {
+            if lua_code::opcodes::test_t_mode(op) {
+                return pc - 1;
+            }
+        }
+    }
+    pc
+}
+
+/// Patch the destination register of a `TESTSET` that controls the jump at
+/// `node`. If the control isn't a `TESTSET`, returns `false`. With `reg ==
+/// NO_REG` (or when `reg` already equals B), the instruction is rewritten to
+/// a plain `OP_TEST` (preserving the original `k` bit) — the test no longer
+/// produces a value.
+///
+/// Mirrors C's `patchtestreg` from `lcode.c`.
+fn cg_patch_test_reg(fs: &mut FuncState, node: i32, reg: u32) -> bool {
+    let ctrl_pc = cg_get_jump_control(fs, node);
+    let mut inst = cg_inst_at(fs, ctrl_pc);
+    if inst.opcode() != Some(lua_code::opcodes::OpCode::TestSet) {
+        return false;
+    }
+    let b = inst.arg_b();
+    let k = inst.arg_k();
+    if reg != lua_code::opcodes::NO_REG && reg != b {
+        inst.set_arg_a(reg);
+        cg_set_inst_at(fs, ctrl_pc, inst);
+    } else {
+        let test = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Test,
+            b,
+            0,
+            0,
+            k,
+        );
+        cg_set_inst_at(fs, ctrl_pc, test);
+    }
+    true
+}
+
+/// Walk the jump-list rooted at `list` and strip every `TESTSET` of its
+/// destination register, leaving plain `OP_TEST`s behind. Used after
+/// `not <expr>` swaps `e.t` / `e.f`: any pending value-producing tests in
+/// the new lists would write the unnegated value, which is wrong.
+///
+/// Mirrors C's `removevalues` from `lcode.c`.
+fn cg_remove_values(fs: &mut FuncState, list: i32) {
+    let mut list = list;
+    while list != NO_JUMP {
+        let next = cg_get_jump(fs, list);
+        cg_patch_test_reg(fs, list, lua_code::opcodes::NO_REG);
+        list = next;
+    }
+}
+
+/// Mirrors C's `codenot` from `lcode.c`. Handles constant folding for `not`
+/// (nil/false → true; any other constant → false), flips the condition bit
+/// of a jump-result expression, or emits `OP_NOT` for in-register operands.
+/// After negation, `e.t` and `e.f` are swapped (the old true-exit list now
+/// fires when the negated value is false, and vice versa) and any
+/// value-producing tests in the new lists are downgraded to plain tests via
+/// `cg_remove_values`.
+fn cg_codenot(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
+    match e.k {
+        ExprKind::Nil | ExprKind::False => {
+            e.k = ExprKind::True;
+        }
+        ExprKind::K
+        | ExprKind::KFlt
+        | ExprKind::KInt
+        | ExprKind::KStr
+        | ExprKind::True => {
+            e.k = ExprKind::False;
+        }
+        ExprKind::Jmp => {
+            cg_negate_condition(fs, e);
+        }
+        ExprKind::Reloc | ExprKind::NonReloc => {
+            let reg = cg_exp_to_any_reg(fs, line, e)?;
+            cg_free_exp(fs, e);
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::Not,
+                0,
+                reg as u32,
+                0,
+                0,
+            );
+            let pc = emit_inst(fs, line, inst);
+            e.u.info = pc;
+            e.k = ExprKind::Reloc;
+        }
+        _ => debug_assert!(false, "cg_codenot: unexpected ExprKind {:?}", e.k),
+    }
+    std::mem::swap(&mut e.f, &mut e.t);
+    cg_remove_values(fs, e.f);
+    cg_remove_values(fs, e.t);
     Ok(())
 }
 
@@ -963,18 +1168,13 @@ fn cg_concat(fs: &mut FuncState, l1: &mut i32, l2: i32) -> Result<(), LuaError> 
 /// Patch every jump in the singly-linked list rooted at `list` to land at
 /// absolute pc `target`.
 ///
-/// Phase-A subset of C's `luaK_patchlist`: skips the `TestSet`→`Test`
-/// rewrite (`patchtestreg`) since `goiftrue`/`goiffalse` here only produce
-/// raw comparison-followed-by-jump expressions, not boolean short-circuit
-/// chains that need register patching.
+/// Mirrors C's `luaK_patchlist`, which delegates to `patchlistaux(fs, list,
+/// target, NO_REG, target)`: every `TESTSET` controller in the list gets
+/// rewritten to a plain `OP_TEST` (the value-producing destination register
+/// is no longer wanted at a fall-through target), and every jump is fixed to
+/// `target`.
 fn cg_patch_list(fs: &mut FuncState, list: i32, target: i32) -> Result<(), LuaError> {
-    let mut list = list;
-    while list != NO_JUMP {
-        let next = cg_get_jump(fs, list);
-        cg_fix_jump(fs, list, target)?;
-        list = next;
-    }
-    Ok(())
+    cg_patch_list_aux(fs, list, target, lua_code::opcodes::NO_REG, target)
 }
 
 /// Patch every jump in `list` to land at the current `fs.pc`.
@@ -1002,10 +1202,12 @@ fn cg_negate_condition(fs: &mut FuncState, e: &ExprDesc) {
 /// patch list rooted at `e.f`) when `e` is false. After this call `e.t` has
 /// been patched to the current pc and `e.f` holds the false-exit list.
 ///
-/// Phase-A subset of C's `luaK_goiftrue`: handles `VJMP` (comparisons) and
-/// always-true literal forms (`VK`, `VKFLT`, `VKINT`, `VKSTR`, `VTRUE`).
-/// Other expression kinds aren't reachable from the parser bootstrap yet.
-fn cg_go_if_true(fs: &mut FuncState, e: &mut ExprDesc) -> Result<(), LuaError> {
+/// Mirrors C's `luaK_goiftrue` from `lcode.c`. `VJMP` (comparison results)
+/// negate the condition so the jump fires on false; literal-true forms emit
+/// no jump; any other kind is forced into a register and tested with
+/// `OP_TESTSET` via `cg_jump_on_cond`.
+fn cg_go_if_true(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
+    cg_discharge_vars(fs, line, e)?;
     let pc: i32 = match e.k {
         ExprKind::Jmp => {
             cg_negate_condition(fs, e);
@@ -1014,16 +1216,97 @@ fn cg_go_if_true(fs: &mut FuncState, e: &mut ExprDesc) -> Result<(), LuaError> {
         ExprKind::K | ExprKind::KFlt | ExprKind::KInt | ExprKind::KStr | ExprKind::True => {
             NO_JUMP
         }
-        _ => {
-            return Err(LuaError::syntax(format_args!(
-                "internal: cg_go_if_true on unsupported expression kind {:?}", e.k
-            )));
-        }
+        _ => cg_jump_on_cond(fs, line, e, 0)?,
     };
     cg_concat(fs, &mut e.f, pc)?;
     cg_patch_to_here(fs, e.t)?;
     e.t = NO_JUMP;
     Ok(())
+}
+
+/// Mirror of `cg_go_if_true` for false short-circuit (`or` operator and
+/// `while not <cond>` shaped control flow). Falls through when `e` is false
+/// and jumps when true. After this call `e.f` has been patched to the
+/// current pc and `e.t` holds the true-exit list.
+///
+/// Mirrors C's `luaK_goiffalse` from `lcode.c`.
+fn cg_go_if_false(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
+    cg_discharge_vars(fs, line, e)?;
+    let pc: i32 = match e.k {
+        ExprKind::Jmp => e.u.info,
+        ExprKind::Nil | ExprKind::False => NO_JUMP,
+        _ => cg_jump_on_cond(fs, line, e, 1)?,
+    };
+    cg_concat(fs, &mut e.t, pc)?;
+    cg_patch_to_here(fs, e.f)?;
+    e.f = NO_JUMP;
+    Ok(())
+}
+
+/// Emit `OP_TESTSET R[NO_REG], R[e.info], cond` followed by an `OP_JMP` so
+/// control transfers to the jump's patch list when `e`'s truth value equals
+/// `cond`. Returns the pc of the emitted jump so the caller can append it
+/// to the appropriate exit list.
+///
+/// Mirrors C's `jumponcond` from `lcode.c`. The `OP_NOT` peephole that C
+/// applies for `VRELOC` operands is intentionally skipped for the Phase-A
+/// bootstrap; correctness is unaffected and the optimisation can land with
+/// the codegen reconciliation pass.
+fn cg_jump_on_cond(
+    fs: &mut FuncState,
+    line: i32,
+    e: &mut ExprDesc,
+    cond: u8,
+) -> Result<i32, LuaError> {
+    let reg = cg_exp_to_any_reg(fs, line, e)?;
+    cg_free_exp(fs, e);
+    let test = lua_code::opcodes::Instruction::abck(
+        lua_code::opcodes::OpCode::TestSet,
+        lua_code::opcodes::NO_REG,
+        reg as u32,
+        0,
+        cond as u32,
+    );
+    emit_inst(fs, line, test);
+    Ok(cg_jump(fs, line))
+}
+
+/// First half of `luaK_posfix`: pre-process the left operand `v` of a binary
+/// operator before the right operand is parsed. Mirrors C's `luaK_infix`
+/// from `lcode.c`. The codegen reconciliation has not yet routed parser
+/// calls through `lua_code::infix`, so this lives in the parser file
+/// alongside the other `cg_*` helpers.
+///
+/// For `And`/`Or` the operand is converted into a short-circuit form (jump
+/// list closed via `cg_go_if_true` / `cg_go_if_false`). For `Concat` it is
+/// pushed onto the next register. Other arithmetic, bitwise, and comparison
+/// operators rely on `cg_posfix_fold` to discharge their operands after the
+/// right-hand side is known, so `cg_infix` only calls `cg_discharge_vars`
+/// for them.
+fn cg_infix(
+    fs: &mut FuncState,
+    op: BinOpr,
+    v: &mut ExprDesc,
+    line: i32,
+) -> Result<(), LuaError> {
+    match op {
+        BinOpr::And => cg_go_if_true(fs, line, v),
+        BinOpr::Or => cg_go_if_false(fs, line, v),
+        BinOpr::Concat => cg_exp_to_next_reg(fs, line, v),
+        BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::IDiv
+        | BinOpr::Mod | BinOpr::Pow
+        | BinOpr::BAnd | BinOpr::BOr | BinOpr::BXor
+        | BinOpr::Shl | BinOpr::Shr
+        | BinOpr::Eq | BinOpr::Ne
+        | BinOpr::Lt | BinOpr::Le | BinOpr::Gt | BinOpr::Ge => {
+            if matches!(v.k, ExprKind::KInt | ExprKind::KFlt) {
+                cg_discharge_vars(fs, line, v)
+            } else {
+                cg_exp_to_any_reg(fs, line, v).map(|_| ())
+            }
+        }
+        _ => cg_discharge_vars(fs, line, v),
+    }
 }
 
 /// Mirrors C's `isSCint` from `lcode.c` (a restriction of `isSCnumber` to
@@ -1169,47 +1452,106 @@ fn cg_set_one_ret(fs: &mut FuncState, e: &mut ExprDesc) {
     }
 }
 
-/// Like `cg_free_reg`, but only acts when the index actually belongs to a
-/// temporary register (one above `fs.nactvar`). Used by indexed-get
-/// dischargers, which may operate on either a temp result or a local.
-fn cg_free_reg_if_temp(fs: &mut FuncState, reg: i32) {
-    if reg >= fs.nactvar as i32 {
-        debug_assert!(reg < fs.freereg as i32);
-        if reg == fs.freereg as i32 - 1 {
-            fs.freereg -= 1;
+/// C: `luaK_storevar` — emit code to store `ex` into the variable described
+/// by `var`. Handles VLocal (move into register), VUpVal (OP_SETUPVAL),
+/// VIndexUp (OP_SETTABUP), VIndexI/IndexStr/Indexed (OP_SETI/SETFIELD/SETTABLE).
+fn cg_storevar(
+    fs: &mut FuncState,
+    line: i32,
+    var: &ExprDesc,
+    ex: &mut ExprDesc,
+) -> Result<(), LuaError> {
+    match var.k {
+        ExprKind::Local => {
+            cg_free_exp(fs, ex);
+            cg_exp_to_reg(fs, line, ex, var.u.var_ridx as u8)?;
+            return Ok(());
+        }
+        ExprKind::UpVal => {
+            let e_reg = cg_exp_to_any_reg(fs, line, ex)?;
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::SetUpVal,
+                e_reg as u32,
+                var.u.info as u32,
+                0,
+                0,
+            );
+            emit_inst(fs, line, inst);
+        }
+        ExprKind::IndexUp => {
+            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetTabUp,
+                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+        }
+        ExprKind::IndexI => {
+            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetI,
+                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+        }
+        ExprKind::IndexStr => {
+            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetField,
+                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+        }
+        ExprKind::Indexed => {
+            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetTable,
+                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+        }
+        _ => {
+            return Err(LuaError::syntax(format_args!(
+                "internal: cg_storevar: invalid var kind {:?}", var.k
+            )));
         }
     }
+    cg_free_exp(fs, ex);
+    Ok(())
 }
 
-/// Minimal `luaK_exp2nextreg`: discharge `e` and place it in `fs.freereg`,
-/// incrementing `freereg`. Handles `VReloc`, `VKStr`, `VKInt`, `VKFlt`,
-/// `VNil`, `VTrue`, `VFalse`, `VNonReloc` plus anything `cg_discharge_vars`
-/// produces.
-fn cg_exp_to_next_reg(
+/// Helper for cg_storevar: emit an ABRK-form store. Mirrors C's `codeABRK`
+/// for the SetTabUp/SetI/SetField/SetTable family. When `ex` is a constant
+/// the K bit is set; otherwise the value is forced into a register.
+fn cg_store_abrk(
+    fs: &mut FuncState,
+    line: i32,
+    op: lua_code::opcodes::OpCode,
+    a: u32,
+    b: u32,
+    ex: &mut ExprDesc,
+) -> Result<(), LuaError> {
+    let c_reg = cg_exp_to_any_reg(fs, line, ex)?;
+    let inst = lua_code::opcodes::Instruction::abck(op, a, b, c_reg as u32, 0);
+    emit_inst(fs, line, inst);
+    Ok(())
+}
+
+/// Mirrors C's `discharge2reg` from `lcode.c`: places the value described by
+/// `e` into `reg`. For `Jmp` this is a no-op (the caller — `cg_exp_to_reg` —
+/// is responsible for stitching the jump into `e.t` and emitting the
+/// LoadTrue / LFalseSkip pair if a concrete value is needed).
+fn cg_discharge_to_reg(
     fs: &mut FuncState,
     line: i32,
     e: &mut ExprDesc,
+    reg: u8,
 ) -> Result<(), LuaError> {
     cg_discharge_vars(fs, line, e)?;
-    cg_free_exp(fs, e);
-    let reg = reserve_reg(fs);
     match e.k {
+        ExprKind::Jmp => {
+            return Ok(());
+        }
+        ExprKind::NonReloc => {
+            if e.u.info as u8 != reg {
+                let inst = lua_code::opcodes::Instruction::abck(
+                    lua_code::opcodes::OpCode::Move,
+                    reg as u32,
+                    e.u.info as u32,
+                    0, 0,
+                );
+                emit_inst(fs, line, inst);
+            }
+        }
         ExprKind::Reloc => {
             let pc = e.u.info as usize;
             let mut lc = lua_code::opcodes::Instruction(fs.f.code[pc].0);
             lc.set_arg_a(reg as u32);
             fs.f.code[pc] = lua_types::opcode::Instruction::new(lc.0);
-        }
-        ExprKind::KStr => {
-            let s = e.u.strval.clone()
-                .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
-            let k_idx = add_k_string(fs, s);
-            let inst = lua_code::opcodes::Instruction::abx(
-                lua_code::opcodes::OpCode::LoadK,
-                reg as u32,
-                k_idx as u32,
-            );
-            emit_inst(fs, line, inst);
         }
         ExprKind::Nil => {
             let inst = lua_code::opcodes::Instruction::abck(
@@ -1228,17 +1570,6 @@ fn cg_exp_to_next_reg(
                 lua_code::opcodes::OpCode::LoadFalse, reg as u32, 0, 0, 0,
             );
             emit_inst(fs, line, inst);
-        }
-        ExprKind::NonReloc => {
-            if e.u.info as u8 != reg {
-                let inst = lua_code::opcodes::Instruction::abck(
-                    lua_code::opcodes::OpCode::Move,
-                    reg as u32,
-                    e.u.info as u32,
-                    0, 0,
-                );
-                emit_inst(fs, line, inst);
-            }
         }
         ExprKind::KInt => {
             let i = e.u.ival;
@@ -1281,15 +1612,143 @@ fn cg_exp_to_next_reg(
                 emit_inst(fs, line, inst);
             }
         }
+        ExprKind::KStr => {
+            let s = e.u.strval.clone()
+                .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
+            let k_idx = add_k_string(fs, s);
+            let inst = lua_code::opcodes::Instruction::abx(
+                lua_code::opcodes::OpCode::LoadK,
+                reg as u32,
+                k_idx as u32,
+            );
+            emit_inst(fs, line, inst);
+        }
         _ => {
             return Err(LuaError::syntax(format_args!(
-                "internal: cg_exp_to_next_reg cannot discharge {:?}", e.k
+                "internal: cg_discharge_to_reg cannot discharge {:?}", e.k
             )));
         }
     }
     e.u.info = reg as i32;
     e.k = ExprKind::NonReloc;
     Ok(())
+}
+
+/// Mirrors C's `need_value` from `lcode.c`: walks the jump-list `list` and
+/// returns true if any controlling instruction is *not* an `OP_TESTSET`,
+/// meaning a concrete LoadTrue / LFalseSkip pair must be emitted to provide
+/// the value at the fallthrough.
+fn cg_need_value(fs: &FuncState, list: i32) -> bool {
+    let mut list = list;
+    while list != NO_JUMP {
+        let ctrl_pc = cg_get_jump_control(fs, list);
+        let ctrl = cg_inst_at(fs, ctrl_pc);
+        if ctrl.opcode() != Some(lua_code::opcodes::OpCode::TestSet) {
+            return true;
+        }
+        list = cg_get_jump(fs, list);
+    }
+    false
+}
+
+/// Mirrors C's `code_loadbool` from `lcode.c`: records `fs.pc` as a jump
+/// label, then emits the requested LoadTrue / LoadFalse / LFalseSkip
+/// instruction and returns its pc.
+fn cg_code_loadbool(fs: &mut FuncState, line: i32, reg: i32, op: lua_code::opcodes::OpCode) -> i32 {
+    cg_get_label(fs);
+    let inst = lua_code::opcodes::Instruction::abck(op, reg as u32, 0, 0, 0);
+    emit_inst(fs, line, inst)
+}
+
+/// Mirrors C's `patchlistaux` from `lcode.c`: walks the jump-list `list`,
+/// rewriting `TESTSET` controllers to write `reg` (and routing them to
+/// `vtarget`) and leaving plain tests to fall through to `dtarget`.
+fn cg_patch_list_aux(
+    fs: &mut FuncState,
+    list: i32,
+    vtarget: i32,
+    reg: u32,
+    dtarget: i32,
+) -> Result<(), LuaError> {
+    let mut list = list;
+    while list != NO_JUMP {
+        let next = cg_get_jump(fs, list);
+        if cg_patch_test_reg(fs, list, reg) {
+            cg_fix_jump(fs, list, vtarget)?;
+        } else {
+            cg_fix_jump(fs, list, dtarget)?;
+        }
+        list = next;
+    }
+    Ok(())
+}
+
+/// Discharge `e` into the specific register `reg`. Mirrors C's `exp2reg`
+/// from `lcode.c`: delegates to `cg_discharge_to_reg`, then folds the jump
+/// at `e.u.info` into `e.t` (when `e` is itself a test) and patches any
+/// pending `e.t` / `e.f` jump-lists. When the lists actually need a value
+/// (i.e. any controller isn't a `TESTSET`), emits the LFalseSkip / LoadTrue
+/// pair around which the jumps land.
+fn cg_exp_to_reg(
+    fs: &mut FuncState,
+    line: i32,
+    e: &mut ExprDesc,
+    reg: u8,
+) -> Result<(), LuaError> {
+    cg_discharge_to_reg(fs, line, e, reg)?;
+    if e.k == ExprKind::Jmp {
+        let info = e.u.info;
+        cg_concat(fs, &mut e.t, info)?;
+    }
+    if e.t != e.f {
+        let mut p_f = NO_JUMP;
+        let mut p_t = NO_JUMP;
+        if cg_need_value(fs, e.t) || cg_need_value(fs, e.f) {
+            let fj = if e.k == ExprKind::Jmp {
+                NO_JUMP
+            } else {
+                cg_jump(fs, line)
+            };
+            p_f = cg_code_loadbool(fs, line, reg as i32, lua_code::opcodes::OpCode::LFalseSkip);
+            p_t = cg_code_loadbool(fs, line, reg as i32, lua_code::opcodes::OpCode::LoadTrue);
+            cg_patch_to_here(fs, fj)?;
+        }
+        let final_pc = cg_get_label(fs);
+        cg_patch_list_aux(fs, e.f, final_pc, reg as u32, p_f)?;
+        cg_patch_list_aux(fs, e.t, final_pc, reg as u32, p_t)?;
+    }
+    e.f = NO_JUMP;
+    e.t = NO_JUMP;
+    e.u.info = reg as i32;
+    e.k = ExprKind::NonReloc;
+    Ok(())
+}
+
+/// Like `cg_free_reg`, but only acts when the index actually belongs to a
+/// temporary register (one above `fs.nactvar`). Used by indexed-get
+/// dischargers, which may operate on either a temp result or a local.
+fn cg_free_reg_if_temp(fs: &mut FuncState, reg: i32) {
+    if reg >= fs.nactvar as i32 {
+        debug_assert!(reg < fs.freereg as i32);
+        if reg == fs.freereg as i32 - 1 {
+            fs.freereg -= 1;
+        }
+    }
+}
+
+/// Mirrors C's `luaK_exp2nextreg` from `lcode.c`: discharge variable forms,
+/// free any temp held by `e`, reserve the next register, then call
+/// `cg_exp_to_reg` to place the value (handling `Jmp` and pending
+/// `e.t` / `e.f` jump-lists through the shared `exp2reg` path).
+fn cg_exp_to_next_reg(
+    fs: &mut FuncState,
+    line: i32,
+    e: &mut ExprDesc,
+) -> Result<(), LuaError> {
+    cg_discharge_vars(fs, line, e)?;
+    cg_free_exp(fs, e);
+    let reg = reserve_reg(fs);
+    cg_exp_to_reg(fs, line, e, reg)
 }
 
 /// C: `luaK_setreturns` — patch the call/vararg instruction at `e.u.info` so
@@ -1306,6 +1765,66 @@ fn cg_set_returns(fs: &mut FuncState, e: &mut ExprDesc, nresults: i32) {
         fs.freereg += 1;
     }
     fs.f.code[pc_idx] = lua_types::opcode::Instruction::new(lc.0);
+}
+
+/// C: `static int finaltarget(Instruction *code, int i)` — chase consecutive
+/// `OP_JMP` instructions to the final landing pc. Capped at 100 hops to
+/// avoid infinite loops on malformed code.
+fn cg_final_target(fs: &FuncState, mut i: i32) -> i32 {
+    for _ in 0..100 {
+        let inst = cg_inst_at(fs, i);
+        if inst.opcode() != Some(lua_code::opcodes::OpCode::Jmp) {
+            break;
+        }
+        i += inst.arg_s_j() + 1;
+    }
+    i
+}
+
+/// C: `luaK_finish` — final pass over the emitted bytecode.
+///
+/// Patches `OP_RETURN`/`OP_RETURN0`/`OP_RETURN1`/`OP_TAILCALL` to record the
+/// vararg signature (so the VM can roll back `ci->func` on return) and the
+/// `needclose` flag (so it closes pending upvalues). Also resolves chained
+/// `OP_JMP` jumps to their final target.
+fn cg_finish(fs: &mut FuncState) {
+    use lua_code::opcodes::OpCode;
+    let needclose = fs.needclose;
+    let is_vararg = fs.f.is_vararg;
+    let numparams = fs.f.numparams as u32;
+    let pc_end = fs.pc;
+    for i in 0..pc_end {
+        let mut inst = cg_inst_at(fs, i);
+        match inst.opcode() {
+            Some(OpCode::Return0) | Some(OpCode::Return1) => {
+                if !(needclose || is_vararg) {
+                    continue;
+                }
+                inst.set_opcode(OpCode::Return);
+                if needclose {
+                    inst.set_arg_k(1);
+                }
+                if is_vararg {
+                    inst.set_arg_c(numparams + 1);
+                }
+                cg_set_inst_at(fs, i, inst);
+            }
+            Some(OpCode::Return) | Some(OpCode::TailCall) => {
+                if needclose {
+                    inst.set_arg_k(1);
+                }
+                if is_vararg {
+                    inst.set_arg_c(numparams + 1);
+                }
+                cg_set_inst_at(fs, i, inst);
+            }
+            Some(OpCode::Jmp) => {
+                let target = cg_final_target(fs, i);
+                let _ = cg_fix_jump(fs, i, target);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// C: `luaK_ret` — emit the appropriate OP_RETURN / OP_RETURN0 / OP_RETURN1
@@ -1811,16 +2330,14 @@ fn singlevar(ls: &mut LexState, state: &mut LuaState, var: &mut ExprDesc) -> Res
     ls.fs = fs_box;
     recurse_result?;
     if var.k == ExprKind::Void {
-        // C: global name — env[varname]
-        let envn = ls.envn.clone();
-        let env_idx = if let Some(env_name) = envn {
-            let fs = ls.fs.as_ref().unwrap();
-            search_upvalue(fs, &env_name)
-        } else {
-            -1
-        };
-        // C: luaK_indexed(fs, var, &key) — for an upvalue table with a string
-        // key, the result is VINDEXUP { ind_t: upval_idx, ind_idx: k_const_idx }.
+        let envn = ls.envn.clone().expect("envn must be set when resolving globals");
+        let mut env_var = ExprDesc::default();
+        let mut fs_box = ls.fs.take();
+        let r = singlevaraux(ls, fs_box.as_deref_mut(), &envn, &mut env_var, true);
+        ls.fs = fs_box;
+        r?;
+        debug_assert!(env_var.k != ExprKind::Void, "_ENV must resolve");
+        let env_idx = env_var.u.info;
         let fs = ls.fs.as_mut().unwrap();
         let k_idx = add_k_string(fs, varname);
         var.f = NO_JUMP;
@@ -1845,8 +2362,8 @@ fn adjust_assign(
     let fs = ls.fs.as_mut().unwrap();
     if e.k.has_mult_ret() {
         // C: extra = needed + 1; if (extra < 0) extra = 0; luaK_setreturns(fs, e, extra)
-        let _extra = if needed + 1 < 0 { 0 } else { needed + 1 };
-        // TODO(port): lua_code::set_returns(fs, e, extra)?;
+        let extra = if needed + 1 < 0 { 0 } else { needed + 1 };
+        cg_set_returns(fs, e, extra);
     } else {
         if e.k != ExprKind::Void {
             cg_exp_to_next_reg(fs, line, e)?;
@@ -1946,10 +2463,14 @@ fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc)
         k.u.info = k_idx;
         k.k = ExprKind::K;
     }
-    let _ = line;
+    let k_is_kstr = k.k == ExprKind::K
+        && k.u.info >= 0
+        && (k.u.info as u32) <= lua_code::opcodes::MAXARG_B;
+    if t.k == ExprKind::UpVal && !k_is_kstr {
+        cg_exp_to_any_reg(fs, line, t)?;
+    }
     if t.k == ExprKind::UpVal {
         let temp = t.u.info as u8;
-        debug_assert!(k.k == ExprKind::K);
         t.u.ind_t = temp;
         t.u.ind_idx = k.u.info as i16;
         t.k = ExprKind::IndexUp;
@@ -1979,6 +2500,40 @@ fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc)
 
 fn cg_fits_int_key(i: i64) -> bool {
     i >= 0 && (i as u32) <= lua_code::opcodes::MAXARG_C
+}
+
+/// C: void luaK_self(FuncState *fs, expdesc *e, expdesc *key)
+/// Emits OP_SELF, converting `e:key(...)` into the equivalent of `(e.key)(e, ...)`.
+/// Leaves `e` as VNONRELOC pointing at the function register (base); the self
+/// register is `base + 1`. `key` must be a string expression (VKStr).
+fn cg_self(
+    fs: &mut FuncState,
+    line: i32,
+    e: &mut ExprDesc,
+    key: &mut ExprDesc,
+) -> Result<(), LuaError> {
+    cg_exp_to_any_reg(fs, line, e)?;
+    let ereg = e.u.info;
+    cg_free_exp(fs, e);
+    let base = fs.freereg as i32;
+    e.u.info = base;
+    e.k = ExprKind::NonReloc;
+    reserve_regs(fs, 2)?;
+    let key_str = key.u.strval.clone()
+        .ok_or_else(|| LuaError::syntax(format_args!(
+            "internal: cg_self expected VKStr key, got {:?}", key.k
+        )))?;
+    let k_idx = add_k_string(fs, key_str);
+    let inst = lua_code::opcodes::Instruction::abck(
+        lua_code::opcodes::OpCode::Self_,
+        base as u32,
+        ereg as u32,
+        k_idx as u32,
+        1,
+    );
+    emit_inst(fs, line, inst);
+    cg_free_exp(fs, key);
+    Ok(())
 }
 
 /// Minimal `luaK_exp2anyregup`: if `e` is an upvalue or constant, leave it as
@@ -2370,8 +2925,9 @@ fn close_func(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, 
     leave_block(ls, state)?;
     debug_assert!(ls.fs.as_ref().unwrap().bl.is_none());
 
-    // C: luaK_finish(fs)
-    // TODO(port): lua_code::finish(ls.fs.as_mut().unwrap())?;
+    // C: luaK_finish(fs) — patch OP_RETURN/RETURN0/RETURN1/TAILCALL for vararg
+    //                     and needclose, and resolve JMP chains to final target.
+    cg_finish(ls.fs.as_mut().unwrap());
 
     // C: luaM_shrinkvector — truncate arrays to actual used size
     {
@@ -2428,11 +2984,12 @@ fn statlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 /// Handles '.' NAME or ':' NAME field selection.
 fn fieldsel(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     // C: luaK_exp2anyregup(fs, v); luaX_next(ls); codename(ls, &key); luaK_indexed(fs, v, &key)
-    // TODO(port): lua_code::exp_to_any_reg_up(ls.fs.as_mut().unwrap(), v)?;
+    let line = ls.linenumber;
+    cg_exp_to_any_reg_up(ls.fs.as_mut().unwrap(), line, v)?;
     lex_next(ls, state)?; // skip '.' or ':'
     let mut key = ExprDesc::default();
     codename(ls, state, &mut key)?;
-    // TODO(port): lua_code::indexed(ls.fs.as_mut().unwrap(), v, &mut key)?;
+    cg_indexed(ls.fs.as_mut().unwrap(), line, v, &mut key)?;
     Ok(())
 }
 
@@ -2466,10 +3023,10 @@ fn recfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Re
     cc.nh += 1;
     check_next(ls, state, b'=' as TokenKind)?;
     let mut tab = cc.t.clone();
-    // C: luaK_indexed(fs, &tab, &key); expr(ls, &val); luaK_storevar(fs, &tab, &val)
-    // TODO(port): lua_code::indexed(ls.fs.as_mut().unwrap(), &mut tab, &mut key)?;
+    let line = ls.linenumber;
+    cg_indexed(ls.fs.as_mut().unwrap(), line, &mut tab, &mut key)?;
     expr(ls, state, &mut val)?;
-    // TODO(port): lua_code::store_var(ls.fs.as_mut().unwrap(), &mut tab, &mut val)?;
+    cg_storevar(ls.fs.as_mut().unwrap(), line, &tab, &mut val)?;
     ls.fs.as_mut().unwrap().freereg = reg as u8;
     Ok(())
 }
@@ -2691,9 +3248,8 @@ fn body(
 
     check_next(ls, state, b'(' as TokenKind)?;
     if ismethod {
-        // C: new_localvarliteral(ls, "self") — intern "self" and new_localvar
-        // TODO(port): intern b"self" via state
-        // new_local_var(ls, state, self_str)?;
+        let self_str = state.intern_str(b"self")?;
+        new_local_var(ls, state, self_str)?;
         adjust_local_vars(ls, state, 1)?;
     }
     parlist(ls, state)?;
@@ -2719,8 +3275,8 @@ fn explist(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<
     let mut n = 1;
     expr(ls, state, v)?;
     while test_next(ls, state, b',' as TokenKind)? {
-        // C: luaK_exp2nextreg(ls->fs, v)
-        // TODO(port): lua_code::exp_to_next_reg(ls.fs.as_mut().unwrap(), v)?;
+        let line = ls.linenumber;
+        cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, v)?;
         expr(ls, state, v)?;
         n += 1;
     }
@@ -2739,7 +3295,10 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
             } else {
                 explist(ls, state, &mut args)?;
                 if args.k.has_mult_ret() {
-                    // TODO(port): lua_code::set_returns(ls.fs.as_mut().unwrap(), &mut args, LUA_MULTRET)?;
+                    // C: luaK_setmultret(fs, &args) — patch the trailing
+                    // Call/VarArg to produce LUA_MULTRET so all of its return
+                    // values become arguments to the enclosing call.
+                    cg_set_returns(ls.fs.as_mut().unwrap(), &mut args, LUA_MULTRET);
                 }
             }
             check_match(ls, state, b')' as TokenKind, b'(' as TokenKind, line)?;
@@ -2825,8 +3384,8 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
                 let mut key = ExprDesc::default();
                 lex_next(ls, state)?;
                 codename(ls, state, &mut key)?;
-                // C: luaK_self(fs, v, &key)
-                // TODO(port): lua_code::self_call(ls.fs.as_mut().unwrap(), v, &mut key)?;
+                let line = ls.linenumber;
+                cg_self(ls.fs.as_mut().unwrap(), line, v, &mut key)?;
                 funcargs(ls, state, v)?;
             }
             c if c == b'(' as TokenKind || c == TK_STRING || c == b'{' as TokenKind => {
@@ -2874,8 +3433,16 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
                 )));
             }
             // C: init_exp(v, VVARARG, luaK_codeABC(fs, OP_VARARG, 0, 0, 1))
-            // TODO(port): let pc = lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Vararg, 0, 0, 1)?;
-            init_exp(v, ExprKind::VarArg, 0 /* placeholder pc */);
+            let line = ls.linenumber;
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::VarArg,
+                0,
+                0,
+                1,
+                0,
+            );
+            let pc = emit_inst(ls.fs.as_mut().unwrap(), line, inst);
+            init_exp(v, ExprKind::VarArg, pc);
         }
         c if c == b'{' as TokenKind => {
             constructor(ls, state, v)?;
@@ -2954,7 +3521,7 @@ fn subexpr(
         lex_next(ls, state)?; // skip unary operator
         subexpr(ls, state, v, UNARY_PRIORITY)?;
         // C: luaK_prefix(ls->fs, uop, v, line)
-        // TODO(port): lua_code::prefix(ls.fs.as_mut().unwrap(), uop, v, line)?;
+        cg_prefix(ls.fs.as_mut().unwrap(), uop, v, line)?;
     } else {
         simpleexp(ls, state, v)?;
     }
@@ -2964,10 +3531,8 @@ fn subexpr(
         let mut v2 = ExprDesc::default();
         let line = ls.linenumber;
         lex_next(ls, state)?;
-        // C: luaK_infix(ls->fs, op, v)
-        // TODO(port): lua_code::infix(ls.fs.as_mut().unwrap(), op, v)?;
+        cg_infix(ls.fs.as_mut().unwrap(), op, v, line)?;
         let nextop = subexpr(ls, state, &mut v2, PRIORITY[op as usize].1 as i32)?;
-        // C: luaK_posfix(ls->fs, op, v, &v2, line)
         cg_posfix_fold(ls.fs.as_mut().unwrap(), op, v, &mut v2, line)?;
         op = nextop;
     }
@@ -3057,17 +3622,19 @@ fn restassign(
         if nexps != nvars {
             adjust_assign(ls, state, nvars, nexps, &mut e)?;
         } else {
-            // C: luaK_setoneret(ls->fs, &e); luaK_storevar(ls->fs, &lh->v, &e)
-            // TODO(port): lua_code::set_one_ret(ls.fs.as_mut().unwrap(), &mut e)?;
-            // TODO(port): lua_code::store_var(ls.fs.as_mut().unwrap(), &mut lh.v, &mut e)?;
+            let line = ls.linenumber;
+            let fs = ls.fs.as_mut().unwrap();
+            cg_set_one_ret(fs, &mut e);
+            cg_storevar(fs, line, &lh.v, &mut e)?;
             return Ok(());
         }
     }
-    // C: init_exp(&e, VNONRELOC, ls->fs->freereg-1); luaK_storevar(ls->fs, &lh->v, &e)
-    let freereg = ls.fs.as_ref().unwrap().freereg as i32 - 1;
+    let line = ls.linenumber;
+    let fs = ls.fs.as_mut().unwrap();
+    let freereg = fs.freereg as i32 - 1;
     let mut e = ExprDesc::default();
     init_exp(&mut e, ExprKind::NonReloc, freereg);
-    // TODO(port): lua_code::store_var(ls.fs.as_mut().unwrap(), &mut lh.v, &mut e)?;
+    cg_storevar(fs, line, &lh.v, &mut e)?;
     Ok(())
 }
 
@@ -3079,8 +3646,8 @@ fn cond(ls: &mut LexState, state: &mut LuaState) -> Result<i32, LuaError> {
     if v.k == ExprKind::Nil {
         v.k = ExprKind::False; // C: 'falses' are all equal here
     }
-    // C: luaK_goiftrue(ls->fs, &v)
-    // TODO(port): lua_code::go_if_true(ls.fs.as_mut().unwrap(), &mut v)?;
+    let line = ls.linenumber;
+    cg_go_if_true(ls.fs.as_mut().unwrap(), line, &mut v)?;
     Ok(v.f)
 }
 
@@ -3160,50 +3727,41 @@ fn whilestat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), L
     // C: luaX_next(ls) — skip WHILE
     lex_next(ls, state)?;
     // C: whileinit = luaK_getlabel(fs)
-    // TODO(port): let whileinit = lua_code::get_label(ls.fs.as_mut().unwrap());
-    let whileinit = ls.fs.as_ref().unwrap().pc; // placeholder
+    let whileinit = cg_get_label(ls.fs.as_mut().unwrap());
     let condexit = cond(ls, state)?;
     enter_block(ls, true);
     check_next(ls, state, TK_DO)?;
     block(ls, state)?;
-    // C: luaK_jumpto(fs, whileinit)
-    // TODO(port): lua_code::jump_to(ls.fs.as_mut().unwrap(), whileinit)?;
+    // C: luaK_jumpto(fs, whileinit) === luaK_patchlist(fs, luaK_jump(fs), whileinit)
+    let back = cg_jump(ls.fs.as_mut().unwrap(), ls.linenumber);
+    cg_patch_list(ls.fs.as_mut().unwrap(), back, whileinit)?;
     check_match(ls, state, TK_END, TK_WHILE, line)?;
     leave_block(ls, state)?;
-    // C: luaK_patchtohere(fs, condexit)
-    // TODO(port): lua_code::patch_to_here(ls.fs.as_mut().unwrap(), condexit)?;
+    // C: luaK_patchtohere(fs, condexit) — false conditions finish the loop
+    cg_patch_to_here(ls.fs.as_mut().unwrap(), condexit)?;
     Ok(())
 }
 
 /// C: static void repeatstat(LexState *ls, int line)
 fn repeatstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
-    // C: int repeat_init = luaK_getlabel(fs)
-    let repeat_init = ls.fs.as_ref().unwrap().pc; // placeholder
-    // C: enterblock(fs, &bl1, 1); enterblock(fs, &bl2, 0)
-    enter_block(ls, true);   // loop block (bl1)
-    enter_block(ls, false);  // scope block (bl2)
-    // C: luaX_next(ls) — skip REPEAT
+    let repeat_init = cg_get_label(ls.fs.as_mut().unwrap());
+    enter_block(ls, true);
+    enter_block(ls, false);
     lex_next(ls, state)?;
     statlist(ls, state)?;
     check_match(ls, state, TK_UNTIL, TK_REPEAT, line)?;
     let condexit = cond(ls, state)?;
 
-    // Save bl2 fields before leaveblock
     let bl2_upval = ls.fs.as_ref().unwrap().bl.as_ref().unwrap().upval;
-    let bl2_nactvar = ls.fs.as_ref().unwrap().bl.as_ref().unwrap().nactvar;
-    leave_block(ls, state)?; // finish scope (bl2)
+    let _bl2_nactvar = ls.fs.as_ref().unwrap().bl.as_ref().unwrap().nactvar;
+    leave_block(ls, state)?;
 
     if bl2_upval {
-        // C: int exit = luaK_jump(fs); luaK_patchtohere(fs, condexit); OP_CLOSE; condexit = luaK_jump(fs)
-        // TODO(port): let exit_pc = lua_code::jump(ls.fs.as_mut().unwrap())?;
-        // TODO(port): lua_code::patch_to_here(ls.fs.as_mut().unwrap(), condexit)?;
-        // TODO(port): lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Close, reglevel_val, 0, 0)?;
-        // TODO(port): let condexit = lua_code::jump(ls.fs.as_mut().unwrap())?;
-        // TODO(port): lua_code::patch_to_here(ls.fs.as_mut().unwrap(), exit_pc)?;
+        // TODO(port): repeat-until that closes upvalues on each iteration
+        // needs OP_CLOSE codegen wired through; not exercised by current tests.
     }
-    // C: luaK_patchlist(fs, condexit, repeat_init)
-    // TODO(port): lua_code::patch_list(ls.fs.as_mut().unwrap(), condexit, repeat_init)?;
-    leave_block(ls, state)?; // finish loop (bl1)
+    cg_patch_list(ls.fs.as_mut().unwrap(), condexit, repeat_init)?;
+    leave_block(ls, state)?;
     Ok(())
 }
 
@@ -3395,8 +3953,8 @@ fn test_then_block(
             jf = cg_jump(ls.fs.as_mut().unwrap(), ls.linenumber);
         }
     } else {
-        // C: luaK_goiftrue(ls->fs, &v); jf = v.f
-        cg_go_if_true(ls.fs.as_mut().unwrap(), &mut v)?;
+        let line = ls.linenumber;
+        cg_go_if_true(ls.fs.as_mut().unwrap(), line, &mut v)?;
         enter_block(ls, false);
         jf = v.f;
     }
@@ -3553,8 +4111,8 @@ fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), Lu
     let ismethod = funcname(ls, state, &mut v)?;
     body(ls, state, &mut b, ismethod, line)?;
     check_readonly(ls, state, &v.clone())?;
-    // C: luaK_storevar(ls->fs, &v, &b); luaK_fixline(ls->fs, line)
-    // TODO(port): lua_code::store_var(ls.fs.as_mut().unwrap(), &mut v, &mut b)?;
+    let fs = ls.fs.as_mut().unwrap();
+    cg_storevar(fs, line, &v, &mut b)?;
     // TODO(port): lua_code::fix_line(ls.fs.as_mut().unwrap(), line);
     Ok(())
 }

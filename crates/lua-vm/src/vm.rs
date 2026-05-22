@@ -569,12 +569,12 @@ pub(crate) fn finish_set(
     t_val: LuaValue,
     key: LuaValue,
     val: LuaValue,
-    slot_present: bool,
+    _slot_present: bool,
 ) -> Result<(), LuaError> {
     let mut t = t_val;
     for _loop in 0..MAX_TAG_LOOP {
         let tm: LuaValue;
-        if slot_present && matches!(t, LuaValue::Table(_)) {
+        if matches!(t, LuaValue::Table(_)) {
             // C: tm = fasttm(L, h->metatable, TM_NEWINDEX)
             let mt = state.table_metatable(&t);
             tm = state.fast_tm_table(mt.as_ref(), TagMethod::NewIndex);
@@ -818,9 +818,14 @@ pub(crate) fn equal_obj(
         (LuaValue::Float(f1), LuaValue::Float(f2)) => Ok(f1 == f2),
         (LuaValue::LightUserData(p1), LuaValue::LightUserData(p2)) => Ok(p1 == p2),
         (LuaValue::Function(f1), LuaValue::Function(f2)) => {
-            // C: LUA_VLCF — light C functions compared by pointer
-            // TODO(port): implement function pointer equality for LightC variant
-            Ok(std::ptr::eq(f1 as *const _, f2 as *const _))
+            use lua_types::closure::LuaClosure;
+            let same = match (f1, f2) {
+                (LuaClosure::Lua(a), LuaClosure::Lua(b)) => GcRef::ptr_eq(a, b),
+                (LuaClosure::C(a), LuaClosure::C(b)) => GcRef::ptr_eq(a, b),
+                (LuaClosure::LightC(a), LuaClosure::LightC(b)) => a == b,
+                _ => false,
+            };
+            Ok(same)
         }
         (LuaValue::Str(s1), LuaValue::Str(s2)) => {
             // C: eqshrstr for short strings (pointer eq after interning),
@@ -930,14 +935,14 @@ pub(crate) fn concat(state: &mut LuaState, total: i32) -> Result<(), LuaError> {
 
         let n: u32;
         if is_empty(&v_tm1) {
-            // C: result is top-2 (tostring it if needed)
+            // C: result is top-2 (tostring it if needed); consumed 2 inputs → 1 result
             state.coerce_to_string(top - 2)?;
-            n = 1;
+            n = 2;
         } else if is_empty(&v_tm2) {
-            // C: setobjs2s(L, top-2, top-1)
+            // C: setobjs2s(L, top-2, top-1); consumed 2 inputs → 1 result
             let v = state.get_at(top - 1).clone();
             state.set_at(top - 2, v);
-            n = 1;
+            n = 2;
         } else {
             // C: collect as many consecutive string/number values as possible
             // Ensure top-1 is a string (coerce if number)
@@ -1402,7 +1407,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         let b = i.arg_b() as usize;
                         let v = state.get_at(ra).clone();
-                        state.upvalue_set(&cl, b, v.clone());
+                        state.upvalue_set(&cl, b, v.clone())?;
                         state.gc_barrier_upval(&cl, b, &v);
                     }
                     // ── OP_GETTABUP ──────────────────────────────────────────
@@ -2209,13 +2214,13 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             n_raw as u32
                         };
                         state.set_ci_savedpc(ci, pc);
+                        state.close_upvals(base)?;
                         if i.test_k() {
                             state.ci_nres_set(ci, n as i32);
                             let ci_top = state.ci_top(ci);
                             if state.top_idx().0 < ci_top.0 {
                                 state.set_top(ci_top);
                             }
-                            state.close_upvals(base)?; // CLOSEKTOP
                             trap = state.ci_trap(ci);
                             base = state.ci_base(ci); // updatestack
                         }
@@ -2235,6 +2240,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //             setnilvalue(L->top++) }
                     //    goto ret;
                     OpCode::Return0 => {
+                        state.close_upvals(base)?;
                         if state.hook_mask() != 0 {
                             let ra = base + i.arg_a();
                             state.set_top(ra);
@@ -2256,6 +2262,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    else { nres = ci->nresults; ci = ci->previous; ...handle results... }
                     //    goto ret;
                     OpCode::Return1 => {
+                        state.close_upvals(base)?;
                         if state.hook_mask() != 0 {
                             let ra = base + i.arg_a();
                             state.set_top(ra + 1);

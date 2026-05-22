@@ -823,14 +823,15 @@ pub(crate) fn pretailcall(
     loop {
         let func_val = state.get_at(func_idx).clone();
         match func_val {
-            // C: case LUA_VCCL — C closure
-            LuaValue::Function(LuaClosure::C(ref _cl)) => {
-                // TODO(phase-b): wire LuaCFnPtr through precall_c once lua-types unifies signatures.
-                return Err(LuaError::runtime(format_args!("phase-b: precall_c C closure")));
+            // C: case LUA_VCCL — return precallC(L, func, LUA_MULTRET, clCvalue(s2v(func))->f);
+            LuaValue::Function(LuaClosure::C(ref cl)) => {
+                let cfunc = state.global().c_functions[cl.func];
+                return precall_c(state, func_idx, LUA_MULTRET, cfunc);
             }
-            // C: case LUA_VLCF — light C function
-            LuaValue::Function(LuaClosure::LightC(_f)) => {
-                return Err(LuaError::runtime(format_args!("phase-b: precall_c light C")));
+            // C: case LUA_VLCF — return precallC(L, func, LUA_MULTRET, fvalue(s2v(func)));
+            LuaValue::Function(LuaClosure::LightC(f)) => {
+                let cfunc = state.global().c_functions[f];
+                return precall_c(state, func_idx, LUA_MULTRET, cfunc);
             }
             // C: case LUA_VLCL — Lua function
             LuaValue::Function(LuaClosure::Lua(ref cl)) => {
@@ -904,10 +905,11 @@ pub(crate) fn precall(
     loop {
         let func_val = state.get_at(func_idx).clone();
         match func_val {
-            // C: case LUA_VCCL — C closure
-            LuaValue::Function(LuaClosure::C(ref _cl)) => {
-                // TODO(phase-b): wire LuaCFnPtr through precall_c once lua-types unifies signatures.
-                return Err(LuaError::runtime(format_args!("phase-b: precall C closure")));
+            // C: case LUA_VCCL — precallC(L, func, nresults, clCvalue(s2v(func))->f); return NULL;
+            LuaValue::Function(LuaClosure::C(ref cl)) => {
+                let cfunc = state.global().c_functions[cl.func];
+                precall_c(state, func_idx, nresults, cfunc)?;
+                return Ok(None);
             }
             // C: case LUA_VLCF — light C function
             LuaValue::Function(LuaClosure::LightC(f)) => {

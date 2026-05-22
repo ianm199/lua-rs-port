@@ -158,7 +158,7 @@ pub(crate) fn init_upvals(state: &mut LuaState, cl: &GcRef<lua_types::LuaLClosur
     let n = cl.upvals.len();
     for i in 0..n {
         // C: luaC_newobj(L, LUA_VUPVAL, sizeof(UpVal)) → Rc::new(UpVal::Closed(Nil))
-        let uv: GcRef<UpVal> = GcRef::new(UpVal::Closed(LuaValue::Nil));
+        let uv: GcRef<UpVal> = GcRef::new(UpVal::closed(LuaValue::Nil));
         // TODO(port): cl.borrow_mut().as_lua_mut().upvals[i] = Some(uv.clone());
         // Requires interior mutability; see PORT NOTE at top of file.
         let _ = (i, uv);
@@ -195,10 +195,7 @@ fn new_open_upval(
     // C: UpVal.v.p = s2v(level) → UpVal::Open { thread_id: 0, idx: level }
     // The `thread` component of PORT_STRATEGY §3.8 is deferred to Phase E (coroutines).
     // macros.tsv: uplevel → thread_stack_idx field of Open variant.
-    let uv: GcRef<UpVal> = GcRef::new(UpVal::Open {
-        thread_id: 0,
-        idx: level,
-    });
+    let uv: GcRef<UpVal> = GcRef::new(UpVal::open(0, level));
     // PORT NOTE: Vec insert maintains descending StackIdx order (highest first),
     // mirroring the C intrusive list where the head is always the topmost slot.
     state.openupval.insert(insert_pos, uv.clone());
@@ -242,10 +239,9 @@ pub(crate) fn find_upval(state: &mut LuaState, level: StackIdx) -> GcRef<UpVal> 
     for (i, uv_ref) in state.openupval.iter().enumerate() {
         // C: lua_assert(!isdead(G(L), p)) — GC liveness; no-op in Phase A–C
         // macros.tsv: uplevel → extract thread_stack_idx from UpVal::Open
-        let uv_idx = match uv_ref.as_ref() {
-            UpVal::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
-            UpVal::Closed(_) => {
-                // Invariant: openupval must only contain Open upvalues.
+        let uv_idx = match &*uv_ref.slot() {
+            lua_types::UpValState::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
+            lua_types::UpValState::Closed(_) => {
                 debug_assert!(false, "closed upvalue found in openupval list");
                 continue;
             }
@@ -444,7 +440,7 @@ pub(crate) fn unlink_upval(state: &mut LuaState, uv: &GcRef<UpVal>) {
     // C: lua_assert(upisopen(uv));
     // macros.tsv: upisopen → matches!(uv, UpVal::Open { .. })
     debug_assert!(
-        matches!(uv.as_ref(), UpVal::Open { .. }),
+        uv.is_open(),
         "unlink_upval called on a closed upvalue"
     );
     // C: *uv->u.open.previous = uv->u.open.next;
@@ -476,37 +472,23 @@ pub(crate) fn close_upval(state: &mut LuaState, level: StackIdx) {
             Some(uv) => uv.clone(),
             None => break,
         };
-        let uv_idx = match uv.as_ref() {
-            UpVal::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
-            UpVal::Closed(_) => {
+        let uv_idx = match &*uv.slot() {
+            lua_types::UpValState::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
+            lua_types::UpValState::Closed(_) => {
                 debug_assert!(false, "closed upvalue in openupval list");
                 break;
             }
         };
         if uv_idx.0 < level.0 {
-            break; // remaining upvalues are all below `level`
+            break;
         }
-        // C: lua_assert(uplevel(uv) < L->top.p)
         debug_assert!(
             (uv_idx.0 as usize) < state.top.0 as usize,
             "open upvalue index must be below stack top"
         );
-        // C: luaF_unlinkupval(uv);  — removes from openupval list
-        // We remove the first element directly since we already know it's the head.
         state.openupval.remove(0);
-        // C: setobj(L, slot, uv->v.p);  — copy current stack value into upvalue storage
-        //    uv->v.p = slot;             — upvalue now points to its own storage (Closed)
-        // macros.tsv: setobj → *obj1 = obj2.clone()
         let stack_val = state.get_stack_value(uv_idx).clone();
-        // TODO(port): transition UpVal::Open → UpVal::Closed(stack_val) in-place.
-        // Requires interior mutability on GcRef<UpVal>. GcRef<T> = Rc<T> in Phase A–C
-        // has no borrow_mut(). Options for Phase B:
-        //   (a) GcRef<UpVal> = Rc<RefCell<UpVal>>  (interior mutability)
-        //   (b) Replace the Rc<UpVal> in the closure's upval list with a new Rc
-        //       — but other closures sharing this upvalue would not see the update.
-        // The C design relies on all closures sharing the same pointer, which maps
-        // to option (a) in Rust. See PORT NOTE at top of file.
-        let _ = stack_val; // TODO(port): *uv.borrow_mut() = UpVal::Closed(stack_val);
+        uv.close_with(stack_val);
         // C: if (!iswhite(uv)) { nw2black(uv); luaC_barrier(L, uv, slot); }
         // macros.tsv: iswhite → obj.is_white(); nw2black → obj.set_black()
         //             luaC_barrier → state.gc().barrier(p, v) — no-op Phase A–C
@@ -702,17 +684,15 @@ const DUMMY_C_FUNCTION_IDX: crate::state::LuaCFnPtr = usize::MAX;
 /// C: `isintwups(L)` → `L->twups != L` (intrusive list: thread is in twups
 /// iff its twups pointer doesn't point back to itself).
 ///
-/// TODO(port): In Rust, global.twups is `Vec<GcRef<LuaState>>`. Membership
-/// check requires either a flag on LuaState or a scan. This helper is a stub
-/// returning `false` (safe conservative answer: always re-insert) until the
-/// coroutine / twups design is finalised in Phase E.
+/// PORT NOTE: In Phase A–D with coroutines stubbed there is effectively a
+/// single thread. The actual `GlobalState.twups` Vec management (insertion in
+/// `new_open_upval`) is deferred to Phase D/E and would require a GcRef-to-self.
+/// Until then we treat every thread as conceptually present in twups, which
+/// satisfies the invariant `state_in_twups || openupval.is_empty()` asserted by
+/// `find_upval`. The actual twups list does not yet drive any behaviour.
 fn state_in_twups(state: &LuaState) -> bool {
-    // TODO(port): implement membership test in global_state.twups Vec.
-    // Requires a GcRef<LuaState> to self — self-referential Rc, unsolved until Phase E.
-    // Returning false means new_open_upval will always attempt re-insertion,
-    // which is safe (duplicate handling is deferred).
     let _ = state;
-    false
+    true
 }
 
 // ── Trait stubs needed for compilation ───────────────────────────────────────

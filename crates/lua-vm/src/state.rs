@@ -56,7 +56,7 @@ pub use lua_types::string::LuaString;
 pub use lua_types::userdata::LuaUserData;
 pub use lua_types::closure::{LuaCFnPtr, LuaClosure, LuaLClosure as LuaClosureLua, LuaCClosure as LuaClosureC};
 pub use lua_types::proto::LuaProto;
-pub use lua_types::upval::UpVal;
+pub use lua_types::upval::{UpVal, UpValState};
 pub use lua_types::gc::GcRef;
 
 /// A Lua-callable function pointer. C: `lua_CFunction`.
@@ -1142,18 +1142,79 @@ impl LuaState {
         let new_top: StackIdx = idx.into().0;
         self.top = new_top;
     }
-    pub fn dec_top(&mut self) { todo!("phase-b: dec_top") }
+    /// Decrement `top` by 1 (saturating at zero).
+    ///
+    /// C: `L->top.p--` — drop one slot from the stack without reading it.
+    pub fn dec_top(&mut self) {
+        if self.top.0 > 0 {
+            self.top = StackIdx(self.top.0 - 1);
+        }
+    }
     pub fn pop_n(&mut self, n: usize) {
         let cur = self.top.0 as usize;
         let new = cur.saturating_sub(n);
         self.top = StackIdx(new as u32);
     }
-    pub fn peek_at(&mut self, _idx: impl Into<StackIdxConv>) -> LuaValue { todo!("phase-b: peek_at") }
-    pub fn peek_top(&mut self) -> LuaValue { todo!("phase-b: peek_top") }
-    pub fn peek_string_at_top(&mut self) -> GcRef<LuaString> { todo!("phase-b: peek_string_at_top") }
-    pub fn stack_at(&mut self, _idx: impl Into<StackIdxConv>) -> &mut LuaValue { todo!("phase-b: stack_at") }
-    pub fn stack_set_nil(&mut self, _idx: impl Into<StackIdxConv>) { todo!("phase-b: stack_set_nil") }
-    pub fn stack_resize(&mut self, _size: usize) -> Result<(), LuaError> { todo!("phase-b: stack_resize") }
+    /// Returns the value at the given stack index without removing it.
+    ///
+    /// C: `s2v(L->stack.p + idx)` for a fixed absolute index.
+    pub fn peek_at(&mut self, idx: impl Into<StackIdxConv>) -> LuaValue {
+        let i: StackIdx = idx.into().0;
+        match self.stack.get(i.0 as usize) {
+            Some(slot) => slot.val.clone(),
+            None => LuaValue::Nil,
+        }
+    }
+    /// Returns the value just below `top` (the topmost live slot) without
+    /// removing it.
+    ///
+    /// C: `s2v(L->top.p - 1)`.
+    pub fn peek_top(&mut self) -> LuaValue {
+        if self.top.0 == 0 {
+            return LuaValue::Nil;
+        }
+        self.stack[(self.top.0 - 1) as usize].val.clone()
+    }
+    /// Returns the topmost slot interpreted as a string. Panics if the slot
+    /// is not a `LuaValue::Str`. Callers (e.g. `luaO_pushvfstring`) guarantee
+    /// the value has been pushed as an interned string immediately prior.
+    ///
+    /// C: `getstr(tsvalue(s2v(L->top.p - 1)))`.
+    pub fn peek_string_at_top(&mut self) -> GcRef<LuaString> {
+        match self.peek_top() {
+            LuaValue::Str(s) => s,
+            _ => panic!("peek_string_at_top: top of stack is not a string"),
+        }
+    }
+    /// Mutable reference to the value at the given stack slot.
+    ///
+    /// C: `s2v(L->stack.p + idx)` used as an lvalue.
+    pub fn stack_at(&mut self, idx: impl Into<StackIdxConv>) -> &mut LuaValue {
+        let i: StackIdx = idx.into().0;
+        &mut self.stack[i.0 as usize].val
+    }
+    /// Writes `Nil` to the given stack slot.
+    ///
+    /// C: `setnilvalue(s2v(L->stack.p + idx))`.
+    pub fn stack_set_nil(&mut self, idx: impl Into<StackIdxConv>) {
+        let i: StackIdx = idx.into().0;
+        let slot = i.0 as usize;
+        if slot < self.stack.len() {
+            self.stack[slot].val = LuaValue::Nil;
+        }
+    }
+    /// Resizes the underlying stack vector to `size` slots, padding new slots
+    /// with `StackValue::default()` (which is `Nil`). Returns `Ok(())` on
+    /// success — `Vec::resize_with` in Rust does not have a fallible path the
+    /// way `luaM_reallocvector` does in C, so the `Result` is here for
+    /// signature parity with future fallible allocators.
+    ///
+    /// C: `luaM_reallocvector(L, L->stack.p, oldsize+EXTRA_STACK,
+    ///                         newsize+EXTRA_STACK, StackValue)`.
+    pub fn stack_resize(&mut self, size: usize) -> Result<(), LuaError> {
+        self.stack.resize_with(size, StackValue::default);
+        Ok(())
+    }
     pub fn stack_available(&mut self) -> usize {
         (self.stack_last.0 as usize).saturating_sub(self.top.0 as usize)
     }
@@ -1165,7 +1226,18 @@ impl LuaState {
         }
         Ok(())
     }
-    pub fn grow_stack(&mut self, _n: i32, _raiseerror: bool) -> Result<(), LuaError> { todo!("phase-b: grow_stack") }
+    /// Inherent method wrapper around the free function `do_::grow_stack`,
+    /// preserving the historical `Result<(), LuaError>` signature used by
+    /// `check_stack` and other VM call sites. The bool returned by the
+    /// underlying implementation distinguishes soft failure (when
+    /// `raise_error` is false) from success; that distinction is dropped here
+    /// because every current caller passes `raise_error = true` and only
+    /// cares about error propagation.
+    ///
+    /// C: `int luaD_growstack(lua_State *L, int n, int raiseerror)`.
+    pub fn grow_stack(&mut self, n: i32, raise_error: bool) -> Result<(), LuaError> {
+        crate::do_::grow_stack(self, n, raise_error).map(|_| ())
+    }
 
     pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo { &self.call_info[idx.as_usize()] }
     pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo { &mut self.call_info[idx.as_usize()] }
@@ -1202,7 +1274,10 @@ impl LuaState {
             .expect("set_ci_previous: returning frame has no previous CallInfo");
     }
     pub fn ci_previous(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
-    pub fn ci_adjust_func<D>(&mut self, _idx: CallInfoIdx, _delta: D) { todo!("phase-b: ci_adjust_func") }
+    pub fn ci_adjust_func(&mut self, idx: CallInfoIdx, delta: i32) {
+        let ci = &mut self.call_info[idx.as_usize()];
+        ci.func = StackIdx((ci.func.0 as i32 - delta) as u32);
+    }
     pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].func + 1 }
     pub fn ci_is_fresh(&self, idx: CallInfoIdx) -> bool {
         (self.call_info[idx.as_usize()].callstatus & CIST_FRESH) != 0
@@ -1214,23 +1289,43 @@ impl LuaState {
             _ => None,
         }
     }
-    pub fn ci_nextraargs(&self, _idx: CallInfoIdx) -> i32 { todo!("phase-b: ci_nextraargs") }
-    pub fn ci_nres(&self, _idx: CallInfoIdx) -> i32 { todo!("phase-b: ci_nres") }
-    pub fn ci_nres_set(&mut self, _idx: CallInfoIdx, _n: i32) { todo!("phase-b: ci_nres_set") }
+    pub fn ci_nextraargs(&self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].nextra_args()
+    }
+    pub fn ci_nres(&self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].u2.value
+    }
+    pub fn ci_nres_set(&mut self, idx: CallInfoIdx, n: i32) {
+        self.call_info[idx.as_usize()].u2.value = n;
+    }
     pub fn ci_nresults(&self, idx: CallInfoIdx) -> i32 { self.call_info[idx.as_usize()].nresults as i32 }
     pub fn ci_prev_instruction(&self, _idx: CallInfoIdx) -> lua_types::opcode::Instruction { todo!("phase-b: ci_prev_instruction") }
     pub fn ci_prev2_instruction(&self, _idx: CallInfoIdx) -> lua_types::opcode::Instruction { todo!("phase-b: ci_prev2_instruction") }
     pub fn ci_skip_next_instruction(&mut self, _idx: CallInfoIdx) { todo!("phase-b: ci_skip_next_instruction") }
     pub fn ci_step_pc_back(&mut self, _idx: CallInfoIdx) { todo!("phase-b: ci_step_pc_back") }
     pub fn get_ci_pcrel(&mut self, _idx: CallInfoIdx) -> u32 { todo!("phase-b: get_ci_pcrel") }
-    pub fn get_ci_u2_funcidx(&mut self, _idx: CallInfoIdx) -> i32 { todo!("phase-b: get_ci_u2_funcidx") }
-    pub fn get_ci_u2_nres(&mut self, _idx: CallInfoIdx) -> i32 { todo!("phase-b: get_ci_u2_nres") }
-    pub fn get_ci_u2_nyield(&mut self, _idx: CallInfoIdx) -> i32 { todo!("phase-b: get_ci_u2_nyield") }
+    pub fn get_ci_u2_funcidx(&mut self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].u2.value
+    }
+    pub fn get_ci_u2_nres(&mut self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].u2.value
+    }
+    pub fn get_ci_u2_nyield(&mut self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].u2.value
+    }
     pub fn get_ci_vararg_info(&mut self, _idx: CallInfoIdx) -> (bool, i32, i32) { todo!("phase-b: get_ci_vararg_info") }
     pub fn get_ci_lua_proto_numparams(&mut self, _idx: CallInfoIdx) -> u8 { todo!("phase-b: get_ci_lua_proto_numparams") }
-    pub fn set_ci_u2_nres(&mut self, _idx: CallInfoIdx, _n: i32) { todo!("phase-b: set_ci_u2_nres") }
-    pub fn set_ci_u2_nyield(&mut self, _idx: CallInfoIdx, _n: i32) { todo!("phase-b: set_ci_u2_nyield") }
-    pub fn set_ci_transfer_info(&mut self, _idx: CallInfoIdx, _ftransfer: u16, _ntransfer: u16) { todo!("phase-b: set_ci_transfer_info") }
+    pub fn set_ci_u2_nres(&mut self, idx: CallInfoIdx, n: i32) {
+        self.call_info[idx.as_usize()].u2.value = n;
+    }
+    pub fn set_ci_u2_nyield(&mut self, idx: CallInfoIdx, n: i32) {
+        self.call_info[idx.as_usize()].u2.value = n;
+    }
+    pub fn set_ci_transfer_info(&mut self, idx: CallInfoIdx, ftransfer: u16, ntransfer: u16) {
+        let ci = &mut self.call_info[idx.as_usize()];
+        ci.u2.ftransfer = ftransfer;
+        ci.u2.ntransfer = ntransfer;
+    }
     pub fn shrink_ci(&mut self) { shrink_ci(self) }
     pub fn check_c_stack(&mut self) -> Result<(), LuaError> { check_c_stack(self) }
 
@@ -1294,16 +1389,32 @@ impl LuaState {
         self.set_at(ra, LuaValue::Function(LuaClosure::Lua(new_cl)));
         Ok(())
     }
-    pub fn new_tbc_upval(&mut self, _idx: StackIdx) -> Result<(), LuaError> { todo!("phase-b: new_tbc_upval") }
+    pub fn new_tbc_upval(&mut self, idx: StackIdx) -> Result<(), LuaError> {
+        crate::func::new_tbc_upval(self, idx)
+    }
 
     pub fn upvalue_get(&self, cl: &GcRef<LuaClosureLua>, n: usize) -> LuaValue {
         let uv = &cl.upvals[n];
-        match uv.as_ref() {
-            UpVal::Closed(v) => v.clone(),
-            UpVal::Open { thread_id: _, idx } => self.stack[idx.0 as usize].val.clone(),
+        match &*uv.slot() {
+            lua_types::UpValState::Closed(v) => v.clone(),
+            lua_types::UpValState::Open { thread_id: _, idx } => self.stack[idx.0 as usize].val.clone(),
         }
     }
-    pub fn upvalue_set<F, N>(&mut self, _funcindex: F, _n: N, _val: LuaValue) -> Result<(), LuaError> { todo!("phase-b: upvalue_set") }
+    pub fn upvalue_set(&mut self, cl: &GcRef<LuaClosureLua>, n: usize, val: LuaValue) -> Result<(), LuaError> {
+        let uv = cl.upvals[n].clone();
+        let slot_idx = match &*uv.slot() {
+            lua_types::UpValState::Open { idx, .. } => Some(*idx),
+            lua_types::UpValState::Closed(_) => None,
+        };
+        match slot_idx {
+            Some(idx) => self.set_at(idx, val),
+            None => {
+                let mut g = uv.state.borrow_mut();
+                *g = lua_types::UpValState::Closed(val);
+            }
+        }
+        Ok(())
+    }
 
     pub fn protected_call_raw(&mut self, func: StackIdx, nresults: i32, errfunc: StackIdx) -> Result<(), LuaError> {
         let ef = errfunc.0 as isize;
@@ -1334,17 +1445,37 @@ impl LuaState {
     pub fn protected_parser(&mut self, z: crate::zio::ZIO, name: &[u8], mode: Option<&[u8]>) -> LuaStatus {
         crate::do_::protected_parser(self, z, name, mode)
     }
-    pub fn do_call(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: do_call") }
-    pub fn do_call_no_yield(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: do_call_no_yield") }
+    pub fn do_call(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
+        crate::do_::call(self, func, nresults)
+    }
+    pub fn do_call_no_yield(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
+        crate::do_::callnoyield(self, func, nresults)
+    }
     pub fn call_no_yield(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
         crate::do_::callnoyield(self, func, nresults)
     }
-    pub fn call_at(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: call_at") }
+    pub fn call_at(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
+        crate::do_::call(self, func, nresults)
+    }
     pub fn precall(&mut self, func: StackIdx, nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> {
         crate::do_::precall(self, func, nresults)
     }
-    pub fn pretailcall<C, F, T, D>(&mut self, _ci: C, _func: F, _top: T, _delta: D) -> Result<i32, LuaError> { todo!("phase-b: pretailcall") }
-    pub fn poscall<N>(&mut self, _ci: CallInfoIdx, _nres: N) -> Result<(), LuaError> { todo!("phase-b: poscall") }
+    pub fn pretailcall(
+        &mut self,
+        ci: CallInfoIdx,
+        func: StackIdx,
+        narg1: i32,
+        delta: i32,
+    ) -> Result<i32, LuaError> {
+        crate::do_::pretailcall(self, ci, func, narg1, delta)
+    }
+    pub fn poscall<N: TryInto<i32>>(&mut self, ci: CallInfoIdx, nres: N) -> Result<(), LuaError>
+    where
+        <N as TryInto<i32>>::Error: std::fmt::Debug,
+    {
+        let n = nres.try_into().expect("poscall: nres out of i32 range");
+        crate::do_::poscall(self, ci, n)
+    }
     pub fn adjust_results(&mut self, nresults: i32) {
         const LUA_MULTRET: i32 = -1;
         if nresults <= LUA_MULTRET {
@@ -1362,19 +1493,73 @@ impl LuaState {
     ) -> Result<(), LuaError> {
         crate::tagmethods::adjust_varargs(self, nfixparams, ci, &cl.0.proto)
     }
-    pub fn get_varargs<C, R, N>(&mut self, _ci: C, _ra: R, _n: N) -> Result<i32, LuaError> { todo!("phase-b: get_varargs") }
+    pub fn get_varargs(
+        &mut self,
+        ci: CallInfoIdx,
+        ra: StackIdx,
+        n: i32,
+    ) -> Result<i32, LuaError> {
+        crate::tagmethods::get_varargs(self, ci, ra, n)?;
+        Ok(0)
+    }
 
-    pub fn close_upvals<L>(&mut self, _level: L) -> Result<(), LuaError> { todo!("phase-b: close_upvals") }
-    pub fn close_upvals_status<L, S>(&mut self, _level: L, _status: S) -> Result<(), LuaError> { todo!("phase-b: close_upvals_status") }
-    pub fn close_upvals_from_base<B>(&mut self, _base: B) -> Result<(), LuaError> { todo!("phase-b: close_upvals_from_base") }
+    pub fn close_upvals(&mut self, level: StackIdx) -> Result<(), LuaError> {
+        crate::func::close_upval(self, level);
+        Ok(())
+    }
+    pub fn close_upvals_status(&mut self, level: StackIdx, _status: i32) -> Result<(), LuaError> {
+        crate::func::close_upval(self, level);
+        Ok(())
+    }
+    pub fn close_upvals_from_base(&mut self, ci: CallInfoIdx) -> Result<(), LuaError> {
+        let base = self.ci_base(ci);
+        crate::func::close_upval(self, base);
+        Ok(())
+    }
 
     pub fn arith_op(&mut self, _op: i32, _p1: &LuaValue, _p2: &LuaValue) -> Result<LuaValue, LuaError> { todo!("phase-b: arith_op") }
-    pub fn concat(&mut self, _n: i32) -> Result<(), LuaError> { todo!("phase-b: concat") }
-    pub fn less_than(&mut self, _l: &LuaValue, _r: &LuaValue) -> Result<bool, LuaError> { todo!("phase-b: less_than") }
-    pub fn less_equal(&mut self, _l: &LuaValue, _r: &LuaValue) -> Result<bool, LuaError> { todo!("phase-b: less_equal") }
-    pub fn equal_obj(&self, _ctx: Option<&LuaValue>, _l: &LuaValue, _r: &LuaValue) -> bool { todo!("phase-b: equal_obj") }
-    pub fn equal_obj_with_tm(&mut self, _l: &LuaValue, _r: &LuaValue) -> Result<bool, LuaError> { todo!("phase-b: equal_obj_with_tm") }
-    pub fn obj_len(&mut self, _v: &LuaValue) -> Result<LuaValue, LuaError> { todo!("phase-b: obj_len") }
+    pub fn concat(&mut self, n: i32) -> Result<(), LuaError> {
+        crate::vm::concat(self, n)
+    }
+    pub fn less_than(&mut self, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
+        crate::vm::less_than(self, l, r)
+    }
+    pub fn less_equal(&mut self, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
+        crate::vm::less_equal(self, l, r)
+    }
+    pub fn equal_obj(&self, _ctx: Option<&LuaValue>, l: &LuaValue, r: &LuaValue) -> bool {
+        crate::vm::equal_obj(None, l, r).unwrap_or(false)
+    }
+    pub fn equal_obj_with_tm(&mut self, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
+        crate::vm::equal_obj(Some(self), l, r)
+    }
+    pub fn obj_len(&mut self, v: &LuaValue) -> Result<LuaValue, LuaError> {
+        match v {
+            LuaValue::Table(_) => {
+                let mt = self.table_metatable(v);
+                let tm = self.fast_tm_table(mt.as_ref(), TagMethod::Len);
+                if matches!(tm, LuaValue::Nil) {
+                    let n = self.table_length(v)?;
+                    return Ok(LuaValue::Int(n));
+                }
+                self.push(LuaValue::Nil);
+                let slot = StackIdx(self.top.0 - 1);
+                crate::tagmethods::call_tm_res(self, tm, v.clone(), v.clone(), slot)?;
+                Ok(self.pop())
+            }
+            LuaValue::Str(s) => Ok(LuaValue::Int(s.len() as i64)),
+            other => {
+                let tm = crate::tagmethods::get_tm_by_obj(self, other, crate::tagmethods::TagMethod::Len);
+                if matches!(tm, LuaValue::Nil) {
+                    return Err(LuaError::type_error(other, "get length of"));
+                }
+                self.push(LuaValue::Nil);
+                let slot = StackIdx(self.top.0 - 1);
+                crate::tagmethods::call_tm_res(self, tm, v.clone(), v.clone(), slot)?;
+                Ok(self.pop())
+            }
+        }
+    }
     pub fn obj_to_string(&mut self, _idx_or_val: i32) -> Result<GcRef<LuaString>, LuaError> { todo!("phase-b: obj_to_string") }
     pub fn coerce_to_string(&mut self, idx: StackIdx) -> Result<GcRef<LuaString>, LuaError> {
         let val = self.get_at(idx);
@@ -1456,7 +1641,25 @@ impl LuaState {
         // crates/lua-vm/src/table.rs lights up in Phase D.
         Ok(())
     }
-    pub fn table_length<T>(&mut self, _t: T) -> Result<i64, LuaError> { todo!("phase-b: table_length") }
+    pub fn table_length(&mut self, t: &LuaValue) -> Result<i64, LuaError> {
+        let LuaValue::Table(tbl) = t else {
+            return Err(LuaError::type_error(t, "get length of"));
+        };
+        // PORT NOTE: C's `luaH_getn` returns a boundary i such that t[i] is
+        // present and t[i+1] is absent (or 0 if t[1] is absent), exploiting the
+        // hybrid array+hash layout. Phase B's LuaTable is a flat Vec<(K,V)> with
+        // no array part, so we linearly probe integer keys starting at 1. The
+        // rich impl in crates/lua-vm/src/table.rs lights up in Phase D.
+        // PERF(port): O(n) linear scan with O(n) lookups → O(n²); Phase D fixes.
+        let mut i: i64 = 1;
+        loop {
+            let v = tbl.get_int(i);
+            if matches!(v, LuaValue::Nil) {
+                return Ok(i - 1);
+            }
+            i += 1;
+        }
+    }
     pub fn table_metatable(&mut self, v: &LuaValue) -> Option<GcRef<LuaTable>> {
         match v {
             LuaValue::Table(t) => t.metatable(),
@@ -1480,14 +1683,39 @@ impl LuaState {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::try_bin_tm(self, p1, p2, res, event)
     }
-    pub fn try_bin_i_tm<T, U, V, W, X>(&mut self, _p1: T, _imm: U, _flip: V, _res: W, _tm: X) -> Result<(), LuaError> { todo!("phase-b: try_bin_i_tm") }
-    pub fn try_bin_assoc_tm<T, U, V, W, X>(&mut self, _p1: T, _p2: U, _flip: V, _res: W, _tm: X) -> Result<(), LuaError> { todo!("phase-b: try_bin_assoc_tm") }
-    pub fn try_concat_tm<T, U>(&mut self, _p1: T, _p2: U) -> Result<Option<LuaValue>, LuaError> { todo!("phase-b: try_concat_tm") }
-    pub fn call_tm<T, U, V, W>(&mut self, _f: T, _p1: U, _p2: V, _result: W) -> Result<(), LuaError> { todo!("phase-b: call_tm") }
-    pub fn call_tm_res<T, U, V, W>(&mut self, _f: T, _p1: U, _p2: V, _result: W) -> Result<LuaValue, LuaError> { todo!("phase-b: call_tm_res") }
-    pub fn call_tm_res_bool<T, U, V>(&mut self, _f: T, _p1: U, _p2: V) -> Result<bool, LuaError> { todo!("phase-b: call_tm_res_bool") }
-    pub fn call_order_tm<T, U, V>(&mut self, _p1: T, _p2: U, _tm: V) -> Result<bool, LuaError> { todo!("phase-b: call_order_tm") }
-    pub fn call_order_i_tm<T, U, V, W, X>(&mut self, _p1: T, _p2: U, _inv: V, _isf: W, _tm: X) -> Result<bool, LuaError> { todo!("phase-b: call_order_i_tm") }
+    pub fn try_bin_i_tm(&mut self, p1: &LuaValue, imm: i64, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+        let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
+        crate::tagmethods::try_bini_tm(self, p1, imm, flip, res, event)
+    }
+    pub fn try_bin_assoc_tm(&mut self, p1: &LuaValue, p2: &LuaValue, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+        let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
+        crate::tagmethods::try_bin_assoc_tm(self, p1, p2, flip, res, event)
+    }
+    pub fn try_concat_tm(&mut self, _p1: &LuaValue, _p2: &LuaValue) -> Result<(), LuaError> {
+        crate::tagmethods::try_concat_tm(self)
+    }
+    pub fn call_tm(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue, p3: &LuaValue) -> Result<(), LuaError> {
+        crate::tagmethods::call_tm(self, f, p1.clone(), p2.clone(), p3.clone())
+    }
+    pub fn call_tm_res(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue, res: StackIdx) -> Result<(), LuaError> {
+        crate::tagmethods::call_tm_res(self, f, p1.clone(), p2.clone(), res)
+    }
+    pub fn call_tm_res_bool(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue) -> Result<bool, LuaError> {
+        let res = self.top_idx();
+        self.push(LuaValue::Nil);
+        crate::tagmethods::call_tm_res(self, f, p1.clone(), p2.clone(), res)?;
+        let result = self.get_at(res).clone();
+        self.pop();
+        Ok(!matches!(result, LuaValue::Nil | LuaValue::Bool(false)))
+    }
+    pub fn call_order_tm(&mut self, p1: &LuaValue, p2: &LuaValue, tm: lua_types::tagmethod::TagMethod) -> Result<bool, LuaError> {
+        let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
+        crate::tagmethods::call_order_tm(self, p1, p2, event)
+    }
+    pub fn call_order_i_tm(&mut self, p1: &LuaValue, v2: i64, flip: bool, isfloat: bool, tm: lua_types::tagmethod::TagMethod) -> Result<bool, LuaError> {
+        let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
+        crate::tagmethods::call_orderi_tm(self, p1, v2 as i32, flip, isfloat, event)
+    }
 
     pub fn proto_code(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
         cl.proto.code[pc as usize]
@@ -1979,7 +2207,7 @@ fn lua_open(state: &mut LuaState) -> Result<(), LuaError> {
     // C: luaS_init(L);
     crate::string::init(state)?;
     // C: luaT_init(L);
-    // TODO(port): crate::tagmethods::init(state)? — ltm.c → tagmethods.rs, not yet written
+    crate::tagmethods::init(state)?;
     // C: luaX_init(L);
     // TODO(port): luaX_init lives in the lua-lex crate; cross-crate call needed in Phase B
     // C: g->gcstp = 0; /* allow gc */

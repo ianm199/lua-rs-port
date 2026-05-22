@@ -233,8 +233,6 @@ Process:
 
 Constraints:
 
-- Edit ONLY \`$func\` and immediate-neighbor helpers if needed.
-- Do NOT modify other todo!() bodies, even if you see them nearby.
 - Do NOT modify lua-types or harness/*.
 - Keep the SAFETY budget — no new unsafe blocks without explicit need.
 - Match the C-source semantics. Where the C uses raw pointers or
@@ -242,11 +240,41 @@ Constraints:
   already established by neighboring functions (look at sibling
   functions on LuaState for style cues).
 
-Report (under 150 words):
+SCOPE EXPANSION (encouraged — free lunch):
 
-- Which file you modified and which line(s).
-- Brief summary of what \`$func\` now does.
-- Any todo!() calls inside your new impl that will surface next.
+After implementing \`$func\` correctly, scan the SAME impl block / SAME
+file for other todo!() bodies that share a family with \`$func\`.
+Implement up to 15 additional family members in the same session.
+Families to watch for:
+  - cg_posfix_fold arms: Add, Sub, Mul, Div, Mod, Pow, IDiv, Lt, Le,
+    Eq, BAnd, BOr, BXor, Shl, Shr, Or, And, Concat
+  - ci_* accessors on CallInfo (ci_savedpc, ci_func, ci_base, ci_top, …)
+  - push_* helpers (push_bytes, push_string, push_fstring, push_value, …)
+  - check_arg_* validators (check_arg_integer, check_arg_string, …)
+  - to_* converters (to_lua_string, to_integer_x, to_number_x, …)
+  - is_* predicates (is_integer, is_number, is_none_or_nil, …)
+  - LuaStateStubExt impl-block methods of the same shape
+
+Each family member must be a faithful translation of its C equivalent —
+do NOT stub-in unimplemented!() or fake return values just to pad the
+count. If you can't faithfully implement a sibling, skip it; the loop
+will catch it next iteration.
+
+Each family member counts as a real implementation: include it in your
+report. The motivation: one agent dispatch with N family members
+costs the same wall-clock as 1, vs N separate dispatches each paying
+~30s build + ~60s agent-startup overhead.
+
+Hard limits: stay in the SAME file as \`$func\`. Do NOT touch lua-types
+or harness/. Do NOT recurse into bodies whose todo!() prefixes differ
+from \`$func\`'s (those are a different family — leave them to the loop).
+
+Report (under 250 words):
+
+- File and line of \`$func\`.
+- One-line summary of what \`$func\` now does.
+- List of FAMILY MEMBERS you ALSO implemented in this session (name + one-line each).
+- Any todo!() calls inside your new impls that will surface next.
 - Whether cargo build -p lua-cli is green after your edits."
 
     export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
@@ -261,7 +289,7 @@ Report (under 150 words):
         --output-format stream-json \
         --include-partial-messages \
         --verbose \
-        --max-budget-usd 10.00 \
+        --max-budget-usd 20.00 \
         "$prompt" \
         2>>"$OUT_DIR/iter-$ITER-$func.stderr" \
         | tee "$transcript" >/dev/null

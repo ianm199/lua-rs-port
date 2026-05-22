@@ -282,7 +282,7 @@ pub(crate) fn tonumber_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     if matches!(state.type_at(2), LuaType::None | LuaType::Nil) {
         // C: if (lua_type(L, 1) == LUA_TNUMBER) { lua_settop(L, 1); return 1; }
         if state.type_at(1) == LuaType::Number {
-            state.set_top(1);
+            lua_vm::api::set_top(state, 1)?;
             return Ok(1);
         }
         // C: const char *s = lua_tolstring(L, 1, &l);
@@ -335,7 +335,7 @@ pub(crate) fn error_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: int level = (int)luaL_optinteger(L, 2, 1);
     let level = state.opt_arg_integer(2, 1)? as i32;
     // C: lua_settop(L, 1);
-    state.set_top(1);
+    lua_vm::api::set_top(state, 1)?;
     // C: if (lua_type(L, 1) == LUA_TSTRING && level > 0)
     if state.type_at(1) == LuaType::String && level > 0 {
         // C: luaL_where(L, level); lua_pushvalue(L, 1); lua_concat(L, 2);
@@ -392,7 +392,7 @@ pub(crate) fn setmetatable_fn(state: &mut LuaState) -> Result<usize, LuaError> {
         )));
     }
     // C: lua_settop(L, 2); lua_setmetatable(L, 1);
-    state.set_top(2);
+    lua_vm::api::set_top(state, 2)?;
     state.set_metatable(1)?;
     Ok(1)
 }
@@ -441,7 +441,7 @@ pub(crate) fn rawget_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_type(1, LuaType::Table)?;
     state.check_arg_any(2)?;
     // C: lua_settop(L, 2); lua_rawget(L, 1);
-    state.set_top(2);
+    lua_vm::api::set_top(state, 2)?;
     state.raw_get(1)?;
     Ok(1)
 }
@@ -457,7 +457,7 @@ pub(crate) fn rawset_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_any(2)?;
     state.check_arg_any(3)?;
     // C: lua_settop(L, 3); lua_rawset(L, 1);
-    state.set_top(3);
+    lua_vm::api::set_top(state, 3)?;
     state.raw_set(1)?;
     Ok(1)
 }
@@ -605,7 +605,7 @@ pub(crate) fn next_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: luaL_checktype(L, 1, LUA_TTABLE);
     state.check_arg_type(1, LuaType::Table)?;
     // C: lua_settop(L, 2);  /* create a 2nd argument if there isn't one */
-    state.set_top(2);
+    lua_vm::api::set_top(state, 2)?;
     // C: if (lua_next(L, 1)) return 2; else { lua_pushnil(L); return 1; }
     if state.table_next(1)? {
         Ok(2)
@@ -780,7 +780,7 @@ pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
             .opt_arg_string_bytes(2)
             .unwrap_or_else(|_| b"=(load)".to_vec());
         state.check_arg_type(1, LuaType::Function)?;
-        state.set_top(RESERVED_SLOT);
+        lua_vm::api::set_top(state, RESERVED_SLOT)?;
         // TODO(port): generic_reader cannot be passed directly due to self-referential
         // &mut borrow — see generic_reader's PORT NOTE. Phase B resolves this.
         state.load_with_reader(generic_reader, &chunkname, &mode)?
@@ -803,7 +803,7 @@ pub(crate) fn dofile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: const char *fname = luaL_optstring(L, 1, NULL);
     let fname: Option<Vec<u8>> = state.opt_arg_string_bytes(1).ok();
     // C: lua_settop(L, 1);
-    state.set_top(1);
+    lua_vm::api::set_top(state, 1)?;
     // C: if (l_unlikely(luaL_loadfile(L, fname) != LUA_OK)) return lua_error(L);
     // TODO(port): File I/O must go through state's IO abstraction; std::fs banned outside lua-cli.
     if !state.load_file(fname.as_deref())? {
@@ -832,7 +832,7 @@ pub(crate) fn assert_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.remove(1);
     // C: lua_pushliteral(L, "assertion failed!"); lua_settop(L, 1);
     state.push_string(b"assertion failed!")?;
-    state.set_top(1);
+    lua_vm::api::set_top(state, 1)?;
     // C: return luaB_error(L);
     error_fn(state)
 }

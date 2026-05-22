@@ -2119,13 +2119,15 @@ pub fn createmetatable(state: &mut LuaState) -> Result<(), LuaError> {
     state.set_funcs(STRING_META_METHODS, 0)?;
     // C: lua_pushliteral(L, ""); lua_pushvalue(L, -2); lua_setmetatable(L, -2);
     state.push_string(b"")?;
-    let mt = state.get_at(-2).clone();
+    let mt_idx = state.top_idx() - 2;
+    let mt = state.get_at(mt_idx);
     state.push(mt);
     state.set_metatable(-2)?;
     // C: lua_pop(L, 1);
     state.pop_n(1);
     // C: lua_pushvalue(L, -2); lua_setfield(L, -2, "__index");
-    let strlib = state.get_at(-2).clone();
+    let strlib_idx = state.top_idx() - 2;
+    let strlib = state.get_at(strlib_idx);
     state.push(strlib);
     state.set_field(-2, b"__index")?;
     // C: lua_pop(L, 1);

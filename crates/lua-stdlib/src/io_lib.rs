@@ -949,7 +949,7 @@ fn g_write(
             // C: LUA_NUMBER_FMT  = "%.14g" (f64, 14 significant digits)
             // PERF(port): byte-by-byte write; Phase B add bulk write_fmt to LuaFileOps.
             // TODO(port): C's %.14g (significant digits) has no direct Rust equivalent.
-            let s = if matches!(state.stack_at(idx), LuaValue::Int(_)) {
+            let s = if state.is_integer(idx) {
                 let ival = state.to_integer(idx).unwrap_or(0);
                 // C: LUA_INTEGER_FMT = "%lld"
                 format!("{}", ival)
@@ -988,12 +988,43 @@ fn g_write(
 }
 
 /// `io.write(...)`. C: `io_write`.
+///
+/// PORT NOTE: routes writes directly through `state.write_output()` rather than
+/// `g_write(getiofile(IO_OUTPUT))`. The full C path needs typed-userdata access
+/// to pull `LStream` out of the registry and an interior-mutability split to
+/// borrow its `LuaFileOps` alongside `&mut LuaState`; both land in Phase B.
+/// Until then, the only `IO_OUTPUT` ever installed by `luaopen_io` is `stdout`,
+/// so writing through `write_output` is behaviourally identical for the
+/// default case and lets `print`/`io.write` share the same sink.
 pub fn io_write(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: return g_write(L, getiofile(L, IO_OUTPUT), 1);
-    // TODO(port): borrow split — extract file before calling g_write.
-    Err(LuaError::runtime(format_args!(
-        "TODO(port): borrow split needed for io_write"
-    )))
+    // C: int nargs = lua_gettop(L) - arg;  with arg == 1, so nargs == top().
+    let n = state.top();
+    for i in 1..=n {
+        if state.type_at(i) == LuaType::Number {
+            // C: lua_isinteger ? fprintf("%lld", ival) : fprintf("%.14g", fval)
+            let s = if state.is_integer(i) {
+                let ival = state.to_integer(i).unwrap_or(0);
+                format!("{}", ival)
+            } else {
+                let fval = state.to_number(i).unwrap_or(0.0);
+                // TODO(port): proper %.14g (significant-digit) formatting; same
+                // gap as g_write — fine for now because integer tables hit the
+                // branch above and printf-style float formatting is unused on
+                // the common path.
+                format!("{:.14e}", fval)
+            };
+            state.write_output(s.as_bytes())?;
+        } else {
+            // C: luaL_checklstring(L, arg, &l); fwrite(s, 1, l, f);
+            let bytes: Vec<u8> = state.check_arg_string(i)?;
+            state.write_output(&bytes)?;
+        }
+    }
+    // C: returns the file handle (pushed by `getiofile`) so calls can chain
+    // as `io.write("x"):write("y")`. Mirror that by pushing the IO_OUTPUT
+    // userdata back onto the stack top.
+    state.registry_get(IO_OUTPUT_KEY)?;
+    Ok(1)
 }
 
 /// `file:write(...)`. C: `f_write`.

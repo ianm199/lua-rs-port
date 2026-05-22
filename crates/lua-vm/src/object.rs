@@ -619,6 +619,63 @@ pub fn utf8_esc(buff: &mut [u8; UTF8_BUF_SZ], x: u32) -> usize {
 // Number → string conversion
 // ──────────────────────────────────────────────────────────────────────────
 
+/// Formats `f` as C's `printf("%.14g", f)` would, returning the bytes.
+///
+/// PORT NOTE: Rust has no built-in `%g` format. This replicates the C99
+/// `%g` algorithm with precision 14: pick scientific or fixed-point based
+/// on the value's exponent, strip trailing zeros, normalize the exponent
+/// to `e[+-]NN` with at least two digits (matching C's output).
+fn fmt_g14(f: f64) -> Vec<u8> {
+    if f.is_nan() {
+        return b"nan".to_vec();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { b"inf".to_vec() } else { b"-inf".to_vec() };
+    }
+    if f == 0.0 {
+        return if f.is_sign_negative() { b"-0".to_vec() } else { b"0".to_vec() };
+    }
+
+    let precision: i32 = 14;
+    let abs = f.abs();
+    let exp = abs.log10().floor() as i32;
+
+    let s = if exp < -4 || exp >= precision {
+        let mantissa_decimals = (precision - 1) as usize;
+        let raw = format!("{:.*e}", mantissa_decimals, f);
+        let e_idx = raw.find('e').expect("Rust scientific format always contains 'e'");
+        let mantissa = strip_fixed_trailing_zeros(&raw[..e_idx]);
+        let exp_num: i32 = raw[e_idx + 1..].parse().expect("Rust formats integer exponents");
+        let sign = if exp_num < 0 { '-' } else { '+' };
+        let abs_exp = exp_num.abs();
+        if abs_exp < 10 {
+            format!("{}e{}0{}", mantissa, sign, abs_exp)
+        } else {
+            format!("{}e{}{}", mantissa, sign, abs_exp)
+        }
+    } else {
+        let decimals = (precision - 1 - exp).max(0) as usize;
+        let raw = format!("{:.*}", decimals, f);
+        strip_fixed_trailing_zeros(&raw)
+    };
+
+    s.into_bytes()
+}
+
+fn strip_fixed_trailing_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    while out.ends_with('0') {
+        out.pop();
+    }
+    if out.ends_with('.') {
+        out.pop();
+    }
+    out
+}
+
 /// Formats the numeric `LuaValue` `val` (must be Int or Float) into a byte
 /// buffer and returns it.
 ///
@@ -640,22 +697,8 @@ fn number_to_str_buf(val: &LuaValue) -> Vec<u8> {
             s.into_bytes()
         }
         LuaValue::Float(f) => {
-            // C: len = lua_number2str(buff, MAXNUMBER2STR, fltvalue(obj));
-            // lua_number2str → l_sprintf with LUAI_NUMFORMAT ("%.14g")
-            // PORT NOTE: Rust has no %g format; using {:.14e} as a close
-            // approximation.  Phase B should use a proper %.14g implementation
-            // (e.g., the `ryu` or `dragonbox` crate or a hand-rolled %g).
-            // TODO(port): implement exact %.14g float formatting for compatibility.
-            let s = format!("{:.14e}", f);
-            let mut bytes = s.into_bytes();
+            let mut bytes = fmt_g14(*f);
 
-            // C: if (buff[strspn(buff, "-0123456789")] == '\0') {
-            //        buff[len++] = lua_getlocaledecpoint();
-            //        buff[len++] = '0';  }
-            // If the result looks like a plain integer (no decimal point or
-            // exponent marker), append ".0" to distinguish it from an integer.
-            // PORT NOTE: lua_getlocaledecpoint() returns the locale decimal
-            // separator; Rust has no locale, so we always append b'.'.
             let looks_like_int = bytes.iter().all(|&b| b == b'-' || b.is_ascii_digit());
             if looks_like_int {
                 bytes.push(b'.');

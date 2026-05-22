@@ -53,20 +53,32 @@ fn is_upvalue(idx: i32) -> bool {
 }
 
 // C: #define isvalid(L, o)  (!ttisnil(o) || o != &G(L)->nilvalue)
-// PORT NOTE: In Rust there is no nilvalue pointer sentinel; a value is valid
-// when it is a real stack/upvalue slot (not the canonical nil placeholder).
-// We encode "invalid" as a special sentinel — here a unit Option.
+// PORT NOTE: In C, the only "invalid" TValue is the global nilvalue singleton
+// pointer returned by index2value when the index is out of range. In Rust we
+// cannot do pointer-equality on a singleton, so validity is decided by whether
+// the index resolves to a real stack/upvalue slot — see `is_valid_index`.
 #[inline]
-fn is_valid(val: &LuaValue) -> bool {
-    // In C, the only "invalid" TValue is the global nilvalue singleton.
-    // In Rust the registry pseudo-index returns LuaValue::Nil when the index
-    // is out of range; callers that must distinguish this use is_valid_slot.
-    // For Phase A we treat all values as valid; the subtlety only matters for
-    // pseudo-index writes.
-    // TODO(port): distinguish G(L)->nilvalue sentinel from ordinary Nil for
-    // exact parity with C's isvalid() check. For now, Nil returned from an
-    // out-of-range index is treated as invalid.
-    !matches!(val, LuaValue::Nil)
+fn is_valid_index(state: &LuaState, idx: i32) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let ci = state.current_call_info();
+    if idx > 0 {
+        let slot = ci.func + idx;
+        slot.0 < state.top_idx().0
+    } else if !is_pseudo(idx) {
+        (-idx) as u32 <= state.top_idx().0.saturating_sub(ci.func.0 + 1)
+    } else if idx == LUA_REGISTRYINDEX {
+        true
+    } else {
+        let upval_n = (LUA_REGISTRYINDEX - idx) as usize;
+        let func_val = state.get_at(ci.func);
+        if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
+            upval_n >= 1 && upval_n <= ccl.upvalues.len()
+        } else {
+            false
+        }
+    }
 }
 
 // ── index helpers ─────────────────────────────────────────────────────────────
@@ -343,6 +355,30 @@ impl LuaState {
         Ok(())
     }
 
+    pub fn insert(&mut self, idx: i32) -> Result<(), LuaError> {
+        rotate(self, idx, 1);
+        Ok(())
+    }
+
+    /// Inherent `length_at` mirroring `luaL_len` from `lauxlib.c`: push the
+    /// value's length onto the stack (honouring `__len`), pop it as an
+    /// integer, and error if the result is not an integer. Defined on
+    /// `LuaState` so it overrides the `LuaStateStubExt::length_at` trait
+    /// default `todo!()`.
+    pub fn length_at(&mut self, idx: i32) -> Result<i64, LuaError> {
+        len(self, idx)?;
+        let l = match to_integer_x(self, -1) {
+            Some(n) => n,
+            None => {
+                return Err(LuaError::runtime(format_args!(
+                    "object length is not an integer"
+                )));
+            }
+        };
+        self.pop_n(1);
+        Ok(l)
+    }
+
     /// Write `msg` bytes verbatim to standard output. Mirrors the C macro
     /// `lua_writestring(s, l) = fwrite(s, 1, l, stdout)` from `lauxlib.h`,
     /// used by `print` and friends. A failed write is propagated as a
@@ -422,6 +458,146 @@ impl LuaState {
         get_top(self)
     }
 
+    /// C: `lua_gettop(L)` — same as [`Self::top`], named to match the
+    /// `LuaStateStubExt::get_top` trait method. Inherent method shadows the
+    /// trait default so the `todo!("phase-b-reconcile: get_top")` shim never
+    /// fires.
+    pub fn get_top(&mut self) -> i32 {
+        get_top(self)
+    }
+
+    /// C: `lua_type(L, idx)` — returns the `LuaType` tag of the value at
+    /// stack index `idx`, or `LuaType::None` if `idx` falls outside the
+    /// active call frame. Inherent method shadows the
+    /// `LuaStateStubExt::type_at` trait default so the `todo!()` shim
+    /// never fires.
+    pub fn type_at(&mut self, idx: i32) -> LuaType {
+        lua_type_at(self, idx)
+    }
+
+    /// C: `luaL_checkany(L, arg)` from lauxlib.c — raises a `bad argument
+    /// #N (value expected)` error if the slot at `arg` is `LUA_TNONE`
+    /// (i.e. beyond the active call frame's top). Otherwise a no-op.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::check_arg_any`
+    /// trait default so the `todo!()` shim never fires.
+    pub fn check_arg_any(&mut self, arg: i32) -> Result<(), LuaError> {
+        if lua_type_at(self, arg) == LuaType::None {
+            return Err(LuaError::arg_error(arg, "value expected"));
+        }
+        Ok(())
+    }
+
+    /// C: `luaL_checklstring(L, arg, NULL)` from lauxlib.c — converts the slot
+    /// at `arg` to a string via `lua_tolstring` (which coerces numbers to
+    /// their string form) and returns the bytes. Raises
+    /// `bad argument #N (string expected, got <type>)` if the value is not a
+    /// string and not number-coercible.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::check_arg_string`
+    /// trait default so the `todo!()` shim never fires. Uses the free `to_lua_string`
+    /// helper here rather than `auxlib::check_lstring`, which routes through
+    /// `state.to_lua_string` / `state.type_name` — both still trait stubs.
+    pub fn check_arg_string(&mut self, arg: i32) -> Result<Vec<u8>, LuaError> {
+        match to_lua_string(self, arg)? {
+            Some(s) => Ok(s.as_bytes().to_vec()),
+            None => {
+                let got = index_to_value(self, arg);
+                Err(LuaError::type_arg_error(arg, "string", &got))
+            }
+        }
+    }
+
+    /// C: `luaL_checkinteger(L, arg)` from lauxlib.c — converts the slot at
+    /// `arg` to a `lua_Integer` (i64) via `lua_tointegerx` (which accepts
+    /// ints, floats with exact integer value, and string-form integers).
+    /// Raises `bad argument #N (number has no integer representation)` if
+    /// the value is a number but not representable as an integer, or
+    /// `bad argument #N (number expected, got <type>)` otherwise.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::check_arg_integer`
+    /// trait default so the `todo!()` shim never fires. Uses the free
+    /// `to_integer_x` / `is_number` helpers in this file rather than
+    /// `auxlib::check_integer`, which routes through `state.to_integer_x`
+    /// and `state.type_name` — both still trait stubs.
+    pub fn check_arg_integer(&mut self, arg: i32) -> Result<i64, LuaError> {
+        match to_integer_x(self, arg) {
+            Some(d) => Ok(d),
+            None => {
+                if is_number(self, arg) {
+                    Err(LuaError::arg_error(
+                        arg,
+                        "number has no integer representation",
+                    ))
+                } else {
+                    let got = index_to_value(self, arg);
+                    Err(LuaError::type_arg_error(arg, "number", &got))
+                }
+            }
+        }
+    }
+
+    /// C: `luaL_checknumber(L, arg)` from lauxlib.c — converts the slot at
+    /// `arg` to an `f64` via `lua_tonumberx` (which accepts ints, floats,
+    /// and number-shaped strings) and raises `bad argument #N (number
+    /// expected, got <type>)` if the value is not number-coercible.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::check_number`
+    /// trait default so the `todo!()` shim never fires. Uses the free
+    /// `to_number_x` helper here rather than `auxlib::check_number`, which
+    /// routes through `state.to_number_x` and `state.type_name` — both still
+    /// trait stubs.
+    pub fn check_number(&mut self, arg: i32) -> Result<f64, LuaError> {
+        match to_number_x(self, arg) {
+            Some(d) => Ok(d),
+            None => {
+                let got = index_to_value(self, arg);
+                Err(LuaError::type_arg_error(arg, "number", &got))
+            }
+        }
+    }
+
+    /// C: `luaL_optinteger(L, arg, def)` from lauxlib.c — if the slot at
+    /// `arg` is absent (`LUA_TNONE`) or `nil`, return `def`; otherwise
+    /// convert it to an integer (with the same string-to-number coercion
+    /// `lua_tointegerx` applies) and raise on failure.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::opt_arg_integer`
+    /// trait default so the `todo!()` shim never fires. Implemented with the
+    /// free-function helpers in this file rather than `auxlib::opt_integer`
+    /// because the latter routes through `state.is_none_or_nil` and
+    /// `state.to_integer_x`, which are themselves stubbed.
+    pub fn opt_arg_integer(&mut self, arg: i32, def: i64) -> Result<i64, LuaError> {
+        match lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(def),
+            _ => match to_integer_x(self, arg) {
+                Some(d) => Ok(d),
+                None => {
+                    if is_number(self, arg) {
+                        Err(LuaError::arg_error(
+                            arg,
+                            "number has no integer representation",
+                        ))
+                    } else {
+                        let got = index_to_value(self, arg);
+                        Err(LuaError::type_arg_error(arg, "number", &got))
+                    }
+                }
+            },
+        }
+    }
+
+    /// C: `lua_pcall(L, nargs, nresults, msgh)` — a convenience wrapper over
+    /// `lua_pcallk` with no continuation. Defers to the existing `pcall_k`
+    /// free function, which routes through `protected_call_raw` and
+    /// surfaces any runtime / syntax error as `Err(LuaError::Runtime|Syntax)`.
+    ///
+    /// Inherent method on LuaState shadows the `LuaStateStubExt::protected_call`
+    /// trait default so the `todo!()` shim never fires.
+    pub fn protected_call(&mut self, nargs: i32, nresults: i32, msgh: i32) -> Result<(), LuaError> {
+        pcall_k(self, nargs, nresults, msgh, 0, None).map(|_| ())
+    }
+
     pub fn push_string(&mut self, s: &[u8]) -> Result<(), LuaError> {
         push_lstring(self, s)?;
         Ok(())
@@ -437,6 +613,10 @@ impl LuaState {
 
     pub fn raw_seti(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
         raw_set_i(self, idx, n)
+    }
+
+    pub fn table_set_i(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
+        set_i(self, idx, n)
     }
 
     pub fn create_table(&mut self, narr: i32, nrec: i32) -> Result<(), LuaError> {
@@ -607,12 +787,10 @@ impl LuaState {
 // C: LUA_API int lua_type (lua_State *L, int idx)
 pub fn lua_type_at(state: &LuaState, idx: i32) -> LuaType {
     // C: return (isvalid(L, o) ? ttype(o) : LUA_TNONE);
-    let o = index_to_value(state, idx);
-    if is_valid(&o) {
-        o.base_type()
-    } else {
-        LuaType::None
+    if !is_valid_index(state, idx) {
+        return LuaType::None;
     }
+    index_to_value(state, idx).base_type()
 }
 
 // C: LUA_API const char *lua_typename (lua_State *L, int t)
@@ -659,13 +837,12 @@ pub fn is_userdata(state: &LuaState, idx: i32) -> bool {
 // C: LUA_API int lua_rawequal (lua_State *L, int index1, int index2)
 pub fn raw_equal(state: &LuaState, index1: i32, index2: i32) -> bool {
     // C: return (isvalid(L, o1) && isvalid(L, o2)) ? luaV_rawequalobj(o1, o2) : 0;
+    if !is_valid_index(state, index1) || !is_valid_index(state, index2) {
+        return false;
+    }
     let o1 = index_to_value(state, index1);
     let o2 = index_to_value(state, index2);
-    if is_valid(&o1) && is_valid(&o2) {
-        state.equal_obj(None, &o1, &o2)
-    } else {
-        false
-    }
+    state.equal_obj(None, &o1, &o2)
 }
 
 // C: LUA_API void lua_arith (lua_State *L, int op)
@@ -696,9 +873,10 @@ pub fn arith(state: &mut LuaState, op: i32) -> Result<(), LuaError> {
 // C: LUA_API int lua_compare (lua_State *L, int index1, int index2, int op)
 pub fn compare(state: &mut LuaState, index1: i32, index2: i32, op: i32) -> Result<bool, LuaError> {
     // C: may call tag method (hence lua_lock)
+    let valid = is_valid_index(state, index1) && is_valid_index(state, index2);
     let o1 = index_to_value(state, index1);
     let o2 = index_to_value(state, index2);
-    if is_valid(&o1) && is_valid(&o2) {
+    if valid {
         // C: LUA_OPEQ=0, LUA_OPLT=1, LUA_OPLE=2
         match op {
             0 => Ok(state.equal_obj_with_tm(&o1, &o2)?),
@@ -1317,16 +1495,14 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
     // C: switch (ttype(obj)) { LUA_TTABLE: ... LUA_TUSERDATA: ... default: G(L)->mt[ttype] }
     match obj {
         LuaValue::Table(ref tbl) => {
-            // TODO(port): setting metatable on GcRef<LuaTable> requires interior
-            // mutability; stubbed — needs tbl.set_metatable(mt)
             if mt.is_some() {
                 // C: luaC_objbarrier(L, gcvalue(obj), mt);
                 // C: luaC_checkfinalizer(L, gcvalue(obj), mt);
                 state.gc().obj_barrier(tbl, mt.as_ref().unwrap());
                 // TODO(port): luaC_checkfinalizer
             }
-            // TODO(port): tbl.set_metatable(mt)
-            let _ = (tbl, mt);
+            // C: hvalue(obj)->metatable = mt;
+            tbl.set_metatable(mt);
         }
         LuaValue::UserData(ref ud) => {
             if mt.is_some() {
@@ -1463,7 +1639,7 @@ pub fn load(
                 // wrap in a new GcRef, and replace the stack slot.
                 let gt = get_global_table(state);
                 let mut new_upvals = lcl.upvals.clone();
-                new_upvals[0] = GcRef::new(UpVal::Closed(gt));
+                new_upvals[0] = GcRef::new(UpVal::closed(gt));
                 let new_lcl = GcRef::new(lua_types::LuaLClosure {
                     proto: lcl.proto.clone(),
                     upvals: new_upvals,
@@ -1788,11 +1964,9 @@ fn aux_upvalue(
             }
             // C: *val = f->upvals[n-1]->v.p;
             let upval = &lcl.upvals[(n - 1) as usize];
-            let val = match upval.as_ref() {
-                UpVal::Closed(v) => v.clone(),
-                UpVal::Open { .. } => {
-                    // TODO(port): reading an open upvalue requires access to the
-                    // thread's stack; return Nil as placeholder for Phase A.
+            let val = match &*upval.slot() {
+                lua_types::UpValState::Closed(v) => v.clone(),
+                lua_types::UpValState::Open { .. } => {
                     LuaValue::Nil
                 }
             };

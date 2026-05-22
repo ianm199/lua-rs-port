@@ -376,6 +376,639 @@ impl LuaStateStubExt for LuaState {
         self.pop_n(nup as usize);
         Ok(())
     }
+
+    fn arg_to_bool(&mut self, arg: i32) -> bool {
+        lua_vm::api::to_boolean(self, arg)
+    }
+
+    fn value_at(&mut self, idx: i32) -> LuaValue {
+        lua_vm::api::push_value(self, idx);
+        self.pop()
+    }
+
+    fn check_arg_type(&mut self, arg: i32, t: LuaType) -> Result<(), LuaError> {
+        if lua_vm::api::lua_type_at(self, arg) != t {
+            lua_vm::api::push_value(self, arg);
+            let got = self.pop();
+            let expected: &str = match t {
+                LuaType::None => "no value",
+                LuaType::Nil => "nil",
+                LuaType::Boolean => "boolean",
+                LuaType::LightUserData => "userdata",
+                LuaType::Number => "number",
+                LuaType::String => "string",
+                LuaType::Table => "table",
+                LuaType::Function => "function",
+                LuaType::UserData => "userdata",
+                LuaType::Thread => "thread",
+            };
+            return Err(LuaError::type_arg_error(arg, expected, &got));
+        }
+        Ok(())
+    }
+
+    fn opt_arg_string(&mut self, arg: i32, def: &[u8]) -> Result<Vec<u8>, LuaError> {
+        match lua_vm::api::lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(def.to_vec()),
+            _ => self.check_arg_string(arg),
+        }
+    }
+
+    fn get_metafield(&mut self, idx: i32, name: &[u8]) -> Result<LuaType, LuaError> {
+        let abs = lua_vm::api::abs_index(self, idx);
+        if !lua_vm::api::get_metatable(self, abs) {
+            return Ok(LuaType::Nil);
+        }
+        lua_vm::api::push_lstring(self, name)?;
+        let tt = lua_vm::api::raw_get(self, -2);
+        if tt == LuaType::Nil {
+            self.pop_n(2);
+        } else {
+            self.remove(-2)?;
+        }
+        Ok(tt)
+    }
+
+    fn table_get_i(&mut self, idx: i32, n: i64) -> Result<LuaType, LuaError> {
+        lua_vm::api::get_i(self, idx, n)
+    }
+
+    fn compare_lt(&mut self, idx1: i32, idx2: i32) -> Result<bool, LuaError> {
+        lua_vm::api::compare(self, idx1, idx2, 1)
+    }
+
+    fn check_arg_any(&mut self, arg: i32) -> Result<(), LuaError> {
+        if lua_vm::api::lua_type_at(self, arg) == LuaType::None {
+            return Err(LuaError::arg_error(arg, "value expected"));
+        }
+        Ok(())
+    }
+
+    fn check_arg_integer(&mut self, arg: i32) -> Result<i64, LuaError> {
+        match lua_vm::api::to_integer_x(self, arg) {
+            Some(d) => Ok(d),
+            None => {
+                if lua_vm::api::is_number(self, arg) {
+                    Err(LuaError::arg_error(
+                        arg,
+                        "number has no integer representation",
+                    ))
+                } else {
+                    let got = self.value_at(arg);
+                    Err(LuaError::type_arg_error(arg, "number", &got))
+                }
+            }
+        }
+    }
+
+    fn check_arg_string(&mut self, arg: i32) -> Result<Vec<u8>, LuaError> {
+        match lua_vm::api::to_lua_string(self, arg)? {
+            Some(s) => Ok(s.as_bytes().to_vec()),
+            None => {
+                let got = self.value_at(arg);
+                Err(LuaError::type_arg_error(arg, "string", &got))
+            }
+        }
+    }
+
+    fn check_arg_number(&mut self, arg: i32) -> Result<f64, LuaError> {
+        match lua_vm::api::to_number_x(self, arg) {
+            Some(d) => Ok(d),
+            None => {
+                let got = self.value_at(arg);
+                Err(LuaError::type_arg_error(arg, "number", &got))
+            }
+        }
+    }
+
+    fn check_number(&mut self, arg: i32) -> Result<f64, LuaError> {
+        self.check_arg_number(arg)
+    }
+
+    fn check_integer(&mut self, arg: i32) -> Result<i64, LuaError> {
+        self.check_arg_integer(arg)
+    }
+
+    fn check_any(&mut self, arg: i32) -> Result<(), LuaError> {
+        self.check_arg_any(arg)
+    }
+
+    fn opt_arg_integer(&mut self, arg: i32, def: i64) -> Result<i64, LuaError> {
+        match lua_vm::api::lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(def),
+            _ => self.check_arg_integer(arg),
+        }
+    }
+
+    fn opt_integer(&mut self, arg: i32, def: i64) -> Result<i64, LuaError> {
+        self.opt_arg_integer(arg, def)
+    }
+
+    fn opt_number(&mut self, arg: i32, def: f64) -> Result<f64, LuaError> {
+        match lua_vm::api::lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(def),
+            _ => self.check_arg_number(arg),
+        }
+    }
+
+    fn opt_arg_string_bytes(&mut self, arg: i32) -> Result<Vec<u8>, LuaError> {
+        match lua_vm::api::lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(Vec::new()),
+            _ => self.check_arg_string(arg),
+        }
+    }
+
+    fn opt_arg_lstring(&mut self, arg: i32, def: Option<&[u8]>) -> Result<Option<Vec<u8>>, LuaError> {
+        match lua_vm::api::lua_type_at(self, arg) {
+            LuaType::None | LuaType::Nil => Ok(def.map(|d| d.to_vec())),
+            _ => Ok(Some(self.check_arg_string(arg)?)),
+        }
+    }
+
+    fn check_arg_option(
+        &mut self,
+        arg: i32,
+        def: Option<&[u8]>,
+        lst: &[&[u8]],
+    ) -> Result<usize, LuaError> {
+        let name: Vec<u8> = match def {
+            Some(d) if matches!(
+                lua_vm::api::lua_type_at(self, arg),
+                LuaType::None | LuaType::Nil
+            ) =>
+            {
+                d.to_vec()
+            }
+            _ => self.check_arg_string(arg)?,
+        };
+        for (i, entry) in lst.iter().enumerate() {
+            if *entry == name.as_slice() {
+                return Ok(i);
+            }
+        }
+        Err(LuaError::arg_error(arg, "invalid option"))
+    }
+
+    fn arg(&mut self, n: i32) -> LuaValue {
+        self.value_at(n)
+    }
+
+    fn type_at(&mut self, idx: i32) -> LuaType {
+        lua_vm::api::lua_type_at(self, idx)
+    }
+
+    fn type_name(&mut self, t: LuaType) -> &'static [u8] {
+        lua_vm::api::type_name(self, t)
+    }
+
+    fn type_name_at(&mut self, idx: i32) -> &'static [u8] {
+        let t = lua_vm::api::lua_type_at(self, idx);
+        lua_vm::api::type_name(self, t)
+    }
+
+    fn is_integer(&mut self, idx: i32) -> bool {
+        lua_vm::api::is_integer(self, idx)
+    }
+
+    fn is_number(&mut self, idx: i32) -> bool {
+        lua_vm::api::is_number(self, idx)
+    }
+
+    fn is_none_or_nil(&mut self, idx: i32) -> bool {
+        matches!(
+            lua_vm::api::lua_type_at(self, idx),
+            LuaType::None | LuaType::Nil
+        )
+    }
+
+    fn to_integer_x(&mut self, idx: i32) -> Option<i64> {
+        lua_vm::api::to_integer_x(self, idx)
+    }
+
+    fn to_number_x(&mut self, idx: i32) -> Option<f64> {
+        lua_vm::api::to_number_x(self, idx)
+    }
+
+    fn to_integer(&mut self, idx: i32) -> Option<i64> {
+        lua_vm::api::to_integer_x(self, idx)
+    }
+
+    fn to_integer_opt(&mut self, idx: i32) -> Option<i64> {
+        lua_vm::api::to_integer_x(self, idx)
+    }
+
+    fn to_number(&mut self, idx: i32) -> Option<f64> {
+        lua_vm::api::to_number_x(self, idx)
+    }
+
+    fn to_lua_string(&mut self, idx: i32) -> Option<GcRef<LuaString>> {
+        lua_vm::api::to_lua_string(self, idx).ok().flatten()
+    }
+
+    fn to_lua_string_bytes(&mut self, idx: i32) -> Option<Vec<u8>> {
+        lua_vm::api::to_lua_string(self, idx)
+            .ok()
+            .flatten()
+            .map(|s| s.as_bytes().to_vec())
+    }
+
+    fn to_lua_string_len(&mut self, idx: i32) -> Option<usize> {
+        lua_vm::api::to_lua_string(self, idx)
+            .ok()
+            .flatten()
+            .map(|s| s.len())
+    }
+
+    fn to_bytes(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn to_bytes_at(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn raw_equal(&mut self, idx1: i32, idx2: i32) -> Result<bool, LuaError> {
+        Ok(lua_vm::api::raw_equal(self, idx1, idx2))
+    }
+
+    fn raw_geti(&mut self, idx: i32, n: i64) -> Result<LuaType, LuaError> {
+        Ok(lua_vm::api::raw_get_i(self, idx, n))
+    }
+
+    fn raw_get_i(&mut self, idx: i32, n: i64) -> Result<LuaType, LuaError> {
+        Ok(lua_vm::api::raw_get_i(self, idx, n))
+    }
+
+    fn raw_seti(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
+        lua_vm::api::raw_set_i(self, idx, n)
+    }
+
+    fn raw_set_i(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
+        lua_vm::api::raw_set_i(self, idx, n)
+    }
+
+    fn raw_len(&mut self, idx: i32) -> i64 {
+        lua_vm::api::raw_len(self, idx) as i64
+    }
+
+    fn get_i(&mut self, idx: i32, n: i64) -> Result<LuaType, LuaError> {
+        lua_vm::api::get_i(self, idx, n)
+    }
+
+    fn get_metatable(&mut self, idx: i32) -> Result<bool, LuaError> {
+        Ok(lua_vm::api::get_metatable(self, idx))
+    }
+
+    fn set_metatable(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::set_metatable(self, idx)?;
+        Ok(())
+    }
+
+    fn compare(&mut self, idx1: i32, idx2: i32, op: CompareOp) -> Result<bool, LuaError> {
+        let op_i = match op {
+            CompareOp::Eq => 0,
+            CompareOp::Lt => 1,
+            CompareOp::Le => 2,
+        };
+        lua_vm::api::compare(self, idx1, idx2, op_i)
+    }
+
+    fn protected_call(&mut self, nargs: i32, nresults: i32, msgh: i32) -> Result<(), LuaError> {
+        lua_vm::api::pcall_k(self, nargs, nresults, msgh, 0, None)?;
+        Ok(())
+    }
+
+    fn push_value_at(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::push_value(self, idx);
+        Ok(())
+    }
+
+    fn push_thread(&mut self) -> Result<bool, LuaError> {
+        Ok(lua_vm::api::push_thread(self))
+    }
+
+    fn push_cclosure(&mut self, f: lua_CFunction, n: i32) -> Result<(), LuaError> {
+        lua_vm::api::push_cclosure(self, f, n)
+    }
+
+    fn push_c_closure(&mut self, f: lua_CFunction, n: i32) -> Result<(), LuaError> {
+        lua_vm::api::push_cclosure(self, f, n)
+    }
+
+    fn push_lstring(&mut self, s: &[u8]) -> Result<(), LuaError> {
+        lua_vm::api::push_lstring(self, s)?;
+        Ok(())
+    }
+
+    fn push_string(&mut self, s: &[u8]) -> Result<(), LuaError> {
+        lua_vm::api::push_lstring(self, s)?;
+        Ok(())
+    }
+
+    fn get_top(&mut self) -> i32 {
+        lua_vm::api::get_top(self)
+    }
+
+    fn stack_top(&mut self) -> i32 {
+        lua_vm::api::get_top(self)
+    }
+
+    fn top_count(&mut self) -> i32 {
+        lua_vm::api::get_top(self)
+    }
+
+    fn check_stack_space(&mut self, n: i32) -> bool {
+        lua_vm::api::check_stack(self, n)
+    }
+
+    fn rotate(&mut self, idx: i32, n: i32) -> Result<(), LuaError> {
+        lua_vm::api::rotate(self, idx, n);
+        Ok(())
+    }
+
+    fn insert(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::rotate(self, idx, 1);
+        Ok(())
+    }
+
+    fn copy_value(&mut self, from: i32, to: i32) -> Result<(), LuaError> {
+        lua_vm::api::copy(self, from, to);
+        Ok(())
+    }
+
+    fn replace(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::copy(self, -1, idx);
+        lua_vm::api::set_top(self, -2)
+    }
+
+    fn len_op(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::len(self, idx)
+    }
+
+    fn table_next(&mut self, idx: i32) -> Result<bool, LuaError> {
+        lua_vm::api::next(self, idx)
+    }
+
+    fn create_table(&mut self, narr: i32, nrec: i32) -> Result<(), LuaError> {
+        lua_vm::api::create_table(self, narr, nrec)
+    }
+
+    fn to_userdata(&mut self, idx: i32) -> Option<GcRef<LuaUserData>> {
+        let v = self.value_at(idx);
+        if let LuaValue::UserData(u) = v { Some(u) } else { None }
+    }
+
+    fn to_light_userdata(&mut self, idx: i32) -> Option<*mut std::ffi::c_void> {
+        lua_vm::api::to_userdata(self, idx)
+    }
+
+    fn to_thread(&mut self, idx: i32) -> Option<GcRef<LuaThread>> {
+        lua_vm::api::to_thread(self, idx)
+    }
+
+    fn to_thread_at(&mut self, idx: i32) -> Option<GcRef<LuaThread>> {
+        lua_vm::api::to_thread(self, idx)
+    }
+
+    fn len_at(&mut self, idx: i32) -> i64 {
+        lua_vm::api::raw_len(self, idx) as i64
+    }
+
+    fn length_at(&mut self, idx: i32) -> Result<i64, LuaError> {
+        lua_vm::api::len(self, idx)?;
+        let v = lua_vm::api::to_integer_x(self, -1);
+        self.pop_n(1);
+        match v {
+            Some(l) => Ok(l),
+            None => Err(LuaError::runtime(format_args!(
+                "object length is not an integer"
+            ))),
+        }
+    }
+
+    fn peek_bytes(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn to_string_coerced(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn raw_get(&mut self, idx: i32) -> Result<LuaType, LuaError> {
+        Ok(lua_vm::api::raw_get(self, idx))
+    }
+
+    fn raw_set(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::raw_set(self, idx)
+    }
+
+    fn is_c_function_at(&mut self, idx: i32) -> bool {
+        lua_vm::api::is_cfunction(self, idx)
+    }
+
+    fn type_name_str_at(&mut self, idx: i32) -> &'static [u8] {
+        let t = lua_vm::api::lua_type_at(self, idx);
+        lua_vm::api::type_name(self, t)
+    }
+
+    fn push_fstring(&mut self, args: std::fmt::Arguments<'_>) -> Result<(), LuaError> {
+        let formatted = std::fmt::format(args);
+        lua_vm::api::push_fstring(self, formatted.as_bytes())?;
+        Ok(())
+    }
+
+    fn arith(&mut self, op: ArithOp) -> Result<(), LuaError> {
+        lua_vm::api::arith(self, op as i32)
+    }
+
+    fn lua_version(&mut self) -> f64 {
+        504.0
+    }
+
+    fn push_fail(&mut self) -> Result<(), LuaError> {
+        self.push(LuaValue::Nil);
+        Ok(())
+    }
+
+    fn push_registry(&mut self) -> Result<(), LuaError> {
+        let r = self.registry_value();
+        self.push(r);
+        Ok(())
+    }
+
+    fn push_upvalue(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::push_value(self, upvalue_index(idx));
+        Ok(())
+    }
+
+    fn pop_bytes(&mut self) -> Vec<u8> {
+        match self.pop() {
+            LuaValue::Str(s) => s.as_bytes().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn push_where(&mut self, level: i32) -> Result<(), LuaError> {
+        let mut ar = lua_vm::debug::LuaDebug::default();
+        if lua_vm::debug::get_stack(self, level, &mut ar) {
+            lua_vm::debug::get_info(self, b"Sl", &mut ar);
+            if ar.currentline > 0 {
+                let zero = ar
+                    .short_src
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(ar.short_src.len());
+                let mut buf: Vec<u8> = ar.short_src[..zero].to_vec();
+                buf.push(b':');
+                buf.extend_from_slice(ar.currentline.to_string().as_bytes());
+                buf.extend_from_slice(b": ");
+                lua_vm::api::push_lstring(self, &buf)?;
+                return Ok(());
+            }
+        }
+        lua_vm::api::push_lstring(self, b"")?;
+        Ok(())
+    }
+
+    fn where_error(&mut self, level: i32, msg: &[u8]) -> LuaError {
+        if self.push_where(level).is_err() {
+            return LuaError::runtime(format_args!("{}", StubBStr(msg)));
+        }
+        let mut full = self.pop_bytes();
+        full.extend_from_slice(msg);
+        LuaError::runtime(format_args!("{}", StubBStr(&full)))
+    }
+
+    fn registry_get(&mut self, key: &[u8]) -> Result<LuaType, LuaError> {
+        lua_vm::api::get_field(self, STUB_LUA_REGISTRYINDEX, key)
+    }
+
+    fn get_field_registry(&mut self, name: &[u8]) -> Result<LuaType, LuaError> {
+        lua_vm::api::get_field(self, STUB_LUA_REGISTRYINDEX, name)
+    }
+
+    fn get_registry_field(&mut self, name: &[u8]) -> Result<LuaType, LuaError> {
+        lua_vm::api::get_field(self, STUB_LUA_REGISTRYINDEX, name)
+    }
+
+    fn get_or_create_registry_subtable(&mut self, name: &[u8]) -> Result<bool, LuaError> {
+        self.get_subtable_registry(name)
+    }
+
+    fn registry_set(&mut self, key: &[u8]) -> Result<(), LuaError> {
+        lua_vm::api::set_field(self, STUB_LUA_REGISTRYINDEX, key)
+    }
+
+    fn check_stack_growth(&mut self, n: i32) -> bool {
+        lua_vm::api::check_stack(self, n)
+    }
+
+    fn ensure_stack<S: AsRef<[u8]> + ?Sized>(&mut self, n: i32, msg: &S) -> Result<(), LuaError> {
+        if lua_vm::api::check_stack(self, n) {
+            return Ok(());
+        }
+        let m = msg.as_ref();
+        if m.is_empty() {
+            Err(LuaError::runtime(format_args!("stack overflow")))
+        } else {
+            Err(LuaError::runtime(format_args!(
+                "stack overflow ({})",
+                StubBStr(m)
+            )))
+        }
+    }
+
+    fn push_copy(&mut self, idx: i32) -> Result<(), LuaError> {
+        lua_vm::api::push_value(self, idx);
+        Ok(())
+    }
+
+    fn as_bytes(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn as_bytes_or_coerce(&mut self, idx: i32) -> Option<Vec<u8>> {
+        self.to_lua_string_bytes(idx)
+    }
+
+    fn thread_status(&mut self) -> LuaStatus {
+        lua_vm::api::status(self)
+    }
+
+    fn load_buffer(&mut self, buf: &[u8], name: &[u8], mode: Option<&[u8]>) -> Result<LuaStatus, LuaError> {
+        let mut remaining = Some(buf.to_vec());
+        let reader: Box<dyn FnMut() -> Option<Vec<u8>>> = Box::new(move || remaining.take());
+        lua_vm::api::load(self, reader, Some(name), mode)
+    }
+
+    fn warning(&mut self, msg: &[u8], to_cont: bool) -> Result<(), LuaError> {
+        lua_vm::api::warning(self, msg, to_cont);
+        Ok(())
+    }
+
+    fn string_to_number(&mut self, idx: i32) -> Option<usize> {
+        let bytes = lua_vm::api::to_lua_string(self, idx)
+            .ok()
+            .flatten()?
+            .as_bytes()
+            .to_vec();
+        let consumed = lua_vm::api::string_to_number(self, &bytes);
+        if consumed == 0 {
+            None
+        } else {
+            Some(consumed)
+        }
+    }
+
+    fn string_to_number_push<S: AsRef<[u8]> + ?Sized>(&mut self, s: &S) -> Result<usize, LuaError> {
+        Ok(lua_vm::api::string_to_number(self, s.as_ref()))
+    }
+
+    fn gc_count(&mut self) -> Result<i32, LuaError> {
+        Ok(lua_vm::api::gc(self, lua_vm::api::GcArgs::Count))
+    }
+
+    fn gc_count_b(&mut self) -> Result<i32, LuaError> {
+        Ok(lua_vm::api::gc(self, lua_vm::api::GcArgs::CountB))
+    }
+
+    fn gc_step(&mut self, data: i32) -> Result<i32, LuaError> {
+        Ok(lua_vm::api::gc(self, lua_vm::api::GcArgs::Step { data }))
+    }
+
+    fn gc_is_running(&mut self) -> Result<bool, LuaError> {
+        Ok(lua_vm::api::gc(self, lua_vm::api::GcArgs::IsRunning) != 0)
+    }
+
+    fn gc_control_simple(&mut self, op: i32) -> Result<i32, LuaError> {
+        let args = match op {
+            0 => lua_vm::api::GcArgs::Stop,
+            1 => lua_vm::api::GcArgs::Restart,
+            2 => lua_vm::api::GcArgs::Collect,
+            _ => return Err(LuaError::runtime(format_args!(
+                "invalid GC option {}", op
+            ))),
+        };
+        Ok(lua_vm::api::gc(self, args))
+    }
+}
+
+const STUB_LUA_REGISTRYINDEX: i32 = -(1_000_000) - 1000;
+
+struct StubBStr<'a>(&'a [u8]);
+
+impl<'a> std::fmt::Display for StubBStr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for &b in self.0 {
+            if b.is_ascii() {
+                f.write_char(b as char)?;
+            } else {
+                write!(f, "\\x{:02x}", b)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

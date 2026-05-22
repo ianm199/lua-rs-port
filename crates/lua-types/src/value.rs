@@ -89,7 +89,7 @@ impl PartialEq for LuaValue {
             (LuaValue::Float(a), LuaValue::Float(b)) => a == b,
             (LuaValue::Str(a), LuaValue::Str(b)) => GcRef::ptr_eq(a, b) || a.as_bytes() == b.as_bytes(),
             (LuaValue::Table(a), LuaValue::Table(b)) => GcRef::ptr_eq(a, b),
-            (LuaValue::Function(_), LuaValue::Function(_)) => false, // TODO(port): closure equality
+            (LuaValue::Function(a), LuaValue::Function(b)) => closure_eq(a, b),
             (LuaValue::UserData(a), LuaValue::UserData(b)) => GcRef::ptr_eq(a, b),
             (LuaValue::LightUserData(a), LuaValue::LightUserData(b)) => a == b,
             (LuaValue::Thread(a), LuaValue::Thread(b)) => GcRef::ptr_eq(a, b),
@@ -190,6 +190,15 @@ impl LuaTable {
     }
 }
 
+fn closure_eq(a: &LuaClosure, b: &LuaClosure) -> bool {
+    match (a, b) {
+        (LuaClosure::Lua(x), LuaClosure::Lua(y)) => GcRef::ptr_eq(x, y),
+        (LuaClosure::C(x), LuaClosure::C(y)) => GcRef::ptr_eq(x, y),
+        (LuaClosure::LightC(x), LuaClosure::LightC(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// Key equality for hash-table lookup. Matches Lua semantics:
 ///   - Nil never equals anything (handled at call sites)
 ///   - Bool/Int/Float/String compare by value
@@ -206,7 +215,7 @@ fn lua_key_eq(a: &LuaValue, b: &LuaValue) -> bool {
         (LuaValue::Table(x), LuaValue::Table(y)) => GcRef::ptr_eq(x, y),
         (LuaValue::UserData(x), LuaValue::UserData(y)) => GcRef::ptr_eq(x, y),
         (LuaValue::Thread(x), LuaValue::Thread(y)) => GcRef::ptr_eq(x, y),
-        (LuaValue::Function(_), LuaValue::Function(_)) => false,
+        (LuaValue::Function(x), LuaValue::Function(y)) => closure_eq(x, y),
         (LuaValue::LightUserData(x), LuaValue::LightUserData(y)) => x == y,
         _ => false,
     }

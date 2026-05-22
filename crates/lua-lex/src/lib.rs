@@ -82,12 +82,19 @@ impl LexBuffer {
         self.buffer.truncate(new_len);
     }
 
-    /// C: `luaZ_resizebuffer(L, b, newsize)` — grow/shrink the buffer.
-    /// macros.tsv: luaZ_resizebuffer → buf.resize(state, size)?
-    ///
-    /// PORT NOTE: Phase A uses Vec::resize; real allocator integration is Phase D.
+    /// C: `luaZ_resizebuffer(L, b, newsize)` — grow/shrink the buffer's
+    /// allocated capacity. In C this changes `buffsize`, not the live byte
+    /// count `n`. The Rust analogue therefore manipulates `Vec::capacity`,
+    /// never `Vec::len` (otherwise `push_byte` would write past the live
+    /// content and leave embedded zero padding inside the token text).
     pub fn resize(&mut self, _state: &mut LuaState, size: usize) -> Result<(), LuaError> {
-        self.buffer.resize(size, 0u8);
+        if size < self.buffer.len() {
+            self.buffer.truncate(size);
+        }
+        if size > self.buffer.capacity() {
+            let extra = size - self.buffer.capacity();
+            self.buffer.reserve_exact(extra);
+        }
         Ok(())
     }
 

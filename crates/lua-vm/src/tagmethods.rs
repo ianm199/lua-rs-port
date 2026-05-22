@@ -208,6 +208,14 @@ pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
     ];
     debug_assert!(EVENT_NAMES.len() == TM_N);
 
+    // PORT NOTE: The C `tmname[TM_N]` is a fixed-size array on `global_State`;
+    // the Rust port uses `Vec<GcRef<LuaString>>` initialized empty in
+    // `lua_state_init`, so we must grow it to `TM_N` before indexed assignment.
+    if state.global().tmname.len() < TM_N {
+        let pad = state.intern_str(b"")?;
+        state.global_mut().tmname.resize(TM_N, pad);
+    }
+
     // C: for (i=0; i<TM_N; i++) {
     //     G(L)->tmname[i] = luaS_new(L, luaT_eventname[i]);
     //     luaC_fix(L, obj2gco(G(L)->tmname[i]));  /* never collect these names */

@@ -1249,7 +1249,7 @@ fn get_upval_name<'a>(
     };
     for (i, upval) in lua_cl.upvals.iter().enumerate() {
         // C: if (c->upvals[i]->v.p == o)
-        if let UpVal::Open { idx, .. } = *upval.as_ref() {
+        if let lua_types::UpValState::Open { idx, .. } = *upval.slot() {
             if idx == val_idx {
                 // TODO(phase-b): the name needs to be tied to state's lifetime; using
                 // a static fallback keeps the trait bounds satisfied for now.
