@@ -1299,7 +1299,9 @@ impl LuaState {
         crate::do_::callnoyield(self, func, nresults)
     }
     pub fn call_at(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: call_at") }
-    pub fn precall(&mut self, _func: StackIdx, _nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> { todo!("phase-b: precall") }
+    pub fn precall(&mut self, func: StackIdx, nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> {
+        crate::do_::precall(self, func, nresults)
+    }
     pub fn pretailcall<C, F, T, D>(&mut self, _ci: C, _func: F, _top: T, _delta: D) -> Result<i32, LuaError> { todo!("phase-b: pretailcall") }
     pub fn poscall<N>(&mut self, _ci: CallInfoIdx, _nres: N) -> Result<(), LuaError> { todo!("phase-b: poscall") }
     pub fn adjust_results(&mut self, nresults: i32) {

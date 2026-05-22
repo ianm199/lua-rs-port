@@ -278,3 +278,6 @@
 {"ts":"2026-05-16T20:06:08Z","action":"dispatch_done","detail":"type=implement func=fast_get_short_str cost=0.8011569999999999","total_cost":0.00}
 {"ts":"2026-05-16T20:06:09Z","action":"real_error","detail":"err=pcall_k failed: Runtime: attempt to index a nil value step=4/4 Executing chunk iter=7","total_cost":0.00}
 {"ts":"2026-05-16T20:06:09Z","action":"dispatch_start","detail":"type=debug err=pcall_k failed: Runtime: attempt to index a nil value iter=7","total_cost":0.00}
+{"ts":"2026-05-16T20:11:07Z","action":"dispatch_done","detail":"type=debug err=pcall_k failed: Runtime: attempt to index a nil value cost=2.6738315000000004","total_cost":0.00}
+{"ts":"2026-05-16T20:11:07Z","action":"panic_detected","detail":"func=precall iter=8","total_cost":0.00}
+{"ts":"2026-05-16T20:11:07Z","action":"dispatch_start","detail":"type=implement func=precall iter=8","total_cost":0.00}
