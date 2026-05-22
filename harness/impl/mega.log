@@ -1270,3 +1270,8 @@ warning: unused import: `UpVal`
 [2026-05-19T00:29:46Z mega]   [hard-test] reference/lua-c/testes/files.lua → opus (skip Sonnet)
 [2026-05-19T00:29:46Z mega]   [O3.D3] DEBUG dispatch on file: reference/lua-c/testes/files.lua [model=opus] [parallel]
 [2026-05-19T00:32:17Z mega]   [O3.D4] DEBUG dispatch on file: reference/lua-c/testes/errors.lua [model=sonnet] [parallel]
+[2026-05-19T00:47:33Z mega]   [O3.D3] DEBUG done. iter cost=$1.1922960000000002  total=$3.3206
+[2026-05-19T00:47:33Z mega]   [O3.D4] DEBUG done. iter cost=$1.9260755  total=$5.2467
+[2026-05-19T00:47:33Z mega]   [O3.D1] DEBUG done. iter cost=$2.444937749999999  total=$7.6916
+[2026-05-19T00:47:33Z mega]   [O3.D2] DEBUG done. iter cost=$3.7693785  total=$11.4610
+[2026-05-19T00:47:33Z mega] ─── outer round 4 (spent: $11.4610) ───
