@@ -4,3 +4,4 @@
 3 1.8957129999999998 reference/lua-c/testes/strings.lua [sonnet]
 5 1.1403303999999999 reference/lua-c/testes/files.lua [sonnet]
 4 8.416709499999998 reference/lua-c/testes/locals.lua [opus]
+2 10.422931000000004 reference/lua-c/testes/gc.lua [opus]
