@@ -1,0 +1,29 @@
+# type-vocabulary.tsv — canonical owners for cross-crate Rust types.
+#
+# Format:
+#   <name> <kind> <owner-path> <mode> <notes>
+#
+# mode:
+#   enforce  hook fails if a modified file defines this name outside owner-path
+#   audit    audit reports it, but changed-file hook does not fail
+#
+# Keep this list small and intentional. It is not every Rust type in the
+# workspace; it is the cross-cutting vocabulary whose duplication fragments the
+# architecture.
+
+LuaState        struct  crates/lua-vm/src/state.rs       enforce  canonical interpreter state
+GlobalState     struct  crates/lua-vm/src/state.rs       enforce  canonical shared VM state
+CallInfo        struct  crates/lua-vm/src/state.rs       enforce  canonical call frame record
+LuaValue        enum    crates/lua-types/src/value.rs    enforce  canonical TValue replacement
+LuaError        enum    crates/lua-types/src/error.rs    enforce  canonical error type
+LuaString       struct  crates/lua-types/src/string.rs   audit    currently duplicated in lua-vm; reconcile before enforce
+LuaTable        struct  crates/lua-vm/src/table.rs       audit    currently duplicated/placeheld; reconcile before enforce
+LuaProto        struct  crates/lua-types/src/proto.rs    audit    currently duplicated/placeheld; reconcile before enforce
+LuaClosure      enum    crates/lua-types/src/closure.rs  audit    currently duplicated/placeheld; reconcile before enforce
+UpVal           enum    crates/lua-types/src/upval.rs    audit    canonical upvalue shape
+LuaUserData     struct  crates/lua-types/src/userdata.rs enforce  canonical userdata type
+LuaStatus       enum    crates/lua-types/src/status.rs   enforce  canonical status enum
+StackIdx        struct  crates/lua-types/src/lib.rs      enforce  canonical stack index
+CallInfoIdx     struct  crates/lua-types/src/lib.rs      enforce  canonical call-info index
+OpCode          enum    crates/lua-code/src/opcodes.rs   audit    currently duplicated/placeheld; reconcile before enforce
+Instruction     struct  crates/lua-code/src/opcodes.rs   audit    currently duplicated/placeheld; reconcile before enforce

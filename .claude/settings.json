@@ -13,6 +13,7 @@
         "hooks": [
           { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/unsafe-budget.sh" },
           { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/forbidden-import.sh" },
+          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/type-vocabulary.sh" },
           { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/trailer-required.sh" },
           { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/commit-on-stop.sh" }
         ]

@@ -7,3 +7,12 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "lua-rs"
+path = "src/main.rs"
+
+[dependencies]
+lua-types.workspace = true
+lua-vm.workspace = true
+lua-stdlib.workspace = true

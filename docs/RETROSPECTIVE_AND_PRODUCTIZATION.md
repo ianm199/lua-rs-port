@@ -509,3 +509,99 @@ is what's missing. **That governance is what makes nginx feasible at all.**
 Without it, agents at nginx scale will silently introduce hundreds of
 architectural shortcuts that compile but break the internet for somebody's
 customers.
+
+### 10.6 First governance primitive landed: type-vocabulary hook
+
+Built and wired in 2026-05-16 day-2:
+
+- `harness/type-vocabulary.tsv` — canonical owner registry, 15 entries
+  covering the actual cross-cutting types (LuaState, LuaValue, LuaError,
+  LuaString, LuaTable, LuaProto, LuaClosure, UpVal, LuaUserData, LuaStatus,
+  StackIdx, CallInfoIdx, OpCode, Instruction, GlobalState, CallInfo)
+- `harness/check_type_vocabulary.py` — regex-based scanner with two modes:
+  changed-files (Stop-hook integration via `CLAUDE_TARGET_RS_FILE`) and
+  `--audit` (whole-workspace inventory of violations).
+- `.claude/hooks/type-vocabulary.sh` — Stop hook wrapper.
+- enforce/audit split: enforce for types we've already chosen owners for;
+  audit for types currently duplicated (LuaString, LuaTable, LuaProto,
+  LuaClosure, OpCode, Instruction). Lets the hook ship without forcing
+  a big-bang cleanup.
+
+Hardening landed same day:
+
+- **commit-on-stop now re-runs every gating hook** and blocks the auto-
+  commit if any fail. Closes the long-standing defect where hook failures
+  printed warnings but the commit landed anyway (Saturday's unsafe-budget
+  false positive on ldebug.c committed despite returning non-zero).
+- **Per-violation remediation messages**: when the hook fails, it prints
+  the exact `pub use` line to add, checks the offender crate's Cargo.toml
+  for the dep, and prints the missing dep line if absent. Agents reading
+  the error get a step-by-step fix, not just "see the registry."
+
+The first audit revealed `lua-gc` has **88 `unsafe` blocks vs budget 20**.
+Same pathology as the type duplications — the GC agent over-allocated to
+satisfy compile. The harness now flags this; cleanup is daytime work.
+
+### 10.7 V2 enhancements (deferred, not blocking the current port)
+
+The hook above is preventive at Stop time but not at Edit time. Two
+follow-ups make it production-grade:
+
+**A. PreToolUse gate on Write/Edit.** Right now an agent can spend 40
+minutes building scaffolding around a duplicate type, then at Stop find
+out it's all invalid. The right place to catch type definitions is
+*before* the Write tool call lands. Implementation:
+
+```bash
+# .claude/hooks/pretooluse-vocab.sh
+# Runs on every Write/Edit. Reads the proposed `content` (or `new_string`)
+# from CLAUDE_TOOL_INPUT, scans for `pub struct/enum/trait/type NAME`
+# matches against the registry, exits non-zero (= reject the tool call)
+# if a vocabulary type would be defined outside its owner crate.
+```
+
+This turns rejection-at-commit-time into guidance-during-work. Trade-off:
+slows Write/Edit by a regex pass. Cost is tiny (sub-ms for typical edits).
+
+**B. Audit-ratchet for `mode=audit` entries.** Currently 6 of 15 registry
+entries are audit. Without process, they stay audit forever. Add a CI
+guard:
+
+```bash
+# harness/check_audit_ratchet.sh
+# Counts mode=audit entries in type-vocabulary.tsv. Fails if the count
+# exceeds the value committed to harness/audit-ratchet.lock. The lock
+# file is only changed by explicit architect commit, and only downward.
+```
+
+This means new entries can only enter the registry as `enforce`. Existing
+`audit` entries can graduate to `enforce` (which decrements the lock) or
+stay (which doesn't). The number of unresolved duplications strictly
+decreases over project lifetime — a tightening ratchet.
+
+### 10.8 Generalizing the registry+hook pattern
+
+The TSV+scanner+hook+remediation pattern instantiates for any
+workspace-wide semantic invariant. Each becomes a sibling registry under
+`harness/`:
+
+| Invariant | Registry | What it enumerates |
+|---|---|---|
+| Type vocabulary | `type-vocabulary.tsv` ← shipped | Cross-cutting type names + canonical owners |
+| Function signature vocabulary | `signatures.tsv` | Canonical signatures for cross-crate public APIs |
+| Trait vocabulary | `traits.tsv` | Standard traits agents can't redefine |
+| Error vocabulary | `errors.tsv` | LuaError variants and constructors are frozen |
+| Public API surface | `public-api.tsv` | The set of `pub fn` from each crate; deletions/changes flagged |
+| Performance budget | `perf-budgets.tsv` | "must not allocate" function lists; lint-enforced |
+| Config schema | `config-schema.tsv` | Shape-contract for config types |
+| Unsafe-block budget | `unsafe-budgets.toml` ← already exists | Per-crate ceiling |
+
+Refactor path for v2: extract `harness/lib/registry.py` with the load/
+scan/diff/remediation logic; instantiate per registry. ~50 lines of
+shared code, multiplicative leverage.
+
+**The single most important meta-lesson from this hook is:** the harness
+must enforce *semantic* invariants explicitly, because the agents' physical-
+scope constraints alone produce silent semantic drift. Every nginx-grade
+governance gap in §10.5 reduces to "what semantic invariant am I letting
+the agents silently violate, and what registry + hook would catch it?"
