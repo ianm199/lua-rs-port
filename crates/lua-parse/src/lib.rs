@@ -1085,9 +1085,64 @@ fn cg_discharge_vars(
             e.u.info = pc;
             e.k = ExprKind::Reloc;
         }
+        ExprKind::IndexI => {
+            cg_free_reg_if_temp(fs, e.u.ind_t as i32);
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::GetI,
+                0,
+                e.u.ind_t as u32,
+                e.u.ind_idx as u32,
+                0,
+            );
+            let pc = emit_inst(fs, line, inst);
+            e.u.info = pc;
+            e.k = ExprKind::Reloc;
+        }
+        ExprKind::IndexStr => {
+            cg_free_reg_if_temp(fs, e.u.ind_t as i32);
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::GetField,
+                0,
+                e.u.ind_t as u32,
+                e.u.ind_idx as u32,
+                0,
+            );
+            let pc = emit_inst(fs, line, inst);
+            e.u.info = pc;
+            e.k = ExprKind::Reloc;
+        }
+        ExprKind::Indexed => {
+            cg_free_reg_if_temp(fs, e.u.ind_t as i32);
+            cg_free_reg_if_temp(fs, e.u.ind_idx as i32);
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::GetTable,
+                0,
+                e.u.ind_t as u32,
+                e.u.ind_idx as u32,
+                0,
+            );
+            let pc = emit_inst(fs, line, inst);
+            e.u.info = pc;
+            e.k = ExprKind::Reloc;
+        }
+        ExprKind::VarArg | ExprKind::Call => {
+            cg_set_returns(fs, e, 1);
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Like `cg_free_reg`, but only acts when the index actually belongs to a
+/// temporary register (one above `fs.nactvar`). Used by indexed-get
+/// dischargers, which may operate on either a temp result or a local.
+fn cg_free_reg_if_temp(fs: &mut FuncState, reg: i32) {
+    if reg >= fs.nactvar as i32 {
+        debug_assert!(reg < fs.freereg as i32);
+        if reg == fs.freereg as i32 - 1 {
+            fs.freereg -= 1;
+        }
+    }
 }
 
 /// Minimal `luaK_exp2nextreg`: discharge `e` and place it in `fs.freereg`,
@@ -1791,6 +1846,131 @@ fn adjust_assign(
     Ok(())
 }
 
+/// Emits `OP_NEWTABLE` followed by the required `OP_EXTRAARG` slot. The two
+/// instructions are written as placeholders; `cg_settablesize` later patches
+/// them with the final array/hash sizes. Returns the pc of `OP_NEWTABLE`.
+fn cg_emit_newtable(fs: &mut FuncState, line: i32) -> i32 {
+    let newtable = lua_code::opcodes::Instruction::abck(
+        lua_code::opcodes::OpCode::NewTable, 0, 0, 0, 0,
+    );
+    let pc = emit_inst(fs, line, newtable);
+    let extra = lua_code::opcodes::Instruction::ax(
+        lua_code::opcodes::OpCode::ExtraArg, 0,
+    );
+    emit_inst(fs, line, extra);
+    pc
+}
+
+/// Patches a previously-emitted `OP_NEWTABLE`/`OP_EXTRAARG` pair with the
+/// final array size (`asize`) and hash size (`hsize`). Mirrors
+/// `luaK_settablesize` from `lcode.c`.
+fn cg_settablesize(fs: &mut FuncState, pc: i32, ra: i32, asize: i32, hsize: i32) {
+    let rb = if hsize != 0 {
+        (hsize as u32).next_power_of_two().trailing_zeros() as i32 + 1
+    } else {
+        0
+    };
+    let maxc = lua_code::opcodes::MAXARG_C as i32 + 1;
+    let extra = asize / maxc;
+    let rc = asize % maxc;
+    let k = if extra > 0 { 1u32 } else { 0u32 };
+    let newtable = lua_code::opcodes::Instruction::abck(
+        lua_code::opcodes::OpCode::NewTable,
+        ra as u32, rb as u32, rc as u32, k,
+    );
+    fs.f.code[pc as usize] = lua_types::opcode::Instruction::new(newtable.0);
+    let extra_inst = lua_code::opcodes::Instruction::ax(
+        lua_code::opcodes::OpCode::ExtraArg, extra as u32,
+    );
+    fs.f.code[pc as usize + 1] = lua_types::opcode::Instruction::new(extra_inst.0);
+}
+
+/// Emits `OP_SETLIST` for `tostore` elements starting at `base+1`, with
+/// `nelems` already-stored elements preceding them. `tostore == -1` means
+/// `LUA_MULTRET` (encoded as 0 in the B field). Also resets `fs.freereg`
+/// to `base + 1`, mirroring `luaK_setlist`.
+fn cg_setlist(fs: &mut FuncState, line: i32, base: i32, nelems: i32, tostore: i32) {
+    let maxc = lua_code::opcodes::MAXARG_C as i32;
+    let tostore_arg = if tostore == LUA_MULTRET { 0 } else { tostore };
+    if nelems <= maxc {
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::SetList,
+            base as u32, tostore_arg as u32, nelems as u32, 0,
+        );
+        emit_inst(fs, line, inst);
+    } else {
+        let extra = nelems / (maxc + 1);
+        let nelems_lo = nelems % (maxc + 1);
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::SetList,
+            base as u32, tostore_arg as u32, nelems_lo as u32, 1,
+        );
+        emit_inst(fs, line, inst);
+        let extra_inst = lua_code::opcodes::Instruction::ax(
+            lua_code::opcodes::OpCode::ExtraArg, extra as u32,
+        );
+        emit_inst(fs, line, extra_inst);
+    }
+    fs.freereg = (base + 1) as u8;
+}
+
+/// Converts a table-and-key expression pair into the appropriate `VINDEX*`
+/// variant. Mirrors `luaK_indexed` from `lcode.c`. Assumes `t` is already a
+/// value-producing form (`VLOCAL`, `VNONRELOC`, or `VUPVAL`) and that any
+/// short-string key has already been promoted to a `VKSTR` constant index.
+fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc) -> Result<(), LuaError> {
+    if k.k == ExprKind::KStr {
+        let s = k.u.strval.clone()
+            .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
+        let k_idx = add_k_string(fs, s);
+        k.u.info = k_idx;
+        k.k = ExprKind::K;
+    }
+    let _ = line;
+    if t.k == ExprKind::UpVal {
+        let temp = t.u.info as u8;
+        debug_assert!(k.k == ExprKind::K);
+        t.u.ind_t = temp;
+        t.u.ind_idx = k.u.info as i16;
+        t.k = ExprKind::IndexUp;
+        return Ok(());
+    }
+    let t_reg = match t.k {
+        ExprKind::Local => t.u.var_ridx,
+        ExprKind::NonReloc => t.u.info as u8,
+        _ => return Err(LuaError::syntax(format_args!(
+            "internal: cg_indexed on non-register table kind {:?}", t.k
+        ))),
+    };
+    t.u.ind_t = t_reg;
+    if k.k == ExprKind::K {
+        t.u.ind_idx = k.u.info as i16;
+        t.k = ExprKind::IndexStr;
+    } else if k.k == ExprKind::KInt && cg_fits_int_key(k.u.ival) {
+        t.u.ind_idx = k.u.ival as i16;
+        t.k = ExprKind::IndexI;
+    } else {
+        cg_exp_to_any_reg(fs, line, k)?;
+        t.u.ind_idx = k.u.info as i16;
+        t.k = ExprKind::Indexed;
+    }
+    Ok(())
+}
+
+fn cg_fits_int_key(i: i64) -> bool {
+    i >= 0 && (i as u32) <= lua_code::opcodes::MAXARG_C
+}
+
+/// Minimal `luaK_exp2anyregup`: if `e` is an upvalue or constant, leave it as
+/// is; otherwise discharge it into some register.
+fn cg_exp_to_any_reg_up(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
+    if matches!(e.k, ExprKind::UpVal | ExprKind::K) {
+        return Ok(());
+    }
+    cg_exp_to_any_reg(fs, line, e)?;
+    Ok(())
+}
+
 /// Minimal `luaK_nil`: emits a LoadNil instruction filling `n` consecutive
 /// registers starting at `from` with `nil`. Does not perform the C
 /// optimization that merges with a preceding LoadNil.
@@ -2275,15 +2455,16 @@ fn recfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Re
 
 /// C: static void closelistfield(FuncState *fs, ConsControl *cc)
 fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
+    let _ = state;
     if cc.v.k == ExprKind::Void {
         return Ok(()); // C: if (cc->v.k == VVOID) return;
     }
-    // TODO(port): lua_code::exp_to_next_reg(ls.fs.as_mut().unwrap(), &mut cc.v)?;
+    let line = ls.linenumber;
+    cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, &mut cc.v)?;
     cc.v.k = ExprKind::Void;
     if cc.tostore == LFIELDS_PER_FLUSH {
-        // C: luaK_setlist(fs, cc->t->u.info, cc->na, cc->tostore)
         let t_info = cc.t.u.info;
-        // TODO(port): lua_code::set_list(ls.fs.as_mut().unwrap(), t_info, cc.na, cc.tostore)?;
+        cg_setlist(ls.fs.as_mut().unwrap(), line, t_info, cc.na, cc.tostore);
         cc.na += cc.tostore;
         cc.tostore = 0;
     }
@@ -2292,20 +2473,21 @@ fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl)
 
 /// C: static void lastlistfield(FuncState *fs, ConsControl *cc)
 fn lastlistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
+    let _ = state;
     if cc.tostore == 0 {
         return Ok(());
     }
     let t_info = cc.t.u.info;
+    let line = ls.linenumber;
     if cc.v.k.has_mult_ret() {
-        // C: luaK_setmultret(fs, &cc->v); luaK_setlist(fs, ..., LUA_MULTRET); cc->na--
-        // TODO(port): lua_code::set_returns(ls.fs.as_mut().unwrap(), &mut cc.v, LUA_MULTRET)?;
-        // TODO(port): lua_code::set_list(ls.fs.as_mut().unwrap(), t_info, cc.na, LUA_MULTRET)?;
+        cg_set_returns(ls.fs.as_mut().unwrap(), &mut cc.v, LUA_MULTRET);
+        cg_setlist(ls.fs.as_mut().unwrap(), line, t_info, cc.na, LUA_MULTRET);
         cc.na -= 1;
     } else {
         if cc.v.k != ExprKind::Void {
-            // TODO(port): lua_code::exp_to_next_reg(ls.fs.as_mut().unwrap(), &mut cc.v)?;
+            cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, &mut cc.v)?;
         }
-        // TODO(port): lua_code::set_list(ls.fs.as_mut().unwrap(), t_info, cc.na, cc.tostore)?;
+        cg_setlist(ls.fs.as_mut().unwrap(), line, t_info, cc.na, cc.tostore);
     }
     cc.na += cc.tostore;
     Ok(())
@@ -2343,14 +2525,9 @@ fn field(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Resul
 /// C: static void constructor(LexState *ls, expdesc *t)
 fn constructor(ls: &mut LexState, state: &mut LuaState, t: &mut ExprDesc) -> Result<(), LuaError> {
     let line = ls.linenumber;
-    // C: int pc = luaK_codeABC(fs, OP_NEWTABLE, 0, 0, 0)
-    // TODO(port): let pc = lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::NewTable, 0, 0, 0)?;
-    let pc = ls.fs.as_ref().unwrap().pc; // placeholder
-    // C: luaK_code(fs, 0) — extra arg space
-    // TODO(port): lua_code::emit(ls.fs.as_mut().unwrap(), Instruction::new(0))?;
+    let pc = cg_emit_newtable(ls.fs.as_mut().unwrap(), line);
 
     let freereg = ls.fs.as_ref().unwrap().freereg as i32;
-    // C: init_exp(t, VNONRELOC, fs->freereg); luaK_reserveregs(fs, 1)
     init_exp(t, ExprKind::NonReloc, freereg);
     reserve_regs(ls.fs.as_mut().unwrap(), 1)?;
 
@@ -2376,13 +2553,11 @@ fn constructor(ls: &mut LexState, state: &mut LuaState, t: &mut ExprDesc) -> Res
             break;
         }
     }
-    // C: check_match(ls, '}', '{', line)
     check_match(ls, state, b'}' as TokenKind, b'{' as TokenKind, line)?;
     lastlistfield(ls, state, &mut cc)?;
 
-    // C: luaK_settablesize(fs, pc, t->u.info, cc.na, cc.nh)
     let t_info = t.u.info;
-    // TODO(port): lua_code::set_table_size(ls.fs.as_mut().unwrap(), pc, t_info, cc.na, cc.nh)?;
+    cg_settablesize(ls.fs.as_mut().unwrap(), pc, t_info, cc.na, cc.nh);
     Ok(())
 }
 
@@ -2620,11 +2795,10 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
             }
             c if c == b'[' as TokenKind => {
                 let mut key = ExprDesc::default();
-                // C: luaK_exp2anyregup(fs, v)
-                // TODO(port): lua_code::exp_to_any_reg_up(ls.fs.as_mut().unwrap(), v)?;
+                let line = ls.linenumber;
+                cg_exp_to_any_reg_up(ls.fs.as_mut().unwrap(), line, v)?;
                 yindex(ls, state, &mut key)?;
-                // C: luaK_indexed(fs, v, &key)
-                // TODO(port): lua_code::indexed(ls.fs.as_mut().unwrap(), v, &mut key)?;
+                cg_indexed(ls.fs.as_mut().unwrap(), line, v, &mut key)?;
             }
             c if c == b':' as TokenKind => {
                 let mut key = ExprDesc::default();

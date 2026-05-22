@@ -2,8 +2,5 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-
-thread 'main' (5615856) panicked at crates/lua-vm/src/state.rs:1379:96:
-not yet implemented: phase-b: coerce_to_string
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b: coerce_to_string
+table: 0x600003fb8750
+[ok] execution completed, status=Ok
