@@ -1,0 +1,6 @@
+strings.lua	PASS	9c62e76
+closure.lua	PASS	9c62e76
+tracegc.lua	PASS	9c62e76
+big.lua	PASS	9c62e76
+sort.lua	PASS	9c62e76
+math.lua	PASS	9c62e76

@@ -471,6 +471,7 @@ $(cat "$per_test_prompt")"
     export CLAUDE_CONFIG_DIR="$HOME/.claude-personal"
     unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
     export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-64000}"
+    export AGENT_TARGET_PROG="$prog"
 
     local timeout_cmd=""
     if command -v gtimeout >/dev/null 2>&1; then
@@ -494,6 +495,7 @@ $(cat "$per_test_prompt")"
     jq -s 'map(select(.type == "result")) | .[-1] // {}' "$transcript" > "$out_json" 2>/dev/null || echo '{}' > "$out_json"
     local cost; cost=$(jq -r '.total_cost_usd // 0' "$out_json")
     commit_agent_changes "debug" "$prog" "$out_json"
+    unset AGENT_TARGET_PROG
     echo "$cost"
 }
 
