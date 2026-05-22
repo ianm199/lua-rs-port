@@ -3,5 +3,7 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing syntax
-slice2-end-OK
+checkpoint A: after silly loops
+checkpoint B: after upval old bug
+checkpoint C: after 256-constants bug
 [ok] execution completed, status=Ok

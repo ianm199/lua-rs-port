@@ -1873,11 +1873,13 @@ fn cg_emit_return(fs: &mut FuncState, line: i32, first: i32, nret: i32) {
 /// Constructs a syntax error for a missing expected token.
 /// In Rust, `l_noret` becomes returning `LuaError`; callers use
 /// `return Err(error_expected(...))`.
-fn error_expected(ls: &LexState, token: TokenKind) -> LuaError {
+fn error_expected(ls: &mut LexState, token: TokenKind) -> LuaError {
     // C: luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "%s expected", luaX_token2str(ls, token)));
-    // TODO(port): lua_lex::token_to_str(ls, token) for the token name
-    let _ = ls;
-    LuaError::syntax(format_args!("{} expected", token))
+    let tok_str = lua_lex::token2str(&ls.lex, token);
+    let mut msg: Vec<u8> = Vec::with_capacity(tok_str.len() + 10);
+    msg.extend_from_slice(&tok_str);
+    msg.extend_from_slice(b" expected");
+    lua_lex::syntax_error(&mut ls.lex, &msg)
 }
 
 /// C: static l_noret errorlimit(FuncState *fs, int limit, const char *what)
@@ -1919,7 +1921,7 @@ fn test_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<bo
 }
 
 /// C: static void check(LexState *ls, int c)
-fn check(ls: &LexState, c: TokenKind) -> Result<(), LuaError> {
+fn check(ls: &mut LexState, c: TokenKind) -> Result<(), LuaError> {
     if ls.t.token != c {
         return Err(error_expected(ls, c));
     }
@@ -3236,9 +3238,15 @@ fn check_match(
             return Err(error_expected(ls, what));
         } else {
             // C: luaX_syntaxerror(ls, luaO_pushfstring(..., "%s expected (to close %s at line %d)", ...))
-            return Err(LuaError::syntax(format_args!(
-                "{} expected (to close {} at line {})", what, who, where_line
-            )));
+            let what_str = lua_lex::token2str(&ls.lex, what);
+            let who_str = lua_lex::token2str(&ls.lex, who);
+            let mut msg: Vec<u8> = Vec::new();
+            msg.extend_from_slice(&what_str);
+            msg.extend_from_slice(b" expected (to close ");
+            msg.extend_from_slice(&who_str);
+            use std::io::Write as _;
+            let _ = write!(msg, " at line {})", where_line);
+            return Err(lua_lex::syntax_error(&mut ls.lex, &msg));
         }
     }
     Ok(())

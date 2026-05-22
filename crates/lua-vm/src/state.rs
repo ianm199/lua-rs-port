@@ -1823,7 +1823,19 @@ impl LuaState {
     pub fn gc_cond_step(&mut self) { /* phase-b no-op */ }
     pub fn gc_barrier_back<T, U>(&mut self, _t: T, _v: U) { /* phase-b no-op */ }
     pub fn gc_barrier_upval<T, U, V>(&mut self, _cl: T, _uv: U, _v: V) { /* phase-b no-op */ }
-    pub fn is_main_thread(&mut self) -> bool { todo!("phase-b: is_main_thread") }
+    /// C: `(G(L)->mainthread == L)` — true if `self` is the main thread.
+    ///
+    /// PORT NOTE: In C this is a pointer-identity check against the global
+    /// state's `mainthread` slot. In Phase B we have no GcRef cycle from the
+    /// main thread to itself (see TODO at `state_open`) and coroutines are
+    /// stubbed (design decision #6), so the only running `LuaState` is the
+    /// main thread. The `mainthread` slot in `GlobalState` is `None` while
+    /// the cycle is unsupported; treat that as "self is the main thread".
+    /// Once Phase E wires real coroutines, this must compare a GcRef pointer
+    /// against `global.mainthread`.
+    pub fn is_main_thread(&mut self) -> bool {
+        self.global().mainthread.is_none()
+    }
     pub fn obj_type_name(&self, _v: &LuaValue) -> &'static [u8] { todo!("phase-b: obj_type_name") }
     pub fn emit_warning(&mut self, _msg: &[u8], _to_cont: bool) { warning(self, _msg, _to_cont) }
 }

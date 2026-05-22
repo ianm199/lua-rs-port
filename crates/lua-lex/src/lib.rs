@@ -562,12 +562,16 @@ fn save_and_next(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError
 /// //   luaD_throw(ls->L, LUA_ERRSYNTAX);
 /// // }
 /// ```
-fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
+pub fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
     // C: msg = luaG_addinfo(ls->L, msg, ls->source, ls->linenumber);
-    // TODO(port): call lua_vm::debug::add_info(msg, &ls.source, ls.linenumber)
-    // to prepend "<source>:<line>: " prefix.  For Phase A, build it manually:
+    const LUA_IDSIZE: usize = 60;
+    let mut buff = [0u8; LUA_IDSIZE];
+    let n = lua_vm::object::chunk_id(&mut buff[..], ls.source.as_bytes());
+    let src_part = &buff[..n];
+
     let mut full_msg: Vec<u8> = Vec::new();
-    let _ = write!(full_msg, "{}:{}: ", "<source>", ls.linenumber);
+    full_msg.extend_from_slice(src_part);
+    let _ = write!(full_msg, ":{}: ", ls.linenumber);
     full_msg.extend_from_slice(msg);
 
     // C: if (token) luaO_pushfstring(ls->L, "%s near %s", msg, txtToken(ls, token));
@@ -577,10 +581,6 @@ fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
         full_msg.extend_from_slice(&tok_text);
     }
 
-    // C: luaD_throw(ls->L, LUA_ERRSYNTAX);
-    // error_sites.tsv: → LuaError::syntax(...)
-    // TODO(port): LuaError::syntax(format_args!(...)) once LuaError is wired;
-    // for Phase A return a placeholder via the stub LuaError type.
     LuaError::syntax_raw(&full_msg)
 }
 
@@ -595,7 +595,7 @@ fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
 /// //   lexerror(ls, msg, ls->t.token);
 /// // }
 /// ```
-pub(crate) fn syntax_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
+pub fn syntax_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
     // C: lexerror(ls, msg, ls->t.token);
     let token = ls.t.kind;
     lex_error(ls, msg, token)
@@ -674,7 +674,7 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
 /// PORT NOTE: The `LexState` parameter is retained in the signature for API
 /// parity with the C export, but is unused in Rust because we don't push onto
 /// the Lua stack.  The real formatting is in [`token2str_raw`].
-pub(crate) fn token2str(_ls: &LexState, token: i32) -> Vec<u8> {
+pub fn token2str(_ls: &LexState, token: i32) -> Vec<u8> {
     token2str_raw(token)
 }
 

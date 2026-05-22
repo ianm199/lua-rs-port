@@ -7,7 +7,7 @@ arg = arg or {}
 _G = _G or _ENV
 if _VERSION == nil then _VERSION = "Lua 5.4" end
 
--- slice 2: lines 1-97 of constructs.lua: operator test loop
+-- slice 3: through line 130 (bug since 5.4.0 - 257 constants)
 ;;print "testing syntax";;
 
 local debug = require "debug"
@@ -68,10 +68,6 @@ assert((x>y) and x or y == 2);
 assert(1234567890 == tonumber('1234567890') and 1234567890+1 == 1234567891)
 
 do   -- testing operators with diffent kinds of constants
-  -- operands to consider:
-  --  * fit in register
-  --  * constant doesn't fit in register
-  --  * floats with integral values
   local operand = {3, 100, 5.0, -10, -5.0, 10000, -10000}
   local operator = {"+", "-", "*", "/", "//", "%", "^",
                     "&", "|", "^", "<<", ">>",
@@ -103,4 +99,37 @@ do   -- testing operators with diffent kinds of constants
   _ENV.XX = nil
 end
 
-print("slice2-end-OK")
+
+-- silly loops
+repeat until 1; repeat until true;
+while false do end; while nil do end;
+print("checkpoint A: after silly loops")
+
+do  -- test old bug (first name could not be an `upvalue')
+ local a; local function f(x) x={a=1}; x={x=1}; x={G=1} end
+end
+print("checkpoint B: after upval old bug")
+
+do   -- bug since 5.4.0
+  -- create code with a table using more than 256 constants
+  local code = {"local x = {"}
+  for i = 1, 257 do
+    code[#code + 1] = i .. ".1,"
+  end
+  code[#code + 1] = "};"
+  code = table.concat(code)
+
+  -- add "ret" to the end of that code and checks that
+  -- it produces the expected value "val"
+  local function check (ret, val)
+    local code = code .. ret
+    code = load(code)
+    assert(code() == val)
+  end
+
+  check("return (1 ~ (2 or 3))", 1 ~ 2)
+  check("return (1 | (2 or 3))", 1 | 2)
+  check("return (1 + (2 or 3))", 1 + 2)
+  check("return (1 << (2 or 3))", 1 << 2)
+end
+print("checkpoint C: after 256-constants bug")
