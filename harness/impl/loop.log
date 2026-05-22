@@ -284,3 +284,7 @@ help: use `let _ = ...` to ignore the resulting value
 [2026-05-16T17:58:20Z] ─── iter 2  (spent: $0.00) ───
 [2026-05-16T17:58:20Z]   stub blocker: stack_available
 [2026-05-16T17:58:20Z]   dispatching IMPLEMENT agent for stack_available at crates/lua-vm/src/state.rs:1145:50 (budget $10)
+[2026-05-16T17:59:07Z]   agent done. iter cost=$0.44448425  total=$0.00
+[2026-05-16T17:59:07Z] ─── iter 3  (spent: $0.00) ───
+[2026-05-16T17:59:08Z]   stub blocker: push_cclosure
+[2026-05-16T17:59:08Z]   dispatching IMPLEMENT agent for push_cclosure at crates/lua-vm/src/api.rs:671:5 (budget $10)

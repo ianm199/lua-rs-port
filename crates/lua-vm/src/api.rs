@@ -662,13 +662,51 @@ pub fn push_fstring(state: &mut LuaState, formatted: &[u8]) -> Result<GcRef<LuaS
 
 // C: LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n)
 pub fn push_cclosure(
-    _state: &mut LuaState,
-    _f: fn(&mut LuaState) -> Result<usize, LuaError>,
-    _n: i32,
+    state: &mut LuaState,
+    f: fn(&mut LuaState) -> Result<usize, LuaError>,
+    n: i32,
 ) -> Result<(), LuaError> {
-    // TODO(phase-b): closure construction requires LuaCFnPtr alignment between
-    // lua-vm and lua-types. Whole body deferred until that handshake lands.
-    todo!("phase-b: push_cclosure")
+    // C: lua_lock(L);
+    //    if (n == 0) { setfvalue(s2v(L->top.p), fn); api_incr_top(L); }
+    //    else { api_checknelems(L, n); api_check(L, n <= MAXUPVAL, ...);
+    //           cl = luaF_newCclosure(L, n); cl->f = fn;
+    //           L->top.p -= n;
+    //           while (n--) setobj2n(L, &cl->upvalue[n], s2v(L->top.p + n));
+    //           setclCvalue(L, s2v(L->top.p), cl); api_incr_top(L);
+    //           luaC_checkGC(L); }
+    //    lua_unlock(L);
+    //
+    // PORT NOTE: `LuaClosure::LightC` and `LuaCClosure` carry a `LuaCFnPtr`
+    // (a `usize` index into `GlobalState.c_functions`) rather than the raw
+    // function pointer, because lua-types cannot reference `LuaState`. We
+    // register `f` in the per-state registry and store the resulting index.
+    let idx: lua_types::closure::LuaCFnPtr = {
+        let mut g = state.global_mut();
+        let i = g.c_functions.len();
+        g.c_functions.push(f);
+        i
+    };
+    if n == 0 {
+        state.push(LuaValue::Function(LuaClosure::LightC(idx)));
+    } else {
+        debug_assert!(n > 0 && (n as u32) <= MAX_UPVAL as u32, "upvalue index too large");
+        let n_usize = n as usize;
+        let top = state.top_idx();
+        debug_assert!((top.0 as usize) >= n_usize, "not enough elements on stack");
+        let base = top.0 as usize - n_usize;
+        let mut upvalues: Vec<LuaValue> = Vec::with_capacity(n_usize);
+        for i in 0..n_usize {
+            upvalues.push(state.get_at(crate::state::StackIdx((base + i) as u32)));
+        }
+        state.pop_n(n_usize);
+        let cl = LuaClosure::C(GcRef::new(lua_types::closure::LuaCClosure {
+            func: idx,
+            upvalues,
+        }));
+        state.push(LuaValue::Function(cl));
+        state.gc().check_step();
+    }
+    Ok(())
 }
 
 // C: LUA_API void lua_pushboolean (lua_State *L, int b)
