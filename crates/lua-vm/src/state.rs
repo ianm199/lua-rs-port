@@ -1299,7 +1299,14 @@ impl LuaState {
             }
         }
     }
-    pub fn adjust_varargs<C, N, CL>(&mut self, _ci: C, _nfixparams: N, _cl: &CL) -> Result<(), LuaError> { todo!("phase-b: adjust_varargs") }
+    pub fn adjust_varargs(
+        &mut self,
+        ci: CallInfoIdx,
+        nfixparams: i32,
+        cl: &GcRef<lua_types::closure::LuaLClosure>,
+    ) -> Result<(), LuaError> {
+        crate::tagmethods::adjust_varargs(self, nfixparams, ci, &cl.0.proto)
+    }
     pub fn get_varargs<C, R, N>(&mut self, _ci: C, _ra: R, _n: N) -> Result<i32, LuaError> { todo!("phase-b: get_varargs") }
 
     pub fn close_upvals<L>(&mut self, _level: L) -> Result<(), LuaError> { todo!("phase-b: close_upvals") }
