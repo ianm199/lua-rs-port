@@ -1547,6 +1547,7 @@ fn register_finalizable_table(state: &mut LuaState, tbl: &GcRef<LuaTable>) {
 /// Replaced by `lua_gc::run_pending_finalizers` when Phase D's incremental
 /// GC lands.
 pub fn run_pending_finalizers(state: &mut LuaState) {
+    let mut did_run = false;
     loop {
         let target_idx = {
             let pending = &state.global().pending_finalizers;
@@ -1560,6 +1561,24 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
             found
         };
         let Some(i) = target_idx else { break; };
+        // Mirror C-Lua's `clearbyvalues(g, g->weak, NULL)` from atomic():
+        // clear weak-VALUE entries whose value is only kept alive by the
+        // current crop of finalizable-dead objects, BEFORE running any
+        // finalizer. The "bug-in-5.1" case (`a.x = t` strongly referenced
+        // from a `__gc`-pending table) requires `C.key == nil` inside the
+        // finalizer; without this pre-pass the value's Rc count still
+        // includes the FDO's strong ref and the weak slot is not cleared.
+        let fdos: Vec<GcRef<lua_types::value::LuaTable>> = state
+            .global()
+            .pending_finalizers
+            .iter()
+            .filter(|t| std::rc::Rc::strong_count(&t.0) == 1)
+            .cloned()
+            .collect();
+        let weak_tables_pre: Vec<GcRef<lua_types::value::LuaTable>> = collect_live_weak_tables(state);
+        lua_types::value::sweep_weak_values_pre_finalizer(&weak_tables_pre, &fdos);
+        drop(fdos);
+        drop(weak_tables_pre);
         let tbl = state.global_mut().pending_finalizers.swap_remove(i);
         let mt = tbl.metatable();
         let gc_fn = match mt {
@@ -1572,10 +1591,43 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
         if !matches!(gc_fn, LuaValue::Function(_)) {
             continue;
         }
+        did_run = true;
         state.push(gc_fn);
         state.push(LuaValue::Table(tbl));
         let _ = pcall_k(state, 1, 0, 0, 0, None);
     }
+    // After all finalizers run, the FDOs are gone — do a regular full sweep
+    // so weak-KEY entries (and any weak-value entries newly exposed by the
+    // FDO drops) settle to their final state. Mirrors the
+    // `clearbykeys` + final `clearbyvalues` passes at the tail of
+    // C-Lua's `atomic()`.
+    if did_run {
+        let weak_tables_post: Vec<GcRef<lua_types::value::LuaTable>> = collect_live_weak_tables(state);
+        lua_types::value::sweep_weak_tables(&weak_tables_post);
+    }
+}
+
+/// Snapshot the currently-live weak tables from
+/// `GlobalState.weak_tables_registry`, deduplicating by Rc pointer and
+/// dropping any whose backing storage has been freed. Used by both the
+/// pre-finalizer and post-finalizer sweeps in [`run_pending_finalizers`]
+/// and by the explicit `collectgarbage("collect")` path.
+fn collect_live_weak_tables(state: &mut LuaState) -> Vec<GcRef<lua_types::value::LuaTable>> {
+    let mut g = state.global_mut();
+    g.weak_tables_registry.retain(|w| w.strong_count() > 0);
+    let mut seen = std::collections::HashSet::<usize>::new();
+    g.weak_tables_registry
+        .iter()
+        .filter_map(|w| w.upgrade())
+        .filter_map(|rc| {
+            let id = std::rc::Rc::as_ptr(&rc) as *const () as usize;
+            if seen.insert(id) {
+                Some(GcRef(rc))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 // C: LUA_API int lua_setmetatable (lua_State *L, int objindex)

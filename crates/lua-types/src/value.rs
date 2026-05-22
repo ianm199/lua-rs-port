@@ -386,6 +386,18 @@ fn entry_is_weakly_dead_global(
 }
 
 fn is_target_dead_global(target: &LuaValue, all_tables: &[GcRef<LuaTable>]) -> bool {
+    is_target_dead_global_with_fdos(target, all_tables, &[])
+}
+
+/// Same as `is_target_dead_global` but additionally treats `fdos` (finalizable-
+/// dead objects: tables in `pending_finalizers` whose only strong ref is the
+/// queue itself) as if they were already dropped — so any strong ref the
+/// target receives from an FDO's entries or metatable is discounted.
+fn is_target_dead_global_with_fdos(
+    target: &LuaValue,
+    all_tables: &[GcRef<LuaTable>],
+    fdos: &[GcRef<LuaTable>],
+) -> bool {
     let total = match strong_count_of(target) {
         Some(n) => n,
         None => return false,
@@ -394,6 +406,11 @@ fn is_target_dead_global(target: &LuaValue, all_tables: &[GcRef<LuaTable>]) -> b
     if let LuaValue::Table(target_tbl) = target {
         for t in all_tables {
             if GcRef::ptr_eq(target_tbl, t) {
+                extra_rc += 1;
+            }
+        }
+        for f in fdos {
+            if GcRef::ptr_eq(target_tbl, f) {
                 extra_rc += 1;
             }
         }
@@ -415,8 +432,82 @@ fn is_target_dead_global(target: &LuaValue, all_tables: &[GcRef<LuaTable>]) -> b
             }
         }
     }
-    let strong = total.saturating_sub(extra_rc).saturating_sub(weak_refs);
+    let mut fdo_refs = 0usize;
+    for f in fdos {
+        for (fk, fv) in f.entries.borrow().iter() {
+            if same_rc(target, fk) {
+                fdo_refs += 1;
+            }
+            if same_rc(target, fv) {
+                fdo_refs += 1;
+            }
+        }
+        if let Some(mt) = f.metatable() {
+            if let LuaValue::Table(target_tbl) = target {
+                if GcRef::ptr_eq(&mt, target_tbl) {
+                    fdo_refs += 1;
+                }
+            }
+        }
+    }
+    let strong = total
+        .saturating_sub(extra_rc)
+        .saturating_sub(weak_refs)
+        .saturating_sub(fdo_refs);
     strong == 0
+}
+
+/// Pre-finalizer weak-**value** sweep.
+///
+/// Clears entries in weak-value tables whose value is reachable only through
+/// finalizable-dead objects (`fdos`) and other weak slots. Weak-key entries
+/// are NOT touched here — those are cleared by the post-finalizer
+/// [`sweep_weak_tables`] pass, by which point the FDOs have been dropped.
+///
+/// PORT NOTE: mirrors the order in C-Lua's `atomic()`:
+///   `clearbyvalues(g, g->weak, NULL)` — runs **before** `markbeingfnz`
+///   resurrects finalizable objects' transitive closure. The "bug-in-5.1"
+///   testes/gc.lua case (`a.x = t; setmetatable(a, {__gc = … assert(C.key == nil)})`)
+///   requires this ordering: `C.key` (a weak value pointing at `t`) must be
+///   cleared before `a`'s finalizer runs, even though `a.x = t` keeps `t`
+///   strongly reachable through the finalizable `a`.
+pub fn sweep_weak_values_pre_finalizer(
+    weak_tables: &[GcRef<LuaTable>],
+    fdos: &[GcRef<LuaTable>],
+) {
+    if weak_tables.is_empty() || fdos.is_empty() {
+        return;
+    }
+    loop {
+        let mut any_removed = false;
+        for t in weak_tables {
+            let mode = t.weak_mode.get();
+            if (mode & WEAK_VALUES) == 0 {
+                continue;
+            }
+            let dead_indices: Vec<usize> = {
+                let entries = t.entries.borrow();
+                let mut result = Vec::new();
+                for (i, (_, v)) in entries.iter().enumerate() {
+                    if is_target_dead_global_with_fdos(v, weak_tables, fdos) {
+                        result.push(i);
+                    }
+                }
+                result
+            };
+            if !dead_indices.is_empty() {
+                let mut entries = t.entries.borrow_mut();
+                for &i in dead_indices.iter().rev() {
+                    entries.swap_remove(i);
+                }
+                drop(entries);
+                any_removed = true;
+            }
+        }
+        if !any_removed {
+            break;
+        }
+    }
 }
 
 fn same_rc(a: &LuaValue, b: &LuaValue) -> bool {
