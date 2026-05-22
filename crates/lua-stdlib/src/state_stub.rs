@@ -1120,6 +1120,18 @@ impl LuaStateStubExt for LuaState {
     ) -> Result<(), LuaError> {
         crate::auxlib::traceback(self, other, msg, level)
     }
+
+    fn upvalue_id(&mut self, fidx: i32, n: i32) -> Result<*mut std::ffi::c_void, LuaError> {
+        match lua_vm::api::upvalue_id(self, fidx, n) {
+            Some(id) => Ok(id as *mut std::ffi::c_void),
+            None => Ok(std::ptr::null_mut()),
+        }
+    }
+
+    fn join_upvalues(&mut self, fidx1: i32, n1: i32, fidx2: i32, n2: i32) -> Result<(), LuaError> {
+        lua_vm::api::upvalue_join(self, fidx1, n1, fidx2, n2);
+        Ok(())
+    }
 }
 
 /// Copy populated fields from the canonical `lua_vm::debug::LuaDebug` into
