@@ -578,9 +578,11 @@ pub(crate) fn finish_get(
     key: LuaValue,
     result_idx: StackIdx,
     slot_empty: bool,
+    t_idx: Option<StackIdx>,
 ) -> Result<(), LuaError> {
     // C: for (loop = 0; loop < MAXTAGLOOP; loop++)
     let mut t = t_val;
+    let mut t_idx = t_idx;
     for _loop in 0..MAX_TAG_LOOP {
         let tm: LuaValue;
         if slot_empty && !matches!(t, LuaValue::Table(_)) {
@@ -588,7 +590,10 @@ pub(crate) fn finish_get(
             // C: if (l_unlikely(notm(tm))) luaG_typeerror(L, t, "index");
             tm = state.get_tm_by_obj(&t, TagMethod::Index);
             if matches!(tm, LuaValue::Nil) {
-                return Err(LuaError::type_error(&t, "index"));
+                return Err(match t_idx {
+                    Some(idx) => crate::debug::type_error(state, &t, idx, b"index"),
+                    None => LuaError::type_error(&t, "index"),
+                });
             }
         } else {
             // C: t is a table; tm = fasttm(L, hvalue(t)->metatable, TM_INDEX)
@@ -607,6 +612,7 @@ pub(crate) fn finish_get(
         }
         // C: t = tm; try t[key] again
         t = tm.clone();
+        t_idx = None;
         // C: if (luaV_fastget(L, t, key, slot, luaH_get))
         if let Some(v) = state.fast_get(&t, &key)? {
             state.set_at(result_idx, v);
@@ -626,8 +632,10 @@ pub(crate) fn finish_set(
     key: LuaValue,
     val: LuaValue,
     _slot_present: bool,
+    t_idx: Option<StackIdx>,
 ) -> Result<(), LuaError> {
     let mut t = t_val;
+    let mut t_idx = t_idx;
     for _loop in 0..MAX_TAG_LOOP {
         let tm: LuaValue;
         if matches!(t, LuaValue::Table(_)) {
@@ -645,7 +653,10 @@ pub(crate) fn finish_set(
             // C: if (notm(tm)) luaG_typeerror(L, t, "index");
             tm = state.get_tm_by_obj(&t, TagMethod::NewIndex);
             if matches!(tm, LuaValue::Nil) {
-                return Err(LuaError::type_error(&t, "index"));
+                return Err(match t_idx {
+                    Some(idx) => crate::debug::type_error(state, &t, idx, b"index"),
+                    None => LuaError::type_error(&t, "index"),
+                });
             }
         }
         // C: if (ttisfunction(tm)) { luaT_callTM(L, tm, t, key, val); return; }
@@ -655,6 +666,7 @@ pub(crate) fn finish_set(
         }
         // C: t = tm; luaV_fastget again
         t = tm.clone();
+        t_idx = None;
         if state.fast_get(&t, &key)?.is_some() {
             // C: luaV_finishfastset(L, t, slot, val)
             state.table_raw_set(&t, key.clone(), val.clone())?;
@@ -1490,7 +1502,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                 // C: Protect(luaV_finishget(...))
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, upval, key, ra, true)?;
+                                finish_get(state, upval, key, ra, true, None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1500,7 +1512,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    if (integer key) fastgeti else fastget
                     OpCode::GetTable => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         let rc_v = state.get_at(base + i.arg_c()).clone();
                         let fast_result = if let LuaValue::Int(n) = &rc_v {
                             state.fast_get_int(&rb_v, *n)?
@@ -1512,7 +1525,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, rc_v, ra, true)?;
+                                finish_get(state, rb_v, rc_v, ra, true, Some(rb_idx))?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1523,7 +1536,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    else { TValue key; setivalue(&key, c); Protect(finishget) }
                     OpCode::GetI => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         let c = i.arg_c() as i64;
                         match state.fast_get_int(&rb_v, c)? {
                             Some(v) => state.set_at(ra, v),
@@ -1531,7 +1545,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                 let key = LuaValue::Int(c);
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true)?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1540,7 +1554,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: rb = vRB(i); rc = KC(i) (short string key)
                     OpCode::GetField => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         let k_idx = i.arg_c() as usize;
                         let key = state.proto_const(&cl, k_idx).clone();
                         match state.fast_get_short_str(&rb_v, &key)? {
@@ -1548,7 +1563,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true)?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1574,7 +1589,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_set(state, upval, key, rc_v, false)?;
+                                finish_set(state, upval, key, rc_v, false, None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1582,7 +1597,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // ── OP_SETTABLE ───────────────────────────────────────────
                     // C: ra = RA(i) (table); rb = vRB(i) key; rc = RKC(i) val
                     OpCode::SetTable => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let ra_v = state.get_at(ra_idx).clone();
                         let rb_v = state.get_at(base + i.arg_b()).clone();
                         let rc_v = if i.test_k() {
                             state.proto_const(&cl, i.arg_c() as usize).clone()
@@ -1600,14 +1616,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            finish_set(state, ra_v, rb_v, rc_v, false)?;
+                            finish_set(state, ra_v, rb_v, rc_v, false, Some(ra_idx))?;
                             trap = state.ci_trap(ci);
                         }
                     }
                     // ── OP_SETI ───────────────────────────────────────────────
                     // C: ra = RA(i) (table); c = GETARG_B(i) (int key); rc = RKC(i)
                     OpCode::SetI => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let ra_v = state.get_at(ra_idx).clone();
                         let c = i.arg_b() as i64;
                         let rc_v = if i.test_k() {
                             state.proto_const(&cl, i.arg_c() as usize).clone()
@@ -1621,14 +1638,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            finish_set(state, ra_v, LuaValue::Int(c), rc_v, false)?;
+                            finish_set(state, ra_v, LuaValue::Int(c), rc_v, false, Some(ra_idx))?;
                             trap = state.ci_trap(ci);
                         }
                     }
                     // ── OP_SETFIELD ───────────────────────────────────────────
                     // C: ra = RA(i) table; rb = KB(i) key; rc = RKC(i) val
                     OpCode::SetField => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let ra_v = state.get_at(ra_idx).clone();
                         let b_idx = i.arg_b() as usize;
                         let key = state.proto_const(&cl, b_idx).clone();
                         let rc_v = if i.test_k() {
@@ -1644,7 +1662,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_set(state, ra_v, key, rc_v, false)?;
+                                finish_set(state, ra_v, key, rc_v, false, Some(ra_idx))?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1685,7 +1703,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: ra+1 = rb; if fastget(rb, key) ra=slot else finishget
                     OpCode::Self_ => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         let k_idx = i.arg_c() as usize; // RKC key (always a string)
                         let key = if i.test_k() {
                             state.proto_const(&cl, k_idx).clone()
@@ -1699,7 +1718,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true)?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
                                 trap = state.ci_trap(ci);
                             }
                         }

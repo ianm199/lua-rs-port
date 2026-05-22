@@ -203,6 +203,8 @@ impl LuaTable {
         *self.metatable.borrow_mut() = mt;
     }
 
+    pub fn weak_mode(&self) -> u8 { self.weak_mode.get() }
+
     pub fn len(&self) -> usize { self.entries.borrow().len() }
     pub fn is_empty(&self) -> bool { self.entries.borrow().is_empty() }
 
@@ -316,6 +318,105 @@ fn strong_count_of(v: &LuaValue) -> Option<usize> {
         },
         _ => None,
     }
+}
+
+/// Cross-table weak-sweep used at `collectgarbage("collect")` time.
+///
+/// The per-table `entry_is_weakly_dead` check called from `get`/`next_pair`
+/// undercounts when the same target is held weakly across multiple tables
+/// (the "bug-in-5.1" case in `testes/gc.lua`): each call inspects only one
+/// entry and treats the other table's weak Rc as if it were strong.
+///
+/// This routine iterates the full list of currently-registered weak tables
+/// and removes entries whose weak target is held only by weak slots —
+/// counted across *all* tables in the list. Iterates until the sweep makes
+/// no further progress so that chain-clears (clearing one entry exposes
+/// another) settle to a fixed point.
+pub fn sweep_weak_tables(tables: &[GcRef<LuaTable>]) {
+    if tables.is_empty() {
+        return;
+    }
+    loop {
+        let mut any_removed = false;
+        for t in tables {
+            let mode = t.weak_mode.get();
+            if mode == 0 {
+                continue;
+            }
+            let dead_indices: Vec<usize> = {
+                let entries = t.entries.borrow();
+                let mut result = Vec::new();
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if entry_is_weakly_dead_global(k, v, mode, tables) {
+                        result.push(i);
+                    }
+                }
+                result
+            };
+            if !dead_indices.is_empty() {
+                let mut entries = t.entries.borrow_mut();
+                for &i in dead_indices.iter().rev() {
+                    entries.swap_remove(i);
+                }
+                drop(entries);
+                any_removed = true;
+            }
+        }
+        if !any_removed {
+            break;
+        }
+    }
+}
+
+fn entry_is_weakly_dead_global(
+    k: &LuaValue,
+    v: &LuaValue,
+    mode: u8,
+    all_tables: &[GcRef<LuaTable>],
+) -> bool {
+    let weak_k = (mode & WEAK_KEYS) != 0;
+    let weak_v = (mode & WEAK_VALUES) != 0;
+    if weak_k && is_target_dead_global(k, all_tables) {
+        return true;
+    }
+    if weak_v && is_target_dead_global(v, all_tables) {
+        return true;
+    }
+    false
+}
+
+fn is_target_dead_global(target: &LuaValue, all_tables: &[GcRef<LuaTable>]) -> bool {
+    let total = match strong_count_of(target) {
+        Some(n) => n,
+        None => return false,
+    };
+    let mut extra_rc = 0usize;
+    if let LuaValue::Table(target_tbl) = target {
+        for t in all_tables {
+            if GcRef::ptr_eq(target_tbl, t) {
+                extra_rc += 1;
+            }
+        }
+    }
+    let mut weak_refs = 0usize;
+    for t in all_tables {
+        let tmode = t.weak_mode.get();
+        if tmode == 0 {
+            continue;
+        }
+        let tweak_k = (tmode & WEAK_KEYS) != 0;
+        let tweak_v = (tmode & WEAK_VALUES) != 0;
+        for (ek, ev) in t.entries.borrow().iter() {
+            if tweak_k && same_rc(target, ek) {
+                weak_refs += 1;
+            }
+            if tweak_v && same_rc(target, ev) {
+                weak_refs += 1;
+            }
+        }
+    }
+    let strong = total.saturating_sub(extra_rc).saturating_sub(weak_refs);
+    strong == 0
 }
 
 fn same_rc(a: &LuaValue, b: &LuaValue) -> bool {

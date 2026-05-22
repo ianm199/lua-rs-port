@@ -1541,6 +1541,12 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
             }
             // C: hvalue(obj)->metatable = mt;
             tbl.set_metatable(mt);
+            if tbl.weak_mode() != 0 {
+                state
+                    .global_mut()
+                    .weak_tables_registry
+                    .push(std::rc::Rc::downgrade(&tbl.0));
+            }
         }
         LuaValue::UserData(ref ud) => {
             if let Some(ref mt_table) = mt {
@@ -1756,6 +1762,32 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
         // C: case LUA_GCCOLLECT: luaC_fullgc(L, 0);
         GcArgs::Collect => {
             state.gc().full_collect();
+            // Phase-B stand-in for the C atomic-phase weak-table pass: a
+            // cross-table sweep of every weak/ephemeron table reachable
+            // from the registry. The per-entry Rc-strong-count check used
+            // by `next_pair`/`get` undercounts when the same target is
+            // held weakly by multiple tables (the bug-in-5.1 case in
+            // `testes/gc.lua`); this global pass closes that gap.
+            // Removed in Phase D when real incremental GC clears these.
+            let live_weak_tables: Vec<GcRef<lua_types::value::LuaTable>> = {
+                let mut g = state.global_mut();
+                g.weak_tables_registry.retain(|w| w.strong_count() > 0);
+                let mut seen = std::collections::HashSet::<usize>::new();
+                g.weak_tables_registry
+                    .iter()
+                    .filter_map(|w| w.upgrade())
+                    .filter_map(|rc| {
+                        let id = std::rc::Rc::as_ptr(&rc) as *const () as usize;
+                        if seen.insert(id) {
+                            Some(GcRef(rc))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            lua_types::value::sweep_weak_tables(&live_weak_tables);
+            drop(live_weak_tables);
             // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
             // so total_bytes() only ever shrinks (each `Step` simulates
             // freed memory). Refill to a baseline here so subsequent Step

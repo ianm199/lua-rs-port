@@ -1299,18 +1299,24 @@ fn var_info(state: &LuaState, val_idx: StackIdx) -> Vec<u8> {
         // C: kind = getupvalname(ci, o, &name);
         let mut up_name: &[u8] = b"?";
         kind = get_upval_name(&ci, val_idx, &mut up_name, state);
+        eprintln!("DBG var_info: val_idx={:?} ci.func={:?} ci.top={:?} upval_kind={:?}",
+                  val_idx, ci.func, ci.top, kind);
         if kind.is_some() {
             name_owned = up_name.to_vec();
         } else {
             // C: int reg = instack(ci, o); if (reg >= 0) kind = getobjname(...);
             let reg = in_stack(&ci, val_idx, state);
+            eprintln!("DBG   in_stack reg={}", reg);
             if reg >= 0 {
                 // get_obj_name writes into `nref`, which borrows from the local
                 // `proto`.  Copy the bytes out before proto is dropped so the
                 // name survives.
                 let proto = ci_lua_proto(&ci, state);
                 let mut nref: &[u8] = b"?";
-                let k = get_obj_name(&proto, current_pc(&ci), reg, &mut nref);
+                let pc = current_pc(&ci);
+                let k = get_obj_name(&proto, pc, reg, &mut nref);
+                eprintln!("DBG   get_obj_name pc={} reg={} kind={:?} name={:?}",
+                          pc, reg, k, String::from_utf8_lossy(nref));
                 kind = k;
                 if kind.is_some() {
                     name_owned = nref.to_vec();

@@ -713,6 +713,16 @@ pub struct GlobalState {
     // C: GCObject *allweak — all-weak tables; Phase D
     pub allweak: Vec<GcRef<LuaTable>>,
 
+    /// Phase-B cross-table weak-sweep registry.
+    ///
+    /// `lua_types::value::sweep_weak_tables` iterates this list at
+    /// `collectgarbage("collect")` time to clear entries whose weak target
+    /// is held only by other weak slots. Holds `Weak<LuaTable>` so the
+    /// registry itself does not pin tables that the user has dropped.
+    /// Replaced by the proper `weak` / `ephemeron` / `allweak` lists when
+    /// Phase D's incremental sweep lands.
+    pub weak_tables_registry: Vec<std::rc::Weak<lua_types::value::LuaTable>>,
+
     // C: GCObject *tobefnz — pending finalizers; Phase D
     // types.tsv: global_State.tobefnz → Vec<GcRef<dyn Collectable>>
     pub tobefnz: Vec<GcRef<dyn Collectable>>,
@@ -1777,7 +1787,7 @@ impl LuaState {
         }
         let res = self.top_idx();
         self.push(LuaValue::Nil);
-        crate::vm::finish_get(self, t.clone(), k.clone(), res, true)?;
+        crate::vm::finish_get(self, t.clone(), k.clone(), res, true, None)?;
         let value = self.get_at(res);
         self.pop();
         Ok(value)
@@ -1788,7 +1798,7 @@ impl LuaState {
             self.gc_barrier_back(t, &v);
             return Ok(());
         }
-        crate::vm::finish_set(self, t.clone(), k, v, true)
+        crate::vm::finish_set(self, t.clone(), k, v, true, None)
     }
     pub fn table_raw_set(&mut self, t: &LuaValue, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
         let LuaValue::Table(tbl) = t else {
@@ -2857,6 +2867,7 @@ pub fn new_state() -> Option<LuaState> {
         weak: Vec::new(),
         ephemeron: Vec::new(),
         allweak: Vec::new(),
+        weak_tables_registry: Vec::new(),
         // C: g->twups = NULL;
         twups: Vec::new(),
         // C: g->panic = NULL;
