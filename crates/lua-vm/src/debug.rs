@@ -1758,15 +1758,17 @@ pub(crate) fn trace_exec(state: &mut LuaState, pc: u32) -> Result<i32, LuaError>
 // ─── File-local helpers referenced above but not directly translated ──────────
 
 /// Gets the source line name (short, truncated) for error messages.
-/// Stub for `luaO_chunkid` from `lobject.c`.
 ///
-/// C: `void luaO_chunkid(char *out, const char *source, size_t srclen)`
-/// TODO(port): full implementation lives in crate::object (lobject.c → object.rs)
+/// C: `void luaO_chunkid(char *out, const char *source, size_t srclen)` — delegates
+/// to the real impl in `crate::object`. Handles `=name`, `@filename`, and
+/// `[string "..."]` formatting so error prefixes are concise rather than dumping
+/// the entire source verbatim.
 fn chunk_id(out: &mut [u8; LUA_IDSIZE], source: &[u8], _srclen: usize) {
-    // Minimal stub: copy up to LUA_IDSIZE-1 bytes and NUL-terminate
-    let n = source.len().min(LUA_IDSIZE - 1);
-    out[..n].copy_from_slice(&source[..n]);
-    out[n] = 0;
+    out.fill(0);
+    let n = crate::object::chunk_id(&mut out[..], source);
+    if n < out.len() {
+        out[n] = 0;
+    }
 }
 
 /// Gets the local variable name for register `reg+1` at instruction `pc` in `p`.
