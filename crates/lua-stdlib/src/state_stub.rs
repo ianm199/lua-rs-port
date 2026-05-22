@@ -339,6 +339,13 @@ impl LuaStateStubExt for LuaState {
         lua_vm::api::rotate(self, idx, -1);
         lua_vm::api::set_top(self, -2)
     }
+
+    fn load(&mut self, chunk: &[u8], name: &[u8], mode: Option<&[u8]>) -> Result<bool, LuaError> {
+        let mut remaining = Some(chunk.to_vec());
+        let reader: Box<dyn FnMut() -> Option<Vec<u8>>> = Box::new(move || remaining.take());
+        let status = lua_vm::api::load(self, reader, Some(name), mode)?;
+        Ok(status == LuaStatus::Ok)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

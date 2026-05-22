@@ -1,1 +1,1 @@
-registry_get
+load
