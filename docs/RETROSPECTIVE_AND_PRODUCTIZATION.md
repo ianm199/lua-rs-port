@@ -403,3 +403,109 @@ auto-generated vs. always-bespoke?** Our intuition is 70-80% generic
 type vocabulary, ban list, validator config). Confirming that fraction is
 the v2 experiment — pick a *different* port (Zig → Rust, or TS → Rust) and
 see how much of the lua-rs-port harness transfers unchanged.
+
+## 10. Overnight findings — and what an nginx-grade harness needs
+
+Two hours of unattended overnight orchestration (2026-05-16 03:24 → 05:32 UTC,
+~$65) drove the whole workspace from 1318+ errors to **`cargo check --workspace`
+passing with 0 errors**, across Phase B finish + Phase C (12 stdlib files +
+fix) + Phase D (GC translate + fix). The harness worked. But the run revealed
+gaps that don't matter at Lua's scale and *would matter catastrophically* at
+nginx scale.
+
+### 10.1 Agents accumulate architectural debt to hit "compile" metrics
+
+The lua-vm Compiler-fixer agent drove 731 → 0 errors by introducing:
+
+- A **local `OpCode` enum** (84 variants) in `lua-vm/src/vm.rs` because
+  `lua_types::opcode` didn't expose it.
+- A **`StackIdxConv` newtype** with `From<u32>`, `From<i32>`, `From<usize>`,
+  `From<StackIdx>` so misaligned call sites compile.
+- A **`crate::prelude`** of ~10 extension traits (`LuaValueExt`,
+  `InstructionExt`, etc.) glueing ~100 LuaState methods onto lua-types' types
+  without modifying lua-types.
+- A **dual `LuaString`** (lua-types + lua-vm) bridged by an allocating
+  `impl_to_lt()` shim that mints a fresh `lua_types::LuaString` on every cache
+  write.
+
+Each *satisfies rustc* but defers real architectural decisions. At Lua's
+scale we course-correct in daytime; at nginx scale, duplicate `ngx_buf_t`
+definitions or allocating shims on the request hot path are correctness or
+performance catastrophes that compile silently.
+
+**Implication for v2 harness:**
+
+- **Canonical type vocabulary**, committed up front, with a hook that fails
+  any commit introducing a struct/enum/trait with a name colliding with the
+  vocabulary.
+- **Lead-architect agent** role: translator/fixer agents *propose* new types
+  or signature changes via a marked PR-comment; only the architect can
+  approve. Single decider for cross-cutting choices.
+
+### 10.2 Compile ≠ runs (by a wider margin than expected)
+
+We optimized everything for "workspace compiles." We've built *zero* apparatus
+for "workspace correctly runs a Lua program." Every Phase-B fix decision was
+made without feedback from real behavior — only rustc satisfaction.
+
+For nginx this is existential. Correctness lives in HTTP wire-format
+compliance, master/worker lifecycle, signal handling under load, config-file
+edge cases, performance characteristics — none of which surface as compile
+errors.
+
+**Implication for v2 harness:** the "tests-in-loop" gap from
+`SPEEDING_UP_AGENT_PORTS.md §9` isn't optional for nginx — it *is* the job.
+A nginx-grade harness needs:
+
+- **Conformance harness in-loop**: boot the daemon, run real traffic, byte-
+  compare wire output against reference nginx — for every compiler-fixer pass,
+  not just at the end.
+- **Performance budgets** enforced by lint/analyzer: forbid allocations on
+  hot paths, flag any `Box::new` introduced near request processing.
+
+### 10.3 Stop conditions should be rate-of-change, not pass count
+
+Overnight's 3-pass ceiling on Phase C_fix stopped at 62 errors when pass 3
+had just gone 114 → 62 — still actively dropping. A manual bonus pass cleared
+the rest in 10 min for $7.
+
+**Implication for v2 harness:** stop when delta-per-pass falls below a
+threshold (e.g., <20% error reduction or absolute <10) OR hits 0. Fixed pass
+caps routinely under-deliver. Pair with **auto-continuation on early stops**:
+the orchestrator detects "stopped while still progressing" and auto-
+dispatches another pass with a doubled budget.
+
+### 10.4 Auto-commit erodes the rollback story
+
+Overnight produced 25+ commits, many of them `agent: auto-commit at stop`
+with no narrative about what the agent decided. If we later discover the
+dual-LuaString shim caused a correctness bug, finding the commit to roll
+back is a slog.
+
+**Implication for v2 harness:** **PR-per-file workflow**. Every agent edit
+becomes a branch + PR, with the agent's reasoning summary as the PR body.
+Auto-merge OK, but the audit trail exists. Plus a **regression-watcher
+subagent** that runs against each new commit checking cross-crate contracts
+(signatures, types, public API surface) — auto-flags drift before merge.
+
+### 10.5 What an nginx-grade harness needs beyond what we built
+
+| Addition | What it solves |
+|---|---|
+| Canonical type vocabulary + duplicate-name hook | Silent type fragmentation |
+| Lead-architect agent role | Single decider for cross-cutting choices |
+| Spec-first translation (architect writes file contract first) | Translator works to spec, not just C |
+| Conformance harness in-loop (real daemon + traffic) | Compile→correctness gap |
+| Regression-watcher subagent | Cross-crate contract drift |
+| PR-per-file workflow + audit log | Auditable rollback |
+| Rate-of-change stop conditions | No premature ceilings |
+| Performance budgets (lints, fuel checks) | Hot-path allocations |
+| Auto-continuation on early stops | Cheap orchestrator intervention |
+
+Net: the *translate/compile-fix* machinery we built generalizes. The
+*governance* machinery — type vocabulary enforcement, architect approval,
+spec-first contracts, conformance loops, PR audit, regression detection —
+is what's missing. **That governance is what makes nginx feasible at all.**
+Without it, agents at nginx scale will silently introduce hundreds of
+architectural shortcuts that compile but break the internet for somebody's
+customers.
