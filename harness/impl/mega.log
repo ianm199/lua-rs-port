@@ -459,3 +459,7 @@
 [2026-05-17T19:56:37Z mega]   [O7.D7] DEBUG done. iter cost=$4.7529442500000005  total=$61.1901
 [2026-05-17T19:56:37Z mega]   [O7.D8] DEBUG done. iter cost=$3.4748522499999996  total=$64.6650
 [2026-05-17T19:56:37Z mega] ─── outer round 8 (spent: $64.6650) ───
+[2026-05-17T19:57:08Z mega]   scan: 56/75 programs pass cleanly
+[2026-05-17T19:57:08Z mega]   surface scan returned 3 unique stub blockers
+[2026-05-17T19:57:08Z mega]   grouped into 1 disjoint-file agents (parallel cap 4)
+[2026-05-17T19:57:08Z mega]   [O8.1] dispatch on 'get_stack' @ crates/lua-stdlib/src/state_stub.rs:192:70 (budget $15) [parallel]

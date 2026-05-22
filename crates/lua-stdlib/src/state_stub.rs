@@ -25,6 +25,7 @@ use lua_types::{
     string::LuaString,
     userdata::LuaUserData,
     value::{LuaThread, LuaValue},
+    CallInfoIdx,
     LuaType,
     LuaStatus,
 };
@@ -72,6 +73,10 @@ pub struct LuaDebug {
     pub istailcall: bool,
     pub ftransfer: u16,
     pub ntransfer: u16,
+    /// Active CallInfo index, set by `get_stack`/`get_stack_level` and read by
+    /// `get_info`/`get_local_at`/`set_local_at`. Mirrors C's `lua_Debug.i_ci`
+    /// (a raw pointer in C; an index here).
+    pub(crate) i_ci_idx: Option<CallInfoIdx>,
 }
 
 impl LuaDebug {
@@ -1054,6 +1059,99 @@ impl LuaStateStubExt for LuaState {
     fn get_table(&mut self, idx: i32) -> Result<LuaType, LuaError> {
         lua_vm::api::get_table(self, idx)
     }
+
+    fn get_stack(&mut self, level: i32, ar: &mut LuaDebug) -> bool {
+        let mut lvm_ar = lua_vm::debug::LuaDebug::default();
+        let ok = lua_vm::debug::get_stack(self, level, &mut lvm_ar);
+        if ok {
+            ar.i_ci_idx = lvm_ar.i_ci;
+        } else {
+            ar.i_ci_idx = None;
+        }
+        ok
+    }
+
+    fn get_stack_level(&mut self, level: i32, ar: &mut LuaDebug) -> bool {
+        LuaStateStubExt::get_stack(self, level, ar)
+    }
+
+    fn get_info(&mut self, what: &[u8], ar: &mut LuaDebug) -> Result<(), LuaError> {
+        let mut lvm_ar = lua_vm::debug::LuaDebug::default();
+        lvm_ar.i_ci = ar.i_ci_idx;
+        let ok = lua_vm::debug::get_info(self, what, &mut lvm_ar);
+        copy_lvm_debug_to_stub(&lvm_ar, ar);
+        if ok {
+            Ok(())
+        } else {
+            Err(LuaError::runtime(format_args!("invalid option")))
+        }
+    }
+
+    fn get_debug_info(&mut self, what: &[u8], ar: &mut LuaDebug) -> Result<(), LuaError> {
+        LuaStateStubExt::get_info(self, what, ar)
+    }
+
+    fn get_local_at(&mut self, ar: &LuaDebug, n: i32) -> Result<Option<Vec<u8>>, LuaError> {
+        let mut lvm_ar = lua_vm::debug::LuaDebug::default();
+        lvm_ar.i_ci = ar.i_ci_idx;
+        Ok(lua_vm::debug::get_local(self, Some(&lvm_ar), n))
+    }
+
+    fn set_local_at(&mut self, ar: &LuaDebug, n: i32) -> Result<Option<Vec<u8>>, LuaError> {
+        let mut lvm_ar = lua_vm::debug::LuaDebug::default();
+        lvm_ar.i_ci = ar.i_ci_idx;
+        Ok(lua_vm::debug::set_local(self, &lvm_ar, n))
+    }
+
+    fn get_param_name(&mut self, fidx: i32, n: i32) -> Result<Option<Vec<u8>>, LuaError> {
+        let _ = fidx;
+        Ok(lua_vm::debug::get_local(self, None, n))
+    }
+
+    fn has_frames(&mut self) -> bool {
+        !self.is_base_ci(self.current_ci_idx())
+    }
+
+    fn lua_traceback(
+        &mut self,
+        other: &mut LuaState,
+        msg: Option<&[u8]>,
+        level: i32,
+    ) -> Result<(), LuaError> {
+        crate::auxlib::traceback(self, other, msg, level)
+    }
+}
+
+/// Copy populated fields from the canonical `lua_vm::debug::LuaDebug` into
+/// the Phase-B stub `LuaDebug`. The two structs diverge on a few field types
+/// (e.g. `what` is a single byte tag in the stub vs. `Option<&'static [u8]>`
+/// in the canonical struct, `short_src` is `Vec<u8>` vs. fixed array).
+fn copy_lvm_debug_to_stub(src: &lua_vm::debug::LuaDebug, dst: &mut LuaDebug) {
+    dst.name = src.name.clone();
+    dst.namewhat = src.namewhat.map(|s| s.to_vec()).unwrap_or_default();
+    dst.what = match src.what {
+        Some(b"Lua") => b'L',
+        Some(b"C") => b'C',
+        Some(b"main") => b'm',
+        _ => 0,
+    };
+    dst.source = src.source.clone().unwrap_or_default();
+    let zero = src
+        .short_src
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(src.short_src.len());
+    dst.short_src = src.short_src[..zero].to_vec();
+    dst.linedefined = src.linedefined;
+    dst.lastlinedefined = src.lastlinedefined;
+    dst.currentline = src.currentline;
+    dst.nups = src.nups;
+    dst.nparams = src.nparams;
+    dst.isvararg = src.isvararg;
+    dst.istailcall = src.istailcall;
+    dst.ftransfer = src.ftransfer;
+    dst.ntransfer = src.ntransfer;
+    dst.i_ci_idx = src.i_ci;
 }
 
 const STUB_LUA_REGISTRYINDEX: i32 = -(1_000_000) - 1000;

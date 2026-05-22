@@ -1,1 +1,3 @@
-int_floor_mod	crates/lua-vm/src/vm.rs:1114:5
+get_stack	crates/lua-stdlib/src/state_stub.rs:192:70
+get_stack_level	crates/lua-stdlib/src/state_stub.rs:274:76
+upvalue_id	crates/lua-stdlib/src/state_stub.rs:263:94
