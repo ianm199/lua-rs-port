@@ -519,7 +519,9 @@ fn call_bin_tm(
 pub(crate) fn try_bin_tm(
     state: &mut LuaState,
     p1: &LuaValue,
+    p1_idx: Option<StackIdx>,
     p2: &LuaValue,
+    p2_idx: Option<StackIdx>,
     res: StackIdx,
     event: TagMethod,
 ) -> Result<(), LuaError> {
@@ -553,8 +555,10 @@ pub(crate) fn try_bin_tm(
                 if matches!(p1, LuaValue::Int(_) | LuaValue::Float(_))
                     && matches!(p2, LuaValue::Int(_) | LuaValue::Float(_))
                 {
-                    // C: luaG_tointerror(L, p1, p2)
-                    return Err(LuaError::int_overflow(p1, p2));
+                    // C: luaG_tointerror(L, p1, p2) — varinfo enriches "number" with
+                    // "(field 'huge')" / "(local 'x')" etc. based on the bytecode that
+                    // produced the bad operand.
+                    return Err(crate::debug::to_int_error(state, p1, p1_idx, p2, p2_idx));
                 } else {
                     // C: luaG_opinterror(L, p1, p2, "perform bitwise operation on")
                     return Err(LuaError::arith_error(p1, p2, "perform bitwise operation on"));
@@ -606,7 +610,9 @@ pub(crate) fn try_concat_tm(state: &mut LuaState) -> Result<(), LuaError> {
 pub(crate) fn try_bin_assoc_tm(
     state: &mut LuaState,
     p1: &LuaValue,
+    p1_idx: Option<StackIdx>,
     p2: &LuaValue,
+    p2_idx: Option<StackIdx>,
     flip: bool,
     res: StackIdx,
     event: TagMethod,
@@ -616,9 +622,9 @@ pub(crate) fn try_bin_assoc_tm(
     //    else
     //      luaT_trybinTM(L, p1, p2, res, event);
     if flip {
-        try_bin_tm(state, p2, p1, res, event)
+        try_bin_tm(state, p2, p2_idx, p1, p1_idx, res, event)
     } else {
-        try_bin_tm(state, p1, p2, res, event)
+        try_bin_tm(state, p1, p1_idx, p2, p2_idx, res, event)
     }
 }
 

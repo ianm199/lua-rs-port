@@ -1701,11 +1701,8 @@ pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
                 addliteral(state, &mut buf, arg)?;
             }
             b's' => {
-                // C: luaL_tolstring(L, arg, &l);
                 let s = state.to_string_coerced(arg).unwrap_or_default();
-                // TODO(port): width/precision/flags not applied for %s
                 buf.extend_from_slice(&s);
-                state.pop_n(1); // luaL_tolstring pushes a value
             }
             _ => {
                 return Err(LuaError::runtime(format_args!(

@@ -1433,23 +1433,25 @@ pub(crate) fn op_int_error(
 /// Raises an "no integer representation" error for float→int conversion failure.
 ///
 /// C: `l_noret luaG_tointerror(lua_State *L, const TValue *p1, const TValue *p2)` (LUAI_FUNC)
+///
+/// Stack indices are optional: when an operand is from a constant table or
+/// an immediate, no register backs it and `var_info` has nothing to report.
 pub(crate) fn to_int_error(
     state: &LuaState,
     p1: &LuaValue,
-    p1_idx: StackIdx,
-    p2: &LuaValue,
-    p2_idx: StackIdx,
+    p1_idx: Option<StackIdx>,
+    _p2: &LuaValue,
+    p2_idx: Option<StackIdx>,
 ) -> LuaError {
-    // C: lua_Integer temp; if (!luaV_tointegerns(p1, &temp, LUA_FLOORN2I)) p2 = p1;
-    // macros.tsv: luaV_tointegerns → p1.to_integer_no_strconv(F2Imod::Eq)
-    // macros.tsv: LUA_FLOORN2I → F2Imod::Eq
-    // TODO(port): to_integer_no_strconv method lives in crate::vm; call via LuaValue method
-    let (bad_val, bad_idx) = if p1.to_integer_no_strconv().is_none() {
-        (p1, p1_idx)
+    let bad_idx = if p1.to_integer_no_strconv().is_none() {
+        p1_idx
     } else {
-        (p2, p2_idx)
+        p2_idx
     };
-    let extra = var_info(state, bad_idx);
+    let extra = match bad_idx {
+        Some(idx) => var_info(state, idx),
+        None => Vec::new(),
+    };
     runtime_bytes({
         let mut msg = Vec::new();
         msg.extend_from_slice(b"number");
