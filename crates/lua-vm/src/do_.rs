@@ -1279,7 +1279,7 @@ fn precover(state: &mut LuaState, mut status: LuaStatus) -> LuaStatus {
 /// C: `LUA_API int lua_resume(lua_State *L, lua_State *from, int nargs, int *nresults)`
 pub fn lua_resume(
     state: &mut LuaState,
-    from: Option<&LuaState>,
+    from: Option<&mut LuaState>,
     nargs: i32,
     nresults: &mut i32,
 ) -> LuaStatus {
@@ -1327,22 +1327,21 @@ pub fn lua_resume(
 
     // C: status = luaD_rawrunprotected(L, resume, &nargs)
     // PORT NOTE: In C, luaD_throw pushes the error value onto the stack before
-    // longjmp. In Rust the error rides inside LuaError and propagates via `?`,
-    // so we push the carried value here so `set_error_obj` (which reads from
-    // `top - 1`) finds the real message rather than a leftover stack value
-    // such as the argument that was being passed to a non-yieldable yield.
-    // For Yield (a control-flow signal, not a real error), the yield arguments
-    // are already on top of the stack and no push is needed.
-    let mut status = match raw_run_protected(state, |s| resume_coroutine(s, nargs)) {
-        Ok(()) => LuaStatus::Ok,
+    // longjmp-ing. In Rust the value rides inside LuaError and is normally
+    // discarded by raw_run_protected — but real errors (ErrRun/ErrMem/etc.)
+    // need their payload pushed so the later seterrorobj can copy it back to
+    // the error slot. We must skip Yield (no payload) and Ok (none happened).
+    let (mut status, err_value) = match raw_run_protected(state, |s| resume_coroutine(s, nargs)) {
+        Ok(()) => (LuaStatus::Ok, None),
         Err(e) => {
             let s = e.to_status();
-            if s != LuaStatus::Yield {
-                state.push(e.into_value());
-            }
-            s
+            let v = if error_status(s) { Some(e.into_value()) } else { None };
+            (s, v)
         }
     };
+    if let Some(v) = err_value {
+        state.push(v);
+    }
 
     // C: status = precover(L, status)
     status = precover(state, status);

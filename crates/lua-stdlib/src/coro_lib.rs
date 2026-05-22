@@ -438,27 +438,92 @@ pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `coroutine.close(co)` — close a dead or suspended coroutine.
 ///
-/// Phase E-1 skeleton: the running/normal-rejection branch matches the
-/// final C-Lua behavior and lands here. Closing a suspended/dead
-/// coroutine requires running to-be-closed variables and resetting the
-/// thread; that machinery lands in slice 02d. Until then this returns
-/// an error rather than silently dropping the work.
+/// For a dead or suspended coroutine, runs all `__close` metamethods for
+/// any to-be-closed variables remaining on the coroutine's stack (LIFO
+/// order) and resets the thread to a dead state. Returns `true` on clean
+/// completion, or `(false, errobj)` if a `__close` raised an error or the
+/// coroutine was already dead with an uncaught error.
+///
+/// Calling on a running or normal coroutine raises an error.
 ///
 /// C: `static int luaB_close(lua_State *L)`
 pub fn co_close(state: &mut LuaState) -> Result<usize, LuaError> {
     let co = get_co(state)?;
     let status = aux_status(state, &co);
     match status {
-        COS_RUN | COS_NORM => {
-            let name = if status == COS_RUN { "running" } else { "normal" };
+        COS_DEAD | COS_YIELD => close_suspended_or_dead(state, co),
+        _ => {
+            let name = STAT_NAMES[status as usize];
             Err(LuaError::runtime(format_args!(
                 "cannot close a {} coroutine",
-                name
+                name.escape_ascii()
             )))
         }
-        _ => Err(LuaError::runtime(format_args!(
-            "coroutine.close not yet implemented for suspended/dead coroutines (Phase E-2d)"
-        ))),
+    }
+}
+
+/// Performs the actual close for a suspended or dead coroutine.
+///
+/// Borrows the target coroutine's `LuaState`, swaps `current_thread_id`
+/// into the closing thread (so any `__close` body sees the correct
+/// running thread), invokes `lua_vm::state::close_thread` which runs the
+/// tbc-list close loop, then swaps back.
+///
+/// On success pushes `true` and returns 1.
+/// On error pushes `(false, errobj)`; the error object is moved from
+/// the coroutine's stack — mirroring C-Lua's `lua_xmove(co, L, 1)` —
+/// after the close path leaves it at slot 1 on the coroutine.
+fn close_suspended_or_dead(
+    state: &mut LuaState,
+    co: GcRef<lua_types::value::LuaThread>,
+) -> Result<usize, LuaError> {
+    let co_id = co.id;
+    let entry_rc_opt = {
+        let g = state.global();
+        g.threads.get(&co_id).map(|e| e.state.clone())
+    };
+    let entry_rc = match entry_rc_opt {
+        Some(rc) => rc,
+        None => {
+            state.push(LuaValue::Bool(true));
+            return Ok(1);
+        }
+    };
+    let parent_thread_id = state.global().current_thread_id;
+    let caller_c_calls = state.c_calls();
+
+    let (status, err_value): (i32, Option<LuaValue>) = {
+        let mut co_state = entry_rc.borrow_mut();
+        co_state.global_mut().current_thread_id = co_id;
+        co_state.nCcalls = caller_c_calls;
+        let in_status = co_state.status as i32;
+        let s = lua_vm::state::reset_thread(&mut *co_state, in_status);
+        co_state.global_mut().current_thread_id = parent_thread_id;
+        if s == LuaStatus::Ok as i32 {
+            (s, None)
+        } else {
+            let top = co_state.top_idx().0;
+            if top > 0 {
+                let err = co_state.get_at(lua_vm::state::StackIdx(top - 1));
+                co_state.set_top(lua_vm::state::StackIdx(top - 1));
+                (s, Some(err))
+            } else {
+                (s, Some(LuaValue::Nil))
+            }
+        }
+    };
+
+    if status == LuaStatus::Ok as i32 {
+        state.push(LuaValue::Bool(true));
+        Ok(1)
+    } else {
+        state.push(LuaValue::Bool(false));
+        if let Some(v) = err_value {
+            state.push(v);
+        } else {
+            state.push(LuaValue::Nil);
+        }
+        Ok(2)
     }
 }
 
@@ -484,11 +549,12 @@ pub fn open_coroutine(state: &mut LuaState) -> Result<usize, LuaError> {
 //   todos:         21
 //   port_notes:    2
 //   unsafe_blocks: 0
-//   notes:         All coroutine execution primitives (resume, yield, xmove,
-//                  new_thread, close_thread) are Phase E stubs that panic.
-//                  Argument-checking / result-packaging logic is faithfully
-//                  translated so Phase E can drop in real implementations.
-//                  The CO_FUNCS table type references lua_CFunction which is
-//                  resolved in Phase B.  LuaState / GcRef<LuaState> / LuaStatus
-//                  imports are all deferred to Phase B.
+//   notes:         Phase E-2 (slices 02a/02b) wired real resume/yield. Phase
+//                  E-4 (this slice, 02d) replaces the close_suspended/dead
+//                  stub with a real lua_closethread invocation: it borrows
+//                  the target coroutine, swaps current_thread_id, calls
+//                  lua_vm::state::reset_thread (which now runs
+//                  close_protected so __close metamethods fire on
+//                  to-be-closed locals), and packages the resulting
+//                  status as `(true)` or `(false, errobj)`.
 // ──────────────────────────────────────────────────────────────────────────────

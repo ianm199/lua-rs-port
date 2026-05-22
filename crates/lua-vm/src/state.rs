@@ -3368,7 +3368,7 @@ pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
 /// //   return status;
 /// // }
 /// ```
-pub(crate) fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
+pub fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     // C: CallInfo *ci = L->ci = &L->base_ci;
     state.ci = CallInfoIdx(0);
     let ci_idx = 0usize;
@@ -3395,13 +3395,16 @@ pub(crate) fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     state.status = LuaStatus::Ok as u8;
 
     // C: status = luaD_closeprotected(L, 1, status);
-    // TODO(port): crate::do_::close_protected(state, StackIdx(1), status) — ldo.c → do_.rs
-    // For Phase A, skip the actual close (upvalue closing requires ldo.c).
+    let final_status = crate::do_::close_protected(
+        state,
+        StackIdx(1),
+        LuaStatus::from_raw(status),
+    );
+    status = final_status as i32;
 
     // C: if (status != LUA_OK) luaD_seterrorobj(L, status, L->stack.p + 1);
     if status != LuaStatus::Ok as i32 {
-        // C: luaD_seterrorobj(L, status, L->stack.p + 1);
-        // TODO(port): crate::do_::set_error_obj(state, status, StackIdx(1)) — ldo.c → do_.rs
+        crate::do_::set_error_obj(state, LuaStatus::from_raw(status), StackIdx(1));
     } else {
         // C: else L->top.p = L->stack.p + 1;
         state.top = StackIdx(1);
@@ -3412,8 +3415,6 @@ pub(crate) fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     state.call_info[ci_idx].top = new_ci_top;
 
     // C: luaD_reallocstack(L, cast_int(ci->top.p - L->stack.p), 0);
-    // TODO(port): crate::do_::realloc_stack(state, new_ci_top.0 as i32, 0) — ldo.c → do_.rs
-    // For Phase A, grow the stack if needed to at least new_ci_top slots.
     let needed = new_ci_top.0 as usize;
     if state.stack.len() < needed {
         state.stack.resize(needed, StackValue::default());
@@ -3781,7 +3782,6 @@ pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
 //                  (6) make_seed: ASLR pointer entropy requires unsafe; time-only for Phase A.
 //                  Key TODOs: luaT_init and luaX_init cross-crate calls (Phase B);
 //                  init_registry table mutations through Rc (needs RefCell<LuaTable>);
-//                  luaD_closeprotected/seterrorobj/reallocstack in reset_thread (ldo.c);
 //                  GcRef<LuaState> self-reference for mainthread (Phase D);
 //                  LuaString::placeholder() helper needed for GlobalState init;
 //                  LuaValue and LuaTable should move to object.rs once that lands.
