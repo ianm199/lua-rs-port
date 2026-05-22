@@ -194,11 +194,11 @@ fn push_global_func_name(
         // C: lua_copy(L, -1, top + 1);
         state.copy_value(-1, top + 1)?;
         // C: lua_settop(L, top + 1);
-        state.set_top(top + 1);
+        lua_vm::api::set_top(state, top + 1)?;
         Ok(true)
     } else {
         // C: lua_settop(L, top);
-        state.set_top(top);
+        lua_vm::api::set_top(state, top)?;
         Ok(false)
     }
 }

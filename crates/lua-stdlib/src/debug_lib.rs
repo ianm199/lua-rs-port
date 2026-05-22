@@ -234,7 +234,7 @@ pub(crate) fn set_uservalue(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: luaL_checkany(L, 2);
     state.check_arg_any(2)?;
     // C: lua_settop(L, 2);
-    state.set_top(2);
+    lua_vm::api::set_top(state, 2)?;
     // C: if (!lua_setiuservalue(L, 1, n)) luaL_pushfail(L);
     if !state.set_iuservalue(1, n)? {
         state.push_fail();
@@ -455,7 +455,7 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: luaL_checkany(L, arg+3);
     state.check_arg_any(arg + 3)?;
     // C: lua_settop(L, arg+3);
-    state.set_top(arg + 3);
+    lua_vm::api::set_top(state, arg + 3)?;
 
     check_cross_thread_stack(state, target_is_self, 1)?;
 
@@ -726,7 +726,7 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
 
     // C: if (lua_isnoneornil(L, arg+1)) { lua_settop(L, arg+1); func=NULL; mask=0; count=0; }
     if matches!(state.type_at(arg + 1), LuaType::None | LuaType::Nil) {
-        state.set_top(arg + 1);
+        lua_vm::api::set_top(state, arg + 1)?;
         hook_active = false;
         mask = 0;
         count = 0;
@@ -911,7 +911,7 @@ pub(crate) fn debug_interactive(state: &mut LuaState) -> Result<usize, LuaError>
         }
 
         // C: lua_settop(L, 0);  /* remove eventual returns */
-        state.set_top(0);
+        lua_vm::api::set_top(state, 0)?;
     }
 }
 

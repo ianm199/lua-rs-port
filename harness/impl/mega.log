@@ -960,3 +960,4 @@
 [2026-05-18T07:23:06Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: 38: assertion failed!): reference/lua-c/testes/errors.lua
 [2026-05-18T07:23:06Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: 426: assertion failed!): reference/lua-c/testes/attrib.lua
 [2026-05-18T07:23:06Z mega]   [O14.D2] DEBUG dispatch on file: reference/lua-c/testes/events.lua [parallel]
+[2026-05-18T07:28:15Z mega]   → committed 2809f30 (debug/reference/lua-c/testes/gc.lua )
