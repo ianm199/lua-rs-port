@@ -13,7 +13,7 @@
 use std::convert::Infallible;
 #[allow(unused_imports)] use crate::prelude::*;
 
-use crate::state::{LuaState, GlobalState, CallInfo, CallInfoIdx, StackIdx,
+use crate::state::{LuaState, LuaCFunction, GlobalState, CallInfo, CallInfoIdx, StackIdx,
     LuaValueExt, LuaTypeExt, StackIdxExt,
     LuaTableRefExt, LuaUserDataRefExt, LuaStringRefExt,
     LuaLClosureRefExt, LuaClosureExt, LuaProtoExt};
@@ -345,6 +345,25 @@ impl LuaState {
 
     pub fn create_table(&mut self, narr: i32, nrec: i32) -> Result<(), LuaError> {
         create_table(self, narr, nrec)
+    }
+
+    /// Create a new library table sized for `funcs` and register each entry as
+    /// a closure field on it. Leaves the table on the top of the stack.
+    ///
+    /// C: `luaL_newlib(L, l)` =
+    ///   `luaL_checkversion(L), luaL_newlibtable(L,l), luaL_setfuncs(L,l,0)`.
+    /// `luaL_checkversion` is a no-op here (no ABI-version mismatch is
+    /// possible inside the Rust port).
+    pub fn new_lib(
+        &mut self,
+        funcs: &[(&[u8], LuaCFunction)],
+    ) -> Result<(), LuaError> {
+        create_table(self, 0, funcs.len() as i32)?;
+        for (name, f) in funcs {
+            push_cclosure(self, *f, 0)?;
+            set_field(self, -2, name)?;
+        }
+        Ok(())
     }
 
     pub fn set_metatable(&mut self, objindex: i32) -> Result<(), LuaError> {

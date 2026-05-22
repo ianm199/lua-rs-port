@@ -1,1 +1,1 @@
-set_metatable
+new_lib
