@@ -463,3 +463,4 @@
 [2026-05-16T21:36:29Z respawn] respawn watchdog finished after 50 attempts (or success)
 [2026-05-16T21:40:30Z respawn] respawn watchdog starting. GLOBAL_CAP=$2000.00 PER_RUN_MAX_ITER=80 OUTER_MAX_RUNS=50
 [2026-05-16T21:40:30Z respawn] outer run #1 starting (test: if 1 < 2 then print("yes") else print("no") end)
+[2026-05-16T22:12:33Z respawn] outer run #1 exited rc=143
