@@ -1,9 +1,2 @@
-1 0.3001427 inline [sonnet]
-4 [2026-05-18T18:38:01Z mega]   → committed 71b48a8 (debug/reference/lua-c/testes/errors.lua )
-8.005384349999998 reference/lua-c/testes/errors.lua [sonnet]
-3 1.8957129999999998 reference/lua-c/testes/strings.lua [sonnet]
-5 1.1403303999999999 reference/lua-c/testes/files.lua [sonnet]
-4 8.416709499999998 reference/lua-c/testes/locals.lua [opus]
-2 10.422931000000004 reference/lua-c/testes/gc.lua [opus]
-6 [2026-05-18T19:28:06Z mega]   → committed 67f00a4 (debug/reference/lua-c/testes/errors.lua )
-15.288357549999988 reference/lua-c/testes/errors.lua [sonnet]
+3 [2026-05-19T02:52:30Z mega]   → committed 4d7316c (debug/reference/lua-c/testes/files.lua )
+2.47568375 reference/lua-c/testes/files.lua [opus]

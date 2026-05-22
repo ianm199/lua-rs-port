@@ -3,4 +3,5 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing i/o
-lua: pcall_k failed: Runtime: TODO(port): borrow split needed for f_seek
++
+lua: pcall_k failed: Runtime: TODO(port): borrow split needed for f_read

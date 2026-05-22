@@ -8,5 +8,8 @@ testing scanner
 +
 +
 +
-DEBUG co_yield called with 1 args, stack top=63
-lua: pcall_k failed: Runtime: attempt to yield from outside a coroutine
+
+ >>> pt_BR locale not available: skipping decimal point tests <<<
+
+OK
+[ok] execution completed, status=Ok
