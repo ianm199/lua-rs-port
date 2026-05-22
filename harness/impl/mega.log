@@ -446,3 +446,4 @@
 [2026-05-17T19:37:27Z mega]   skip stuck prog (sig: [err] pcall_k failed: Runtime: module 'debug' not found:): reference/lua-c/testes/literals.lua
 [2026-05-17T19:42:27Z mega]   → committed f7707d4 (debug/reference/lua-c/testes/tpack.lua )
 [2026-05-17T19:42:28Z mega]   [O7.D5] DEBUG dispatch on file: reference/lua-c/testes/locals.lua [parallel]
+[2026-05-17T19:44:45Z mega]   [O7.D6] DEBUG dispatch on file: reference/lua-c/testes/calls.lua [parallel]
