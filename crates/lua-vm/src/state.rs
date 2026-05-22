@@ -851,6 +851,15 @@ pub struct GlobalState {
     /// register and `step` is a no-op. Phase D-1d wires `unpause()` after
     /// state initialization, at which point `step` runs during VM dispatch.
     pub heap: lua_gc::Heap,
+
+    /// Phase A–D coroutine.wrap iterator emulation.
+    ///
+    /// Maps a C closure's identity (GcRef::identity()) to the buffered yield
+    /// values and current dispense index. `aux_wrap` runs the wrapped function
+    /// once (with a yield buffer installed), collects all yielded values here,
+    /// then dispenses them one per iterator call. Cleared when the iterator is
+    /// exhausted. Phase E replaces this with real stackful coroutines.
+    pub wrap_iter_state: std::collections::HashMap<usize, (Vec<LuaValue>, usize)>,
 }
 
 impl GlobalState {
@@ -3309,6 +3318,7 @@ pub fn new_state() -> Option<LuaState> {
         warnf: None,
         c_functions: Vec::new(),
         heap: lua_gc::Heap::new(),
+        wrap_iter_state: std::collections::HashMap::new(),
     };
 
     let global_rc = Rc::new(RefCell::new(global));

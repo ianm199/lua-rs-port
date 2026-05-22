@@ -18,6 +18,7 @@
 // TODO(port): LuaState, GcRef<LuaState>, LuaStatus, and related types live in
 // lua-vm / lua-types; all unresolved imports will be fixed in Phase B.
 use lua_types::{
+    closure::LuaClosure,
     error::LuaError,
     value::LuaValue,
     LuaType,
@@ -152,21 +153,77 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int luaB_auxwrap(lua_State *L)`
 ///
-/// Phase A–D emulation: each call forwards directly to the wrapped
-/// function with the same arguments and returns all its results. This
-/// correctly handles iterator functions (like `string.gmatch`) that return
-/// values directly rather than through `coroutine.yield`. Phase E will
-/// replace this with the full cross-thread `auxresume` sequence once
-/// stackful coroutines are wired up via `corosensei`.
+/// Phase A–D emulation: on the first call, runs the entire wrapped function
+/// with a yield buffer installed, collects all yielded values, stores them in
+/// `GlobalState::wrap_iter_state` keyed by this closure's identity, and
+/// returns the first buffered value. Subsequent calls dispense the remaining
+/// values one at a time until exhausted (returns 0). This handles generator
+/// functions that use `coroutine.yield` recursively (e.g. the `gen` function
+/// in `testes/literals.lua`). Phase E will replace this with the full
+/// cross-thread `auxresume` sequence once stackful coroutines land.
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
+    let ci_func = state.current_call_info().func;
+    let func_val = state.get_at(ci_func);
+    let cache_key = match &func_val {
+        LuaValue::Function(LuaClosure::C(ccl)) => ccl.identity(),
+        _ => {
+            return Err(LuaError::runtime(format_args!(
+                "coroutine.wrap: aux_wrap called on non-C-closure"
+            )))
+        }
+    };
+    drop(func_val);
+
+    let maybe_next: Option<Option<LuaValue>> = {
+        let mut g = state.global_mut();
+        g.wrap_iter_state.get_mut(&cache_key).map(|(values, idx)| {
+            if *idx < values.len() {
+                let v = values[*idx].clone();
+                *idx += 1;
+                Some(v)
+            } else {
+                None
+            }
+        })
+    };
+
+    match maybe_next {
+        Some(Some(v)) => {
+            state.push(v);
+            return Ok(1);
+        }
+        Some(None) => {
+            state.global_mut().wrap_iter_state.remove(&cache_key);
+            return Ok(0);
+        }
+        None => {}
+    }
+
     let nargs = state.get_top();
     let func = state.value_at(upvalue_index(1));
     state.push(func);
     if nargs > 0 {
         state.insert(1)?;
     }
-    state.call(nargs, -1)?;
-    Ok(state.get_top() as usize)
+    state.push_yield_buffer();
+    let call_result = state.call(nargs, 0);
+    let buffered = state.pop_yield_buffer();
+    call_result?;
+
+    if buffered.is_empty() {
+        return Ok(0);
+    }
+
+    let first = buffered[0].clone();
+    if buffered.len() > 1 {
+        state
+            .global_mut()
+            .wrap_iter_state
+            .insert(cache_key, (buffered, 1));
+    }
+
+    state.push(first);
+    Ok(1)
 }
 
 /// `coroutine.create(f)` — create a new coroutine that will run function `f`.
@@ -228,7 +285,6 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `lua_yieldk` translation, which on the main thread surfaces the C-Lua
 /// "attempt to yield from outside a coroutine" error.
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
-    eprintln!("DEBUG co_yield called with {} args, stack top={}", state.get_top(), state.top_idx().0);
     if state.has_yield_buffer() {
         let n = state.get_top();
         for i in 1..=n {

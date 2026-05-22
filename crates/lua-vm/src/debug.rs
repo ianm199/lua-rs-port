@@ -112,6 +112,67 @@ pub fn c_api_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
     runtime_bytes(msg)
 }
 
+/// Walk a table's entries looking for `target` function (by identity).
+/// At `depth == 1`, also recurses one level into table-valued entries so that
+/// e.g. `_G.table.sort` can be found as `"table.sort"`.
+/// Returns the dotted path on success, `None` otherwise.
+/// Mirrors `ldblib.c:findfield` from reference C-Lua 5.4.
+fn find_func_in_table(table: &LuaTable, target: &LuaValue, prefix: &[u8], depth: u8) -> Option<Vec<u8>> {
+    let mut key = LuaValue::Nil;
+    loop {
+        let (k, v) = match table.next_pair(&key) {
+            Some(pair) => pair,
+            None => break,
+        };
+        if !matches!(v, LuaValue::Nil) {
+            let key_bytes: Option<Vec<u8>> = match &k {
+                LuaValue::Str(s) => Some(s.as_bytes().to_vec()),
+                _ => None,
+            };
+            if let Some(kb) = key_bytes {
+                if &v == target {
+                    if prefix.is_empty() {
+                        return Some(kb);
+                    }
+                    let mut result = prefix.to_vec();
+                    result.push(b'.');
+                    result.extend_from_slice(&kb);
+                    return Some(result);
+                }
+                if depth > 0 {
+                    if let LuaValue::Table(sub) = &v {
+                        let new_prefix = if prefix.is_empty() {
+                            kb.clone()
+                        } else {
+                            let mut p = prefix.to_vec();
+                            p.push(b'.');
+                            p.extend_from_slice(&kb);
+                            p
+                        };
+                        if let Some(name) = find_func_in_table(&**sub, target, &new_prefix, depth - 1) {
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+        }
+        key = k;
+    }
+    None
+}
+
+/// When `get_info` cannot resolve a function name (e.g. the function was called
+/// as a value from C code), walk `_G` to find its dotted path by identity.
+/// Returns `None` if not found; caller falls back to `"?"`.
+fn find_func_name_in_globals(state: &LuaState, func_val: &LuaValue) -> Option<Vec<u8>> {
+    let globals = state.global().globals.clone();
+    if let LuaValue::Table(globals_table) = globals {
+        find_func_in_table(&*globals_table, func_val, b"", 1)
+    } else {
+        None
+    }
+}
+
 /// Equivalent of C `luaL_argerror`: build an arg-type error with function name
 /// (from debug info) and caller source location. Handles method calls by
 /// producing "calling 'f' on bad self ..." when arg==1 and namewhat=="method".
@@ -134,7 +195,15 @@ pub fn arg_error_impl(state: &mut LuaState, mut arg: i32, extramsg: &[u8]) -> Lu
             return c_api_runtime(state, msg.into_bytes());
         }
     }
-    let fname = ar.name.clone().unwrap_or_else(|| b"?".to_vec());
+    let fname = if let Some(name) = ar.name.clone() {
+        name
+    } else if let Some(ci_idx) = ar.i_ci {
+        let func_slot = state.get_ci(ci_idx).func;
+        let func_val = state.get_at(func_slot).clone();
+        find_func_name_in_globals(state, &func_val).unwrap_or_else(|| b"?".to_vec())
+    } else {
+        b"?".to_vec()
+    };
     let msg = format!(
         "bad argument #{} to '{}' ({})",
         arg,

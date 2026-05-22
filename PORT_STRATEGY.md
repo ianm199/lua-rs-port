@@ -149,6 +149,51 @@ enum UpVal {
 
 **Recommendation: the enum form.** Every read goes through a match, but it's faithful and avoids unnecessary heap allocation for hot upvalues.
 
+### 3.9 GC incremental step budget: gray-queue pop count
+
+Added 2026-05-18 after gc.lua plateau analysis.
+
+`collectgarbage("step", n)` currently ignores `n` and runs a full collect. To
+match C-Lua's incremental semantics, `n` is interpreted as **the maximum
+number of gray-queue objects to drain in one call**. Concretely:
+
+- `Heap::step(budget: usize) -> StepStatus` drains up to `budget` entries
+  from the gray queue.
+- `StepStatus::More` if the queue is non-empty after the budget runs out;
+  `StepStatus::CycleComplete` when the queue is empty and the post-mark
+  hook + sweep have run.
+- `GcArgs::Step { data }` plumbs `data` through unchanged (defaults to a
+  module-level constant if zero).
+
+This is the cheapest budget model that lets `assert(dosteps(10) <
+dosteps(2))` pass without per-allocation byte tracking. It approximates —
+but does not match byte-for-byte — C-Lua's `g->GCstepmul * data` heuristic.
+Acceptable divergence: the test only checks an inequality, not exact counts.
+
+Generational mode (gengc.lua) remains out of scope until Phase D-3.
+
+### 3.10 Dynamic library loading: hook from lua-cli
+
+Added 2026-05-18.
+
+`package.loadlib` and `require` of C extensions (`.so`/`.dylib`/`.dll`) are
+implemented via the **hook injection pattern** already used for filesystem
+access (see `file_open_hook` on `GlobalState`). Specifically:
+
+- `lua-vm/src/state.rs` declares `dlopen_hook: Option<DlopenHook>` and a
+  matching `DlopenHook` trait alias on `GlobalState`.
+- `lua-cli/src/main.rs` installs an implementation backed by the
+  [`libloading`](https://crates.io/crates/libloading) crate, which encapsulates
+  all `unsafe` FFI to `dlopen`/`LoadLibraryEx`.
+- `lua-stdlib/src/loadlib.rs:lsys_load` looks up the hook on `GlobalState`
+  and dispatches through it; when no hook is installed (embedded use),
+  returns `LIB_FAIL = "absent"` as today.
+
+This keeps `lua-stdlib` `unsafe`-free, mirrors §3.10's hook pattern with
+zero ceremony, and lets embedders disable C extension loading by simply
+not installing the hook. Estimated implementation: ~80 LOC across two
+files plus a new dep on `libloading`.
+
 ## 4. Phase plan
 
 Strangler-fig: each phase lands a real, demonstrable "drop-in works on $N test files" milestone. No phase merges with another. Each begins by passing the previous phase's tests, ends by passing its own.
