@@ -472,11 +472,13 @@ impl LuaTableRefExt for GcRef<LuaTable> {
 
 pub trait LuaUserDataRefExt {
     fn metatable(&self) -> Option<GcRef<LuaTable>>;
+    fn set_metatable(&self, mt: Option<GcRef<LuaTable>>);
     fn as_ptr(&self) -> *const ();
     fn len(&self) -> usize;
 }
 impl LuaUserDataRefExt for GcRef<LuaUserData> {
-    fn metatable(&self) -> Option<GcRef<LuaTable>> { self.0.metatable.clone() }
+    fn metatable(&self) -> Option<GcRef<LuaTable>> { (**self).metatable() }
+    fn set_metatable(&self, mt: Option<GcRef<LuaTable>>) { (**self).set_metatable(mt); }
     fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
     fn len(&self) -> usize { self.0.data.len() }
 }

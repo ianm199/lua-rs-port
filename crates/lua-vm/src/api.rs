@@ -774,7 +774,7 @@ impl LuaState {
         let u = GcRef::new(LuaUserData {
             data: vec![0u8; size].into_boxed_slice(),
             uv: vec![LuaValue::Nil; nuvalue as usize],
-            metatable: None,
+            metatable: std::cell::RefCell::new(None),
         });
         self.push(LuaValue::UserData(u.clone()));
         self.gc().check_step();
@@ -1516,12 +1516,11 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
             tbl.set_metatable(mt);
         }
         LuaValue::UserData(ref ud) => {
-            if mt.is_some() {
-                state.gc().obj_barrier(ud, mt.as_ref().unwrap());
+            if let Some(ref mt_table) = mt {
+                state.gc().obj_barrier(ud, mt_table);
                 // TODO(port): luaC_checkfinalizer
             }
-            // TODO(port): ud.set_metatable(mt)
-            let _ = (ud, mt);
+            ud.set_metatable(mt);
         }
         ref other => {
             let idx = other.base_type() as usize;
