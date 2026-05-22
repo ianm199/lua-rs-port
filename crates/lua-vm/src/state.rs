@@ -1189,7 +1189,9 @@ impl LuaState {
     pub fn protected_parser(&mut self, _z: crate::zio::ZIO, _name: &[u8], _mode: Option<&[u8]>) -> LuaStatus { todo!("phase-b: protected_parser") }
     pub fn do_call(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: do_call") }
     pub fn do_call_no_yield(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: do_call_no_yield") }
-    pub fn call_no_yield(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: call_no_yield") }
+    pub fn call_no_yield(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
+        crate::do_::callnoyield(self, func, nresults)
+    }
     pub fn call_at(&mut self, _func: StackIdx, _nresults: i32) -> Result<(), LuaError> { todo!("phase-b: call_at") }
     pub fn precall(&mut self, _func: StackIdx, _nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> { todo!("phase-b: precall") }
     pub fn pretailcall<C, F, T, D>(&mut self, _ci: C, _func: F, _top: T, _delta: D) -> Result<i32, LuaError> { todo!("phase-b: pretailcall") }
