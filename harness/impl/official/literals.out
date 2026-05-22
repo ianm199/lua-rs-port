@@ -8,4 +8,5 @@ testing scanner
 +
 +
 +
-lua: pcall_k failed: Runtime: stdin:300: attempt to call a nil value (upvalue 'gen')
+[DBG aux_resume] open_upval_indices=[]
+lua: pcall_k failed: Runtime: stdin:294: bad argument #1 to 'for iterator' (table expected, got nil)

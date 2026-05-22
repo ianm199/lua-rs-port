@@ -6,5 +6,9 @@ testing errors
 
  >>> testC not active: skipping tests for messages in C <<<
 
+[DBG concat] top-1=Table(GcRef(Gc(0x600003dd90e0))) top-2=Int(1)
+[DBG concat] top-1=Str(GcRef(Gc(0x600000cd4900))) top-2=Function(LightC(12))
+[DBG concat] top-1=Bool(false) top-2=Str(GcRef(Gc(0x600000cd4900)))
+[DBG concat] top-1=Int(2) top-2=Table(GcRef(Gc(0x600003dd8ea0)))
 +
-lua: pcall_k failed: Runtime: stdin:373: bad argument #1 to 'find' (string expected, got nil)
+lua: pcall_k failed: Runtime: stdin:388: attempt to index a nil value (local 'msg')

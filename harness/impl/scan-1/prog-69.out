@@ -6,4 +6,4 @@ testing functions and calls
 +
 +
 testing tail calls
-lua: pcall_k failed: Runtime: Nil
+lua: pcall_k failed: Runtime: stdin:184: attempt to perform arithmetic on a table value (upvalue 'n')

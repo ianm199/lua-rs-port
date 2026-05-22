@@ -3388,7 +3388,7 @@ pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
 /// //   return status;
 /// // }
 /// ```
-pub(crate) fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
+pub fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     // C: CallInfo *ci = L->ci = &L->base_ci;
     state.ci = CallInfoIdx(0);
     let ci_idx = 0usize;

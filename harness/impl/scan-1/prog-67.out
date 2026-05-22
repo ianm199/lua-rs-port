@@ -8,4 +8,5 @@ testing scanner
 +
 +
 +
-lua: pcall_k failed: Runtime: Nil
+[DBG concat] top-1=Str(GcRef(Gc(0x6000015d9740))) top-2=Table(GcRef(Gc(0x6000024c8180)))
+lua: pcall_k failed: Runtime: attempt to concatenate a table value

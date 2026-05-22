@@ -6,6 +6,26 @@ testing metatables
 
  >>> testC not active: skipping tests for userdata <<<
 
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379080))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Str(GcRef(Gc(0x600000269180))) top-2=Table(GcRef(Gc(0x600003379080)))
+[DBG concat] top-1=Str(GcRef(Gc(0x600000269240))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379080))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Table(GcRef(Gc(0x6000033790e0))) top-2=Table(GcRef(Gc(0x600003379080)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379200))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379080))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Str(GcRef(Gc(0x600000269540))) top-2=Table(GcRef(Gc(0x600003379080)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379320))) top-2=Table(GcRef(Gc(0x600003378de0)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379380))) top-2=Str(GcRef(Gc(0x600000273b00)))
+[DBG concat] top-1=Table(GcRef(Gc(0x6000033793e0))) top-2=Str(GcRef(Gc(0x600000271bc0)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379440))) top-2=Int(0)
+[DBG concat] top-1=Int(5) top-2=Table(GcRef(Gc(0x600003379500)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(5)
+[DBG concat] top-1=Int(5) top-2=Table(GcRef(Gc(0x600003379500)))
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(4)
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(7)
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(6)
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(5)
+[DBG concat] top-1=Table(GcRef(Gc(0x600003379500))) top-2=Int(4)
 +
 +
 OK

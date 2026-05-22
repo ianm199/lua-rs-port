@@ -6,4 +6,4 @@ testing local variables and environments
 +
 testing to-be-closed variables
 testing errors in __close
-lua: pcall_k failed: Runtime: Function(Lua(GcRef(Gc(0x600000ed4f40))))
+lua: pcall_k failed: Runtime: stdin:619: attempt to index a nil value (local 'obj')

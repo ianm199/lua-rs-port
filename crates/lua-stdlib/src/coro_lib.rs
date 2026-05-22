@@ -457,27 +457,79 @@ pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `coroutine.close(co)` — close a dead or suspended coroutine.
 ///
-/// Phase E-1 skeleton: the running/normal-rejection branch matches the
-/// final C-Lua behavior and lands here. Closing a suspended/dead
-/// coroutine requires running to-be-closed variables and resetting the
-/// thread; that machinery lands in slice 02d. Until then this returns
-/// an error rather than silently dropping the work.
+/// Closes a coroutine, running any pending to-be-closed variables via
+/// `__close` and resetting its status. Valid only when the target is
+/// suspended (`Yield`) or dead (`Ok` with no active frames).
+/// Calling on a running or normal coroutine raises an error.
 ///
 /// C: `static int luaB_close(lua_State *L)`
 pub fn co_close(state: &mut LuaState) -> Result<usize, LuaError> {
     let co = get_co(state)?;
     let status = aux_status(state, &co);
     match status {
-        COS_RUN | COS_NORM => {
+        COS_DEAD | COS_YIELD => close_suspended_or_dead(state, co),
+        _ => {
             let name = if status == COS_RUN { "running" } else { "normal" };
             Err(LuaError::runtime(format_args!(
                 "cannot close a {} coroutine",
                 name
             )))
         }
-        _ => Err(LuaError::runtime(format_args!(
-            "coroutine.close not yet implemented for suspended/dead coroutines (Phase E-2d)"
-        ))),
+    }
+}
+
+/// Performs the actual close for a suspended or dead coroutine.
+fn close_suspended_or_dead(
+    state: &mut LuaState,
+    co: GcRef<lua_types::value::LuaThread>,
+) -> Result<usize, LuaError> {
+    let co_id = co.id;
+    let entry_rc_opt = {
+        let g = state.global();
+        g.threads.get(&co_id).map(|e| e.state.clone())
+    };
+    let entry_rc = match entry_rc_opt {
+        Some(rc) => rc,
+        None => {
+            state.push(LuaValue::Bool(true));
+            return Ok(1);
+        }
+    };
+    let parent_thread_id = state.global().current_thread_id;
+    let caller_c_calls = state.c_calls();
+
+    let (status, err_value): (i32, Option<LuaValue>) = {
+        let mut co_state = entry_rc.borrow_mut();
+        co_state.global_mut().current_thread_id = co_id;
+        co_state.nCcalls = caller_c_calls;
+        let in_status = co_state.status as i32;
+        let s = lua_vm::state::reset_thread(&mut *co_state, in_status);
+        co_state.global_mut().current_thread_id = parent_thread_id;
+        if s == LuaStatus::Ok as i32 {
+            (s, None)
+        } else {
+            let top = co_state.top_idx().0;
+            if top > 0 {
+                let err = co_state.get_at(lua_vm::state::StackIdx(top - 1));
+                co_state.set_top(lua_vm::state::StackIdx(top - 1));
+                (s, Some(err))
+            } else {
+                (s, Some(LuaValue::Nil))
+            }
+        }
+    };
+
+    if status == LuaStatus::Ok as i32 {
+        state.push(LuaValue::Bool(true));
+        Ok(1)
+    } else {
+        state.push(LuaValue::Bool(false));
+        if let Some(v) = err_value {
+            state.push(v);
+        } else {
+            state.push(LuaValue::Nil);
+        }
+        Ok(2)
     }
 }
 

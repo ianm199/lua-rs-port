@@ -4,4 +4,4 @@
 [4/4] Executing chunk...
 testing i/o
 +
-lua: pcall_k failed: Runtime: Int(10)
+lua: pcall_k failed: Runtime: attempt to yield across a C-call boundary
