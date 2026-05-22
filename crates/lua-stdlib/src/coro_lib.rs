@@ -149,6 +149,10 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 ///
 /// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
 fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
+    static CALL_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call_n = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let debug_this = true;
+    if debug_this { eprintln!("[DBG aux_resume #{}] start, narg={}", call_n, narg); }
     let co_id = co.id;
     let entry_rc = {
         let g = state.global();
@@ -183,10 +187,14 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
             lua_types::UpValState::Closed(_) => None,
         })
         .collect();
+    if debug_this && !parent_open_upval_slots.is_empty() {
+        eprintln!("[DBG aux_resume #{}] parent_open_upval_slots: {:?}", call_n, parent_open_upval_slots.iter().map(|(t,i)| (t, i.0)).collect::<Vec<_>>());
+    }
     {
         let mut g = state.global_mut();
         for (tid, idx) in &parent_open_upval_slots {
             let val = state.get_at(*idx);
+            if debug_this { eprintln!("[DBG aux_resume #{}] copying slot {} (type {:?}) to cross_thread_upvals", call_n, idx.0, std::mem::discriminant(&val)); }
             g.cross_thread_upvals.insert((*tid, *idx), val);
         }
     }
@@ -251,6 +259,7 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         }
         drop(g);
         for (idx, v) in flush {
+            if debug_this { eprintln!("[DBG aux_resume #{}] FLUSH: writing type {:?} to slot {}", call_n, std::mem::discriminant(&v), idx.0); }
             state.set_at(idx, v);
         }
     }
@@ -262,8 +271,17 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
                 return -1;
             }
             let n = results_or_err.len();
+            if debug_this {
+                eprintln!("[DBG aux_resume #{}] pushing {} results, state.top before={}", call_n, n, lua_vm::api::get_top(state));
+                for (i, v) in results_or_err.iter().enumerate() {
+                    eprintln!("[DBG aux_resume #{}]   result[{}] = {:?}", call_n, i, std::mem::discriminant(v));
+                }
+            }
             for v in results_or_err {
                 state.push(v);
+            }
+            if debug_this {
+                eprintln!("[DBG aux_resume #{}] state.top after push={}", call_n, lua_vm::api::get_top(state));
             }
             n as i32
         }
@@ -322,6 +340,7 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int luaB_auxwrap(lua_State *L)`
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
+    eprintln!("[DBG aux_wrap] called");
     let up = state.value_at(upvalue_index(1));
     let co = match up {
         LuaValue::Thread(t) => t,

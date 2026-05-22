@@ -2497,12 +2497,34 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: l_tforcall: { push func/state/ctrl; call; goto l_tforloop }
                     OpCode::TForCall => {
                         let ra = base + i.arg_a();
+                        // DEBUG: snapshot the iter slot (ra+0) BEFORE the call
+                        let dbg_iter = state.get_at(ra).clone();
+                        if let LuaValue::Function(lua_types::closure::LuaClosure::C(ref cl)) = dbg_iter {
+                            static FC_PREV: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+                            let prev = FC_PREV.swap(cl.func, std::sync::atomic::Ordering::Relaxed);
+                            if prev != usize::MAX && cl.func != prev {
+                                eprintln!("[DBG TFORCALL ITER CHANGED] ra={} old_func_idx={} new_func_idx={}", ra.0, prev, cl.func);
+                            }
+                        }
+                        let dbg_state_slot = state.get_at(ra + 1).clone();
+                        let dbg_ctrl = state.get_at(ra + 2).clone();
                         for k in 0..3u32 {
                             let v = state.get_at(ra + k as i32).clone();
                             state.set_at(ra + 4 + k as i32, v);
                         }
                         state.set_top(ra + 4 + 3);
                         state.set_ci_savedpc(ci, pc);
+                        // DEBUG: check what we're calling
+                        {
+                            let f_at_ra4 = state.get_at(ra + 4);
+                            if !matches!(f_at_ra4, LuaValue::Function(_)) {
+                                eprintln!("[DBG TFORCALL PRE-CALL] CALLING NON-FUNCTION! type={:?}", std::mem::discriminant(&f_at_ra4));
+                            } else if let LuaValue::Function(ref f) = f_at_ra4 {
+                                // Print function type (Lua closure vs C closure)
+                                let is_c = matches!(f, lua_types::closure::LuaClosure::C(_));
+                                eprintln!("[DBG TFORCALL PRE-CALL] calling {} function, ra={}, ra+4={}", if is_c {"C"} else {"Lua"}, ra.0, (ra+4).0);
+                            }
+                        }
                         state.call_at(ra + 4, i.arg_c() as i32)?;
                         trap = state.ci_trap(ci);
                         base = state.ci_base(ci); // updatestack
@@ -2511,6 +2533,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         pc += 1;
                         debug_assert!(tfl_i.opcode() == OpCode::TForLoop);
                         let tfl_ra = base + tfl_i.arg_a();
+                        // DEBUG: check what the result is
+                        {
+                            let res = state.get_at(tfl_ra + 4);
+                            if matches!(res, LuaValue::Table(_)) {
+                                eprintln!("[DBG TFORCALL] Result is Table! tfl_ra={} ra+4={} base={} top={}", tfl_ra.0, (ra+4).0, base.0, state.top_idx().0);
+                                eprintln!("[DBG] iter was {:?}, state_slot was {:?}, ctrl was {:?}",
+                                    std::mem::discriminant(&dbg_iter),
+                                    std::mem::discriminant(&dbg_state_slot),
+                                    std::mem::discriminant(&dbg_ctrl));
+                            }
+                        }
                         if !matches!(state.get_at(tfl_ra + 4), LuaValue::Nil) {
                             let v = state.get_at(tfl_ra + 4).clone();
                             state.set_at(tfl_ra + 2, v);

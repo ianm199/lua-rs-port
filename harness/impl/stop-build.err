@@ -143,9 +143,9 @@ warning: unused variable: `state`
     |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-vm/src/do_.rs:1612:5
+    --> crates/lua-vm/src/do_.rs:1630:5
      |
-1612 |     state: &mut LuaState,
+1630 |     state: &mut LuaState,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
@@ -171,9 +171,9 @@ warning: variable does not need to be mutable
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> crates/lua-vm/src/state.rs:3496:9
+    --> crates/lua-vm/src/state.rs:3512:9
      |
-3496 |     let mut status = if status == LuaStatus::Yield as i32 {
+3512 |     let mut status = if status == LuaStatus::Yield as i32 {
      |         ----^^^^^^
      |         |
      |         help: remove this `mut`
@@ -480,21 +480,21 @@ warning: constant `LUA_EXTRASPACE` is never used
     |       ^^^^^^^^^^^^^^
 
 warning: function `inc_c_stack` is never used
-    --> crates/lua-vm/src/state.rs:3075:15
+    --> crates/lua-vm/src/state.rs:3091:15
      |
-3075 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
+3091 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^^^
 
 warning: function `free_thread` is never used
-    --> crates/lua-vm/src/state.rs:3436:15
+    --> crates/lua-vm/src/state.rs:3452:15
      |
-3436 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
+3452 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
      |               ^^^^^^^^^^^
 
 warning: function `warn_error` is never used
-    --> crates/lua-vm/src/state.rs:3845:15
+    --> crates/lua-vm/src/state.rs:3861:15
      |
-3845 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
+3861 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
      |               ^^^^^^^^^^
 
 warning: type alias `LocalGcRef` is never used
@@ -1434,27 +1434,27 @@ help: use `let _ = ...` to ignore the resulting value
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/coro_lib.rs:306:9
+   --> crates/lua-stdlib/src/coro_lib.rs:324:9
     |
-306 |         state.insert(-2);
+324 |         state.insert(-2);
     |         ^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-306 |         let _ = state.insert(-2);
+324 |         let _ = state.insert(-2);
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/coro_lib.rs:311:9
+   --> crates/lua-stdlib/src/coro_lib.rs:329:9
     |
-311 |         state.insert(-(r + 1));
+329 |         state.insert(-(r + 1));
     |         ^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-311 |         let _ = state.insert(-(r + 1));
+329 |         let _ = state.insert(-(r + 1));
     |         +++++++
 
 warning: unused `Result` that must be used

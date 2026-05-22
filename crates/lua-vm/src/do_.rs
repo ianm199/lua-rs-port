@@ -783,6 +783,24 @@ fn precall_c(
     nresults: i32,
     f: crate::state::LuaCFunction,
 ) -> Result<i32, LuaError> {
+    if func_idx.0 == 9 {
+        static PRECALL9: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = PRECALL9.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let main_tid = state.global().main_thread_id;
+        let curr_tid = state.global().current_thread_id;
+        if curr_tid == main_tid {
+            // Get the function index to identify which function this is
+            if let crate::state::LuaValue::Function(ref closure) = state.get_at(func_idx) {
+                if let lua_types::closure::LuaClosure::C(ref cl) = closure {
+                    let func_ptr = f as usize;
+                    let g = state.global();
+                    let registered_fn = if cl.func < g.c_functions.len() { g.c_functions[cl.func] as usize } else { 0 };
+                    drop(g);
+                    eprintln!("[DBG PRECALL9 #{}] func_ptr={:#x} cl.func={} registered={:#x}", n, func_ptr, cl.func, registered_fn);
+                }
+            }
+        }
+    }
     // C: checkstackGCp(L, LUA_MINSTACK, func)
     state.check_stack(LUA_MINSTACK as i32)?;
     state.gc_check_step();

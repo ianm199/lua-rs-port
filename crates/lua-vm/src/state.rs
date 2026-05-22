@@ -1474,6 +1474,22 @@ impl LuaState {
     }
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
+        if i.0 == 9 {
+            static COUNT9: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n9 = COUNT9.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tid = self.global().current_thread_id;
+            let main_tid = self.global().main_thread_id;
+            if tid == main_tid && matches!(v, LuaValue::Table(_)) {
+                let bt = std::backtrace::Backtrace::capture();
+                eprintln!("[DBG SLOT9 TABLE WRITE] write #{}", n9);
+                let bt_str = format!("{}", bt);
+                for line in bt_str.lines().take(50) {
+                    if line.contains("do_.rs") || line.contains("vm.rs") || line.contains("coro") || line.contains("state.rs:1484") {
+                        eprintln!("  bt: {}", line);
+                    }
+                }
+            }
+        }
         self.stack[i.0 as usize].val = v;
     }
     /// Set `top` to an absolute stack index. Grows the backing stack vector
