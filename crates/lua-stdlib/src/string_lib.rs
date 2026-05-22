@@ -1926,11 +1926,15 @@ pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
                 } else {
                     (Vec::new(), body)
                 };
-                let no_prec_spec = FmtSpec { precision: None, ..FmtSpec {
-                    left_align: spec.left_align, plus_sign: spec.plus_sign,
-                    space_sign: spec.space_sign, alt_form: spec.alt_form,
-                    zero_pad: spec.zero_pad, width: spec.width, precision: None,
-                }};
+                let no_prec_spec = FmtSpec {
+                    left_align: spec.left_align,
+                    plus_sign: spec.plus_sign,
+                    space_sign: spec.space_sign,
+                    alt_form: spec.alt_form,
+                    zero_pad: spec.zero_pad,
+                    width: spec.width,
+                    precision: None,
+                };
                 pad_int(&mut buf, &sign, &digits, &no_prec_spec);
             }
             b'p' => {

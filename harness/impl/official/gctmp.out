@@ -2,7 +2,7 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-c0=	nil
-c1=	nil
+c0=	1.515625
+c1=	1.515625
 done
 [ok] execution completed, status=Ok

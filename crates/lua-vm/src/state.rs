@@ -116,7 +116,8 @@ const LUA_EXTRASPACE: usize = std::mem::size_of::<*mut ()>();
 
 // C: GCSTPGC — GC stopped for state building (lgc.h constant)
 // TODO(port): import from crate::gc (lgc.c → gc.rs) once it exists in Phase D
-const GCSTPGC: u8 = 1;
+const GCSTPUSR: u8 = 1;
+const GCSTPGC: u8 = 2;
 
 // C: GCSpause (lgc.h) — initial GC state
 // TODO(port): import from crate::gc in Phase D
@@ -869,10 +870,15 @@ impl GlobalState {
     pub fn set_gc_stop_user(&mut self) {
         // C: g->gcstp = GCSTPUSR;  (lapi.c:1143)
         // GCSTPUSR (lgc.h:155) = 1 — bit set when GC is stopped by user (lua_gc(L, LUA_GCSTOP)).
-        self.gcstp = 1;
+        self.gcstp = GCSTPUSR;
     }
     pub fn clear_gc_stop(&mut self) { self.gcstp = 0; }
-    pub fn is_gc_stopped_internally(&self) -> bool { self.gcstp != 0 }
+    /// True when the GC has been disabled internally (state setup, mid-GC,
+    /// or while closing); user-stop via `collectgarbage("stop")` does NOT
+    /// set this bit, so `lua_gc` continues to honour Count/Step/etc.
+    ///
+    /// C: `g->gcstp & GCSTPGC` (lapi.c:1137).
+    pub fn is_gc_stopped_internally(&self) -> bool { (self.gcstp & GCSTPGC) != 0 }
 
     /// Returns the interned `__xxx` name string for tag method `tm`, or
     /// `None` if `tmname` has not yet been initialised (early bootstrap).
