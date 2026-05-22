@@ -1,1 +1,1 @@
-set_global
+registry_get

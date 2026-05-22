@@ -173,3 +173,7 @@ help: use `let _ = ...` to ignore the resulting value
 [2026-05-16T14:43:10Z] ─── iter 8  (spent: $0.00) ───
 [2026-05-16T14:43:10Z]   blocked on: set_global
 [2026-05-16T14:43:10Z]   dispatching agent for set_global at crates/lua-stdlib/src/state_stub.rs:186:69 (budget $10)
+[2026-05-16T14:44:13Z]   agent done. iter cost=$0.64177025  total=$0.00
+[2026-05-16T14:44:13Z] ─── iter 9  (spent: $0.00) ───
+[2026-05-16T14:44:14Z]   blocked on: registry_get
+[2026-05-16T14:44:14Z]   dispatching agent for registry_get at crates/lua-vm/src/state.rs:1213:59 (budget $10)
