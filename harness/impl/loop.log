@@ -117,3 +117,24 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 [2026-05-16T14:29:06Z] ─── iter 18  (spent: $0.00) ───
 [2026-05-16T14:29:06Z]   blocked on: call_no_yield
 [2026-05-16T14:29:06Z]   dispatching agent for call_no_yield (budget $10)
+[2026-05-16T14:30:44Z]   agent done. iter cost=$0.9726932500000001  total=$0.00
+[2026-05-16T14:30:44Z] ─── iter 19  (spent: $0.00) ───
+[2026-05-16T14:30:44Z]   no todo!() panic detected — final output:
+warning: unused `Result` that must be used
+   --> crates/lua-stdlib/src/auxlib.rs:156:17
+    |
+156 |                 state.replace(-3); // in the slot occupied by table
+    |                 ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+156 |                 let _ = state.replace(-3); // in the slot occupied by table
+    |                 +++++++
+
+[1/4] Creating LuaState...
+[2/4] Opening standard library...
+[err] open_libs failed: Runtime(Str(GcRef(LuaString { bytes: [112, 104, 97, 115, 101, 45, 98, 58, 32, 112, 114, 101, 99, 97, 108, 108, 32, 108, 105, 103, 104, 116, 32, 67], is_short: true, hash: 3524343389 })))
+[2026-05-16T14:30:44Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T14:30:44Z] Loop end. Total cost: $0.00  Total iterations: 18
+[2026-05-16T14:30:44Z] ═════════════════════════════════════════════════════════════════

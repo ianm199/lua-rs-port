@@ -15,10 +15,35 @@ use std::process::ExitCode;
 
 use lua_stdlib::auxlib::load_string;
 use lua_stdlib::init::open_libs;
+use lua_types::error::LuaError;
+use lua_types::value::LuaValue;
 use lua_vm::api::pcall_k;
 use lua_vm::state::new_state;
 
 const MULTRET: i32 = -1;
+
+fn render_lua_error(e: &LuaError) -> String {
+    match e {
+        LuaError::Runtime(v) | LuaError::Syntax(v) => match v {
+            LuaValue::Str(s) => format!("{}: {}", e_tag(e), String::from_utf8_lossy(s.as_bytes())),
+            other => format!("{}: {:?}", e_tag(e), other),
+        },
+        LuaError::Memory | LuaError::Error | LuaError::Yield
+        | LuaError::File | LuaError::Gc => format!("{}", e_tag(e)),
+    }
+}
+
+fn e_tag(e: &LuaError) -> &'static str {
+    match e {
+        LuaError::Runtime(_) => "Runtime",
+        LuaError::Syntax(_)  => "Syntax",
+        LuaError::Memory     => "Memory",
+        LuaError::Error      => "Error",
+        LuaError::Yield      => "Yield",
+        LuaError::File       => "File",
+        LuaError::Gc         => "Gc",
+    }
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -34,18 +59,18 @@ fn main() -> ExitCode {
         let mut state = new_state().ok_or("new_state returned None")?;
 
         eprintln!("[2/4] Opening standard library...");
-        open_libs(&mut state).map_err(|e| format!("open_libs failed: {:?}", e))?;
+        open_libs(&mut state).map_err(|e| format!("open_libs failed: {}", render_lua_error(&e)))?;
 
         eprintln!("[3/4] Loading source (parse + compile)...");
         let status = load_string(&mut state, &source)
-            .map_err(|e| format!("load_string failed: {:?}", e))?;
+            .map_err(|e| format!("load_string failed: {}", render_lua_error(&e)))?;
         if status != 0 {
             return Err(format!("load_string returned non-zero status: {}", status));
         }
 
         eprintln!("[4/4] Executing chunk...");
         let final_status = pcall_k(&mut state, 0, MULTRET, 0, 0, None)
-            .map_err(|e| format!("pcall_k failed: {:?}", e))?;
+            .map_err(|e| format!("pcall_k failed: {}", render_lua_error(&e)))?;
 
         Ok::<_, String>(final_status)
     }));

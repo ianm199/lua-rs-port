@@ -70,3 +70,6 @@
 {"ts":"2026-05-16T14:29:06Z","action":"dispatch_done","detail":"func=call cost=0.7558579999999999","total_cost":0.00}
 {"ts":"2026-05-16T14:29:06Z","action":"panic_detected","detail":"func=call_no_yield iter=18","total_cost":0.00}
 {"ts":"2026-05-16T14:29:06Z","action":"dispatch_start","detail":"func=call_no_yield iter=18","total_cost":0.00}
+{"ts":"2026-05-16T14:30:44Z","action":"dispatch_done","detail":"func=call_no_yield cost=0.9726932500000001","total_cost":0.00}
+{"ts":"2026-05-16T14:30:44Z","action":"no_panic","detail":"iter=19 rc=1","total_cost":0.00}
+{"ts":"2026-05-16T14:30:44Z","action":"run_end","detail":"iterations=18 total_cost=0.00","total_cost":0.00}

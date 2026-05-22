@@ -63,16 +63,22 @@ run_test() {
 }
 
 extract_panic_func() {
-    # Extract the first todo!() description from the panic output. Accepts
-    # symbol-style tags (`require_lib`, `LuaTable::get`) AND free-text
-    # descriptions (`LuaTable metatable accessor`). Returns whatever follows
-    # the second `: ` on the panic line, up to end-of-line.
-    grep "not yet implemented:" "$1" | head -1 | sed -E 's/^.*not yet implemented: [a-z0-9_-]+: //' | sed -E 's/[[:space:]]+$//'
+    # Extract the first stub-marker description from the run output.
+    # Sources we recognize:
+    #   1. `not yet implemented: <phase>: <symbol or description>` (todo!() panic)
+    #   2. `Runtime: phase-b: <description>` (agent stubbed via LuaError instead
+    #      of todo!() — equivalent semantically)
+    # Returns whatever follows the `<phase>: ` prefix, up to end-of-line.
+    {
+        grep -E "not yet implemented: [a-z0-9_-]+:" "$1" | head -1 | sed -E 's/^.*not yet implemented: [a-z0-9_-]+: //'
+        grep -E "(Runtime|Syntax|Error): phase-[a-z0-9_-]+:" "$1" | head -1 | sed -E 's/^.*phase-[a-z0-9_-]+: //'
+    } | grep -v '^$' | head -1 | sed -E 's/[[:space:]]+$//'
 }
 
 extract_panic_loc() {
     # Extract the file:line:col of the first panic, so the agent can navigate
-    # to the todo!() directly without guessing.
+    # to the todo!() directly without guessing. For LuaError-as-stub paths,
+    # we leave this empty (the agent will have to grep for the message).
     grep -oE "panicked at [^:]+:[0-9]+:[0-9]+" "$1" | head -1 | sed 's/^panicked at //'
 }
 
