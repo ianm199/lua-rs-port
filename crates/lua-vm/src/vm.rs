@@ -1159,7 +1159,7 @@ pub(crate) fn idiv(m: i64, n: i64) -> Result<i64, LuaError> {
 pub(crate) fn imod(m: i64, n: i64) -> Result<i64, LuaError> {
     if (n as u64).wrapping_add(1) <= 1 {
         if n == 0 {
-            return Err(LuaError::runtime(format_args!("attempt to perform 'n%%0'")));
+            return Err(LuaError::runtime(format_args!("attempt to perform 'n%0'")));
         }
         // C: m % -1 == 0; avoid overflow
         return Ok(0);
