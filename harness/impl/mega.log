@@ -448,3 +448,4 @@
 [2026-05-17T19:42:28Z mega]   [O7.D5] DEBUG dispatch on file: reference/lua-c/testes/locals.lua [parallel]
 [2026-05-17T19:44:45Z mega]   [O7.D6] DEBUG dispatch on file: reference/lua-c/testes/calls.lua [parallel]
 [2026-05-17T19:45:13Z mega]   [O7.D7] DEBUG dispatch on file: reference/lua-c/testes/constructs.lua [parallel]
+[2026-05-17T19:47:52Z mega]   [O7.D8] DEBUG dispatch on file: reference/lua-c/testes/nextvar.lua [parallel]
