@@ -2214,13 +2214,13 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             n_raw as u32
                         };
                         state.set_ci_savedpc(ci, pc);
-                        state.close_upvals(base)?;
                         if i.test_k() {
                             state.ci_nres_set(ci, n as i32);
                             let ci_top = state.ci_top(ci);
                             if state.top_idx().0 < ci_top.0 {
                                 state.set_top(ci_top);
                             }
+                            state.close_upvals(base)?;
                             trap = state.ci_trap(ci);
                             base = state.ci_base(ci); // updatestack
                         }
@@ -2240,7 +2240,6 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //             setnilvalue(L->top++) }
                     //    goto ret;
                     OpCode::Return0 => {
-                        state.close_upvals(base)?;
                         if state.hook_mask() != 0 {
                             let ra = base + i.arg_a();
                             state.set_top(ra);
@@ -2262,7 +2261,6 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    else { nres = ci->nresults; ci = ci->previous; ...handle results... }
                     //    goto ret;
                     OpCode::Return1 => {
-                        state.close_upvals(base)?;
                         if state.hook_mask() != 0 {
                             let ra = base + i.arg_a();
                             state.set_top(ra + 1);

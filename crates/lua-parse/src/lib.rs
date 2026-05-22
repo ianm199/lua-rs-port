@@ -2785,7 +2785,15 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
     let has_prev_block = ls.fs.as_ref().unwrap().bl.is_some();
     if !hasclose && has_prev_block && bl.upval {
         // C: luaK_codeABC(fs, OP_CLOSE, stklevel, 0, 0)
-        // TODO(port): lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Close, stklevel, 0, 0)?;
+        let line = ls.linenumber;
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Close,
+            stklevel as u32,
+            0,
+            0,
+            0,
+        );
+        emit_inst(ls.fs.as_mut().unwrap(), line, inst);
     }
     ls.fs.as_mut().unwrap().freereg = stklevel as u8;
 
