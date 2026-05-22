@@ -1904,7 +1904,7 @@ impl LuaState {
             self.gc_barrier_back(t, &v);
             return Ok(());
         }
-        crate::vm::finish_set(self, t.clone(), k, v, true, None)
+        crate::vm::finish_set(self, t.clone(), k, v, true, None, None)
     }
     pub fn table_raw_set(&mut self, t: &LuaValue, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
         let LuaValue::Table(tbl) = t else {

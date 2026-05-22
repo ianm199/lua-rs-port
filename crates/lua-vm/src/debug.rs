@@ -1357,6 +1357,44 @@ pub(crate) fn type_error(state: &LuaState, val: &LuaValue, val_idx: StackIdx, op
     typeerror_inner(state, val, op, &extra)
 }
 
+/// Variant of `type_error` for bytecode paths where the target isn't on the
+/// active stack — OP_SETTABUP / OP_GETTABUP read directly from the closure's
+/// upvalue cells, so `var_info`'s in-stack heuristic can't recover the name.
+/// The caller passes a pre-formatted `(kind, name)` pair (e.g.
+/// `(b"upvalue", b"a")`) used verbatim in the trailing `(kind 'name')`.
+pub(crate) fn type_error_with_hint(
+    val: &LuaValue,
+    op: &[u8],
+    kind: &[u8],
+    name: &[u8],
+) -> LuaError {
+    let extra = format_var_info(Some(kind), Some(name));
+    let t = obj_type_name_static(val);
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"attempt to ");
+    msg.extend_from_slice(op);
+    msg.extend_from_slice(b" a ");
+    msg.extend_from_slice(t);
+    msg.extend_from_slice(b" value");
+    msg.extend_from_slice(&extra);
+    runtime_bytes(msg)
+}
+
+/// Standalone type-name accessor that does not require `&LuaState`. Used by
+/// `type_error_with_hint` since callers there cannot easily thread `state`.
+fn obj_type_name_static(val: &LuaValue) -> &'static [u8] {
+    match val {
+        LuaValue::Nil => b"nil",
+        LuaValue::Bool(_) => b"boolean",
+        LuaValue::Int(_) | LuaValue::Float(_) => b"number",
+        LuaValue::Str(_) => b"string",
+        LuaValue::Table(_) => b"table",
+        LuaValue::Function(_) => b"function",
+        LuaValue::UserData(_) | LuaValue::LightUserData(_) => b"userdata",
+        LuaValue::Thread(_) => b"thread",
+    }
+}
+
 /// Raises a "call" type error for a non-callable `val`.
 /// Prefers name from `funcnamefromcall`; falls back to `varinfo`.
 ///

@@ -626,6 +626,12 @@ pub(crate) fn finish_get(
 /// C: `void luaV_finishset(lua_State *L, const TValue *t, TValue *key,
 ///                          TValue *val, const TValue *slot)`
 /// Finish a table-set with `__newindex` metamethod lookup.
+///
+/// `var_hint` carries a `(kind, name)` pair (e.g. `(b"upvalue", b"a")`) used
+/// only when `t_idx` is None and the target is non-indexable — typically
+/// when the LHS is an upvalue (OP_SETTABUP). Pointer-identifying var_info
+/// won't recover the upvalue's name in that case, so the caller passes it
+/// in directly.
 pub(crate) fn finish_set(
     state: &mut LuaState,
     t_val: LuaValue,
@@ -633,6 +639,7 @@ pub(crate) fn finish_set(
     val: LuaValue,
     _slot_present: bool,
     t_idx: Option<StackIdx>,
+    var_hint: Option<(&[u8], &[u8])>,
 ) -> Result<(), LuaError> {
     let mut t = t_val;
     let mut t_idx = t_idx;
@@ -653,9 +660,12 @@ pub(crate) fn finish_set(
             // C: if (notm(tm)) luaG_typeerror(L, t, "index");
             tm = state.get_tm_by_obj(&t, TagMethod::NewIndex);
             if matches!(tm, LuaValue::Nil) {
-                return Err(match t_idx {
-                    Some(idx) => crate::debug::type_error(state, &t, idx, b"index"),
-                    None => LuaError::type_error(&t, "index"),
+                return Err(match (t_idx, var_hint) {
+                    (Some(idx), _) => crate::debug::type_error(state, &t, idx, b"index"),
+                    (None, Some((kind, name))) => {
+                        crate::debug::type_error_with_hint(&t, b"index", kind, name)
+                    }
+                    (None, None) => LuaError::type_error(&t, "index"),
                 });
             }
         }
@@ -1599,7 +1609,16 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_set(state, upval, key, rc_v, false, None)?;
+                                let upval_name: Vec<u8> = cl
+                                    .proto
+                                    .upvalues
+                                    .get(a)
+                                    .and_then(|uv| uv.name.as_ref())
+                                    .map(|s| s.as_bytes().to_vec())
+                                    .unwrap_or_else(|| b"?".to_vec());
+                                let hint: Option<(&[u8], &[u8])> =
+                                    Some((b"upvalue", &upval_name));
+                                finish_set(state, upval, key, rc_v, false, None, hint)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1626,7 +1645,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            finish_set(state, ra_v, rb_v, rc_v, false, Some(ra_idx))?;
+                            finish_set(state, ra_v, rb_v, rc_v, false, Some(ra_idx), None)?;
                             trap = state.ci_trap(ci);
                         }
                     }
@@ -1648,7 +1667,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            finish_set(state, ra_v, LuaValue::Int(c), rc_v, false, Some(ra_idx))?;
+                            finish_set(state, ra_v, LuaValue::Int(c), rc_v, false, Some(ra_idx), None)?;
                             trap = state.ci_trap(ci);
                         }
                     }
@@ -1672,7 +1691,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_set(state, ra_v, key, rc_v, false, Some(ra_idx))?;
+                                finish_set(state, ra_v, key, rc_v, false, Some(ra_idx), None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
