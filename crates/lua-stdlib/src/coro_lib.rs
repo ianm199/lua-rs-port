@@ -137,20 +137,67 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 /// with the error object left on top of `state`'s stack.
 ///
 /// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
-fn aux_resume(state: &mut LuaState, _co: GcRef<lua_types::value::LuaThread>, _narg: i32) -> i32 {
-    // Phase A–D stub: real cross-thread resume needs corosensei runtime
-    // support (PORTING.md §2 #6 — Phase E).  Emulate C's `auxresume` error
-    // path: push a string error object onto the caller's stack and return
-    // -1.  `co_resume` packages this as `(false, msg)` and `aux_wrap`
-    // re-raises it as a Lua error, matching C-Lua semantics on a coroutine
-    // that cannot run.  Phase E will replace this body with the full
-    // checkstack / xmove / lua_resume / xmove sequence.
-    let msg_bytes: &[u8] = b"not yet implemented: coroutines (Phase E)";
-    match state.intern_str(msg_bytes) {
-        Ok(s) => state.push(LuaValue::Str(s)),
-        Err(_) => state.push(LuaValue::Nil),
+fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
+    // Look up the body function from the child thread's stack.
+    // new_thread() pushes the body at stack[1] (stack[0] is the base CI nil).
+    // Phase E will replace this with a real cross-thread resume via corosensei.
+    let body_func: Option<LuaValue> = {
+        let g = state.global();
+        g.threads.get(&co.id).and_then(|entry| {
+            let child: &lua_vm::state::LuaState = &entry.state;
+            if child.top.0 > 1 {
+                let val = child.stack[1].val.clone();
+                if !matches!(val, LuaValue::Nil) { Some(val) } else { None }
+            } else {
+                None
+            }
+        })
+    };
+
+    let Some(func) = body_func else {
+        let msg_bytes: &[u8] = b"cannot resume dead coroutine";
+        match state.intern_str(msg_bytes) {
+            Ok(s) => state.push(LuaValue::Str(s)),
+            Err(_) => state.push(LuaValue::Nil),
+        }
+        return -1;
+    };
+
+    // Collect the extra resume arguments (positions 2..=narg+1 in co_resume's frame).
+    let args: Vec<LuaValue> = (2..=narg + 1).map(|i| state.value_at(i)).collect();
+    // Clear extra args from the stack so we can rebuild with func first.
+    if narg > 0 {
+        let _ = lua_vm::api::set_top(state, 1);
     }
-    -1
+    // Push func then args: [co_thread, func, arg1, ..., argN].
+    state.push(func);
+    for arg in args {
+        state.push(arg);
+    }
+    // Call the body. Each recursive call increments nCcalls, so deep
+    // coroutine nesting eventually triggers "C stack overflow".
+    match state.call(narg, -1) {
+        Ok(()) => {
+            // Stack is now [co_thread, result1, ..., resultM].
+            // get_top() = M + 1; return M.
+            state.get_top() - 1
+        }
+        Err(e) => {
+            let err_val = match e {
+                LuaError::Runtime(v) | LuaError::Syntax(v) => v,
+                LuaError::Memory => match state.intern_str(b"not enough memory") {
+                    Ok(s) => LuaValue::Str(s),
+                    Err(_) => LuaValue::Nil,
+                },
+                _ => match state.intern_str(b"coroutine error") {
+                    Ok(s) => LuaValue::Str(s),
+                    Err(_) => LuaValue::Nil,
+                },
+            };
+            state.push(err_val);
+            -1
+        }
+    }
 }
 
 // ── Public library functions ──────────────────────────────────────────────────
@@ -197,7 +244,6 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Phase E replaces this with the full cross-thread `auxresume` sequence
 /// once stackful coroutines land.
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
-    eprintln!("[DEBUG-CORO] aux_wrap called with top={}", state.get_top());
     let ci_func = state.current_call_info().func;
     let func_val = state.get_at(ci_func);
     let cache_key = match &func_val {
@@ -371,7 +417,6 @@ pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
     if state.has_yield_buffer() {
         let n = state.get_top();
         let batch: Vec<LuaValue> = (1..=n).map(|i| state.value_at(i)).collect();
-        eprintln!("[DEBUG-CORO] co_yield buffering batch of size {}", batch.len());
         state.yield_buffer_push_batch(batch);
         return Ok(0);
     }
