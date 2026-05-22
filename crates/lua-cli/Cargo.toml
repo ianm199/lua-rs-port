@@ -22,4 +22,5 @@ lua-types.workspace = true
 lua-vm.workspace = true
 lua-stdlib.workspace = true
 lua-parse.workspace = true
+lua-rs-lfs.workspace = true
 libloading = "0.9"

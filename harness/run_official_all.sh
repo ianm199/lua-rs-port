@@ -54,14 +54,24 @@ for test_file in "$TESTES_DIR"/*.lua; do
 
     combined="$OUT_DIR/$base.combined.lua"
     outfile="$OUT_DIR/$base.out"
-    { printf '%s\n' "$PREAMBLE"; cat "$test_file"; } > "$combined"
+    case "$base" in
+        db|cstack)
+            cp "$test_file" "$combined" ;;
+        *)
+            { printf '%s\n' "$PREAMBLE"; cat "$test_file"; } > "$combined" ;;
+    esac
     src=$(cat "$combined")
 
+    case "$base" in
+        all) run_cwd="$TESTES_DIR" ;;
+        *)   run_cwd="$ROOT" ;;
+    esac
+
     if command -v gtimeout >/dev/null 2>&1; then
-        gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$outfile" 2>&1
+        ( cd "$run_cwd" && gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$outfile" 2>&1 )
         rc=$?
     else
-        ( "$BIN" "$src" > "$outfile" 2>&1 ) &
+        ( cd "$run_cwd" && "$BIN" "$src" > "$outfile" 2>&1 ) &
         pid=$!
         ( sleep "$TEST_TIMEOUT_S" && kill -9 "$pid" 2>/dev/null ) &
         wpid=$!

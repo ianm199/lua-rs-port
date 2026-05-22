@@ -9,7 +9,6 @@ use crate::state::LuaState;
 use lua_types::{LuaValue, GcRef, LuaString, StackIdx};
 use lua_types::error::LuaError;
 use lua_types::arith::ArithOp;
-use lua_types::tagmethod::TagMethod;
 use lua_types::value::F2Imod;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -265,11 +264,10 @@ pub fn arith(
     if raw_arith(state, op, p1, p2, &mut temp)? {
         state.set_at(res, temp);
     } else {
-        // TODO(phase-b): `cast(TMS, (op - LUA_OPADD) + TM_ADD)` — needs a real
-        // ArithOp→TagMethod conversion helper in lua-types::tagmethod.
-        let _tm: TagMethod = todo!("phase-b: TagMethod::from_arith_op");
-        let _ = state;
         let _ = (p1, p2);
+        return Err(LuaError::runtime(format_args!(
+            "arithmetic metamethod dispatch not yet implemented for opcode {:?}", op
+        )));
     }
     Ok(())
 }
@@ -1003,7 +1001,6 @@ pub fn chunk_id(out: &mut [u8], source: &[u8]) -> usize {
     let bufflen = LUA_ID_SIZE;
     let mut written = 0usize;
 
-    // Helper: copy bytes into `out` at `written`, advance `written`.
     let mut write_bytes = |out: &mut [u8], written: &mut usize, bytes: &[u8]| {
         let avail = out.len().saturating_sub(*written);
         let n = bytes.len().min(avail);
@@ -1011,64 +1008,45 @@ pub fn chunk_id(out: &mut [u8], source: &[u8]) -> usize {
         *written += n;
     };
 
-    if source.is_empty() {
-        write_bytes(out, &mut written, b"?");
-        return written;
-    }
+    let first = source.first().copied();
+    let srclen = source.len();
 
-    match source[0] {
-        b'=' => {
-            // C: if (srclen <= bufflen) memcpy(out, source + 1, srclen);
-            //    else { addstr(out, source + 1, bufflen - 1); *out = '\0'; }
+    match first {
+        Some(b'=') => {
             let body = &source[1..];
-            if body.len() <= bufflen {
+            if srclen <= bufflen {
                 write_bytes(out, &mut written, body);
             } else {
-                // truncate
                 write_bytes(out, &mut written, &body[..bufflen - 1]);
-                // C: *out = '\0' — null-terminate at the truncation point
                 if written < out.len() {
                     out[written] = 0;
                 }
             }
         }
-        b'@' => {
-            // C: if (srclen <= bufflen) memcpy(out, source + 1, srclen);
-            //    else { addstr(out, RETS, LL(RETS)); bufflen -= ...; memcpy(out, ...) }
+        Some(b'@') => {
             let body = &source[1..];
-            if body.len() <= bufflen {
+            if srclen <= bufflen {
                 write_bytes(out, &mut written, body);
             } else {
-                // add "..." prefix then the tail of the filename
                 write_bytes(out, &mut written, RETS);
-                let remaining = bufflen - RETS.len();
-                let tail_start = body.len().saturating_sub(remaining);
-                write_bytes(out, &mut written, &body[tail_start..]);
+                let tail_len = bufflen - RETS.len() - 1;
+                let tail_start = body.len() - tail_len;
+                write_bytes(out, &mut written, &body[tail_start..tail_start + tail_len]);
             }
         }
         _ => {
-            // C: string source; format as [string "source"]
-            // C: const char *nl = strchr(source, '\n');
             let nl_pos = source.iter().position(|&b| b == b'\n');
-            // C: addstr(out, PRE, LL(PRE));
             write_bytes(out, &mut written, PRE);
-            // C: bufflen -= LL(PRE RETS POS) + 1;
             let reserved = PRE.len() + RETS.len() + POS.len() + 1;
             let inner_limit = bufflen.saturating_sub(reserved);
 
-            // C: if (srclen < bufflen && nl == NULL) addstr(out, source, srclen);
-            let src_len = source.len();
-            if src_len <= inner_limit && nl_pos.is_none() {
+            if srclen < inner_limit && nl_pos.is_none() {
                 write_bytes(out, &mut written, source);
             } else {
-                // C: if (nl != NULL) srclen = nl - source;
-                //    if (srclen > bufflen) srclen = bufflen;
-                //    addstr(out, source, srclen); addstr(out, RETS, LL(RETS));
-                let take = nl_pos.unwrap_or(src_len).min(inner_limit);
+                let take = nl_pos.unwrap_or(srclen).min(inner_limit);
                 write_bytes(out, &mut written, &source[..take]);
                 write_bytes(out, &mut written, RETS);
             }
-            // C: memcpy(out, POS, (LL(POS) + 1) * sizeof(char));
             write_bytes(out, &mut written, POS);
         }
     }

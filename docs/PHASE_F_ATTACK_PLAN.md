@@ -4,6 +4,68 @@ State as of 2026-05-19 post-fix-bundle (`f5710c4`): **33/44 PASS (75%)** on the 
 
 Run-time scoring is via `./harness/run_official_all.sh` → `harness/impl/official/run_all.tsv`.
 
+## STATUS UPDATE 2026-05-19 LATE (post-H/G-2/G-3/audit/table refactor/R-α/small-fixes)
+
+**Suite: still 33/44 PASS** but the failure floor moved significantly. Multiple agents ran in this session; net 0 flips, substantial structural progress.
+
+**Major artifacts landed this session:**
+- **Canonical `LuaTable` in `lua-types`** (`crates/lua-types/src/table.rs`, 1242 LOC, interior mutability via `RefCell<TableInner>`). Replaces the flat `Vec<(K,V)>` placeholder. `crates/lua-vm/src/table.rs` reduced to a 22-LOC re-export shim. `FLAT_TABLE_GROW_CAP` hack deleted; replaced with principled `TOTAL_GROW_CAP=1<<20` in lua-types.
+- **`upvalue_get`/`upvalue_set` 3-tier resolution** (`state.rs:1978`): when an open upvalue's home thread is not the current thread, try borrowing the home thread's `LuaState` from `GlobalState::threads` directly (the gap that broke `gengc.lua:99`). Falls back to `cross_thread_upvals` mirror only when the home is borrow-locked or main thread.
+- **Ghost abstraction audit infrastructure** (`docs/GHOST_ABSTRACTION_REGISTER.md`, `harness/check_ghost_abstractions.sh`, staged hook). 14 entries (8 floor + 6 surprise discoveries: interned-string strong roots, dual `Instruction`/`LexBuffer`/`LexState`/`ZIO`/`LuaDebug` types, scattered Phase-B todos). Bidirectional check catches both new ghosts and retired ones.
+- **Canary set** (`harness/canaries/gc/`): 5 GC canaries + dual-mode runner. **Proved `gengc.lua` failure is NOT a generational GC bug** — `canary_b_coro_upvalue` reproduced the same failure under incremental mode. The whole gengc Phase-D-3 spend ($200) was avoided.
+- **Many smaller bug fixes**: chunk_id @/=/empty source truncation correctness, runtime error `:line:` prefix routing (vm.rs arith ops + lex token NUL trim + parse syntax_error), `debug.getinfo.namewhat` → nil instead of "?", trace_exec C-frame guard, `reset_thread` actually wires `close_protected`/`set_error_obj` (was Phase-A no-op).
+
+**Current failure profile (33/44):**
+
+| Test | Failure point | Tier | Next action |
+|---|---|---|---|
+| `nextvar` | `:stdin:16 assertion failed` (deep in checkerror) | Medium | Investigate which checkerror call gets a different error message than expected |
+| `coroutine` | `:stdin:327 assertion failed` | Hard | yield-through-pcall — R-β stalled chasing this; needs tighter scope |
+| `locals` | `:stdin:982 assertion failed` | Hard | yield-inside-`__close` — R-γ stalled chasing this; needs tighter scope |
+| `cstack` | "testing stack overflow detection" | Hard | GC marker queue stability under deep `coroutine.wrap` recursion |
+| `db` | `:stdin:28 assertion failed` | Medium | line-hook tracker test — `debug.sethook("l")` event events don't match expected |
+| `errors` | `:stdin:591 assertion failed` | Medium | Likely another error-message-prefix gap (deeper than the ones small-fixes hit) |
+| `files` | `panicked at io_lib.rs:1563` | Easy-Medium | Another reachable `todo!()` we missed; same pattern as `is_closed` was |
+| `gc` | TIMEOUT | Hard | Self-referenced threads section — GC walk doesn't converge; needs reachability cycle handling |
+| `gengc` | `:stdin:130 assertion failed` | Hard (but NOT gen-GC) | Real GC barrier issue exposed by R-α — barriers are no-ops (see ghost register `gc-barrier-noops`) |
+| `literals` | "cannot resume dead coroutine" | Medium | Different bug entirely — coroutine state after error |
+| `all` | TIMEOUT | Composite | Downstream of `gc.lua` timing out; flips when `gc` does |
+
+**Recommended next-session order:**
+
+1. **`files:1563`** (~$10 sonnet) — another `todo!()` like H-2 found. Mechanical fix.
+2. **`errors:591`** (~$15 opus) — another error-prefix gap; same pattern as small-fixes hit.
+3. **`nextvar:16`** (~$20 opus) — checkerror got the wrong error message; trace which `pcall` is mis-erroring.
+4. **`db:28` line-hook events** (~$30 opus) — debug.sethook("l") event firing semantics.
+
+These 4 are ~$75 and could plausibly land **37/44**. The remaining 7 are all hard-tier slices ($30-50 each, $200-300 total):
+- `coroutine` + `locals` + `cstack` are the same family (yield-through-C-frames, close-cascade, deep GC under coro recursion) — re-spec each individually with tighter scope than R-β/R-γ.
+- `gc` + `gengc` are GC-correctness work; need write barriers (the `gc-barrier-noops` ghost) wired.
+- `files` (after the :1563 fix) hits yield-across-C in `coroutine.wrap(io.lines)` — same yield-through-C family.
+- `all` is downstream of `gc.lua`.
+
+**Realistic target with full $300 next session: 39-41/44.**
+
+---
+
+(Prior status block below; retained for history.)
+
+### STATUS UPDATE 2026-05-19 (post-F-1/F-2/F-3 + G-1)
+
+**Suite**: still **33/44 PASS** but the composition changed and we hit the headline demo.
+
+**Done:**
+- F-1.a (path lookup), F-1.b (`tonumber`/`str_to_number` float fast-path), F-1.c (safe `_LOADED` walk in error formatting) — landed in `e465b33`.
+- F-2.b (reachability-driven thread sweep) — `cstack`-as-free-win flipped briefly; re-regressed in F-3 integration. F-2.c (coroutine close cascade) — partial.
+- F-3.a (`pcall_k` yieldable branch + `CIST_YPCALL`) and F-3.b (`call_k` yieldable branch for `dofile`/`pairs`/`ipairs`).
+- F-3.c (parser linedefined / OP_RETURN0 fix bundled into F-3.b).
+- **H-1 (heavy.lua regression fix)**: `FLAT_TABLE_GROW_CAP=8192` in `state.rs::LuaTableRefExt::raw_set` + `ARRAY_GROW_CAP=1<<20` in `table.rs::resize` emulate `LUA_ERRMEM` so for-loops over `math.huge` terminate. `heavy.lua`: TIMEOUT → PASS in 0.28s.
+- **H-2 (io stubs + popen)**: `io_lib::is_closed` family filled via `lstream_from_upvalue` registry helper. `io.popen` end-to-end via new `PopenHook` + `PopenFile` impl in lua-cli.
+- **G-1 (lfs-rs)**: full Rust-native LuaFileSystem (`crates/lua-rs-lfs/`, 8 fns, zero `unsafe`), wired into `package.preload` from lua-cli. `require("lfs")` returns a usable table.
+- **Headline demo: LuaRocks 3.11.1 runs.** `luarocks --version` prints full help/version/config/rocks-tree output before failing on `error in error handling` at exit.
+
+**Current failure set (11 tests):** see "Triage of the remaining 11" below.
+
 ## Prerequisite: v5 Stop-hook test gate
 
 Before launching anything else, install the Stop-hook test gate from `harness/prompts/manual/05-stop-hook-test-gate.md`. This morning's bundle work caught 3 regressions that landed because the build-only gate is too loose. Every subsequent Phase F slice is at risk of the same pattern until v5 lands.
@@ -27,6 +89,32 @@ Before launching anything else, install the Stop-hook test gate from `harness/pr
 | **Defer** | all | `cannot open main.lua` (harness setup) | harness work | F-4 |
 
 Total estimated spend to clear F-1 through F-3: **$135 in agent budget** + ~3 days human attention for design oversight.
+
+## Triage of the remaining 11 (after F-1/F-2/F-3/H-1/H-2/G-1 integrated)
+
+Failure points have shifted — most tests now fail deeper into the file. Re-classified by current root cause, not the original tier.
+
+| Tier | Test | Current failure point | Root cause | Effort |
+|---|---|---|---|---|
+| **Trivial harness** | `all` | `cannot open main.lua` (composite test runner) | `all.lua` expects `dofile('main.lua')` to resolve from `testes/`; our `LUA_PATH` resolves but `dofile` is CWD-relative. Fix in `run_official_all.sh` (chdir before exec). | $0, 5 min |
+| **Easy stdlib** | `errors` | `:388 attempt to index nil 'msg'` | `debug.getinfo(f).short_src` formatting near 60-char `[string "..."]` boundary. Likely a 1-line off-by-one in `auxlib.rs::chunkid`. | sonnet, $5 |
+| **Medium coroutine** | `coroutine` | `:181 assertion failed` (`coroutine.close(co)` after `error`) | Close-after-error returns wrong msg (`100` expected, got something else). Path in `coro_lib::aux_close`. | opus, $20 |
+| **Medium coroutine** | `locals` | `:982 to-be-closed in coroutines` | `__close` propagation through closed coroutines. Extends F-2.c. | opus, $30 |
+| **Medium debug** | `db` | `:73 short_src formatting for empty chunkname` | `dostring(a, "")` produces `[string ""]`. Same family as `errors:388`. | opus, $20 |
+| **Medium coro-close cascade** | `cstack` | "chain of coroutine.close" depth assertion | Deep close-chain should hit C stack overflow protection and report `"C stack overflow"`. Our nCcalls limit either too high or message wrong. | opus, $30 |
+| **Medium io+coro** | `files` | `g_read should return at least one value` panic | `coroutine.wrap(io.lines)` path; H-2 advanced past `is_closed` but the new gap is `g_read` returning 0 values when called from inside a wrapped coroutine. | opus, $30 |
+| **Medium GC interaction** | `literals` | silent abort | Mid-test segfault or unhandled panic; likely the same table-cap interaction as `nextvar` since literals.lua exercises large string-literal tables. | opus, $40 |
+| **Hard structural** | `nextvar` | `not enough memory` (deliberate cap) | `for i=1,lim do a[i]=1 end` with `lim > 8192` trips the FLAT_TABLE_GROW_CAP. Real fix: wire `lua-vm/src/table.rs`'s rich array+hash impl into `LuaTableRefExt` instead of the flat-Vec placeholder. **Substantive refactor (Phase D table work).** | opus, $150 |
+| **Hard structural** | `gc` | TIMEOUT in "self-referenced threads" | GC walk through self-referencing thread cycles; needs the reachability sweep to converge faster, or the thread cycle detection from upstream lgc.c. | opus, $80 |
+| **Deferred** | `gengc` | `:99 attempt to index nil 'x'` | Cross-thread upvalue write barrier under generational GC. Phase D-3 work, intentionally deferred. | Phase D-3, $200+ |
+
+**Verdict on "what's hard to fix":**
+- **5 of 11 are tractable medium fixes** (`errors`, `coroutine`, `locals`, `db`, `cstack`) — ~$130 total, achievable in one chained run.
+- **2 are easy wins** (`all` is just CWD fix; `errors` formatting is a 1-liner).
+- **3 require structural work** (`nextvar`/`literals`/`gc` are all downstream of the table-impl swap or GC depth handling) — ~$270 combined, but `nextvar` unblocks two others.
+- **1 is deferred by design** (`gengc` — Phase D-3).
+
+A reasonable next push: clear the 7 tractable tests (~$150 in agent spend) to land **40/44** before tackling the table refactor.
 
 ---
 

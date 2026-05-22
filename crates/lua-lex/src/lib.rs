@@ -639,13 +639,11 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
     match token {
         // C: case TK_NAME: case TK_STRING: case TK_FLT: case TK_INT:
         t if t == TK_NAME || t == TK_STRING || t == TK_FLT || t == TK_INT => {
-            // C: save(ls, '\0') — NUL-terminate the buffer for use as C string
-            // In Rust we don't NUL-terminate; use the live bytes directly.
-            // C: return luaO_pushfstring(ls->L, "'%s'", luaZ_buffer(ls->buff));
-            // macros.tsv: luaZ_buffer → buf.as_mut_slice()
             let mut v: Vec<u8> = Vec::new();
             v.push(b'\'');
-            v.extend_from_slice(ls.buff.as_slice());
+            let buff = ls.buff.as_slice();
+            let trimmed = if buff.last() == Some(&0) { &buff[..buff.len() - 1] } else { buff };
+            v.extend_from_slice(trimmed);
             v.push(b'\'');
             v
         }

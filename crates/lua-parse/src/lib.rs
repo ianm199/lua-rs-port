@@ -2924,7 +2924,7 @@ fn add_prototype(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto
 /// C: static void codeclosure(LexState *ls, expdesc *v)
 /// Emits OP_CLOSURE in the parent function and fixes up v.
 fn codeclosure(ls: &mut LexState, _state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
-    let line = ls.linenumber;
+    let line = ls.lastline;
     let mut child = ls.fs.take().expect("codeclosure: no current FuncState");
     let result = (|| -> Result<(), LuaError> {
         let parent = child.prev.as_mut().expect(
@@ -2994,24 +2994,16 @@ fn close_func(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, 
             let fs = ls.fs.as_ref().unwrap();
             nvarstack(ls, fs)
         };
+        let line = ls.lastline;
         let fs = ls.fs.as_mut().unwrap();
-        let raw = lua_code::opcodes::Instruction::abck(
+        let inst = lua_code::opcodes::Instruction::abck(
             lua_code::opcodes::OpCode::Return0,
             first as u32,
             1,
             0,
             0,
-        )
-        .0;
-        let pc = fs.pc as usize;
-        if fs.f.code.len() <= pc {
-            fs.f.code.resize(pc + 1, lua_types::opcode::Instruction::default());
-        }
-        fs.f.code[pc] = lua_types::opcode::Instruction::new(raw);
-        if fs.f.lineinfo.len() <= pc {
-            fs.f.lineinfo.resize(pc + 1, 0i8);
-        }
-        fs.pc += 1;
+        );
+        emit_inst(fs, line, inst);
     }
     // C: leaveblock(fs)
     leave_block(ls, state)?;
@@ -3735,7 +3727,7 @@ fn restassign(
 ) -> Result<(), LuaError> {
     // C: check_condition(ls, vkisvar(lh->v.k), "syntax error")
     if !lh.v.k.is_var() {
-        return Err(LuaError::syntax(format_args!("syntax error")));
+        return Err(lua_lex::syntax_error(&mut ls.lex, b"syntax error"));
     }
     check_readonly(ls, state, &lh.v.clone())?;
 
@@ -4297,7 +4289,7 @@ fn exprstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     } else {
         // C: stat -> func call; check it's a call, fix result count
         if v_assign.v.k != ExprKind::Call {
-            return Err(LuaError::syntax(format_args!("syntax error")));
+            return Err(lua_lex::syntax_error(&mut ls.lex, b"syntax error"));
         }
         // C: SETARG_C(*inst, 1) — call statement uses no results.
         let info = v_assign.v.u.info as usize;

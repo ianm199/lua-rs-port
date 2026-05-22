@@ -783,24 +783,6 @@ fn precall_c(
     nresults: i32,
     f: crate::state::LuaCFunction,
 ) -> Result<i32, LuaError> {
-    if func_idx.0 == 9 {
-        static PRECALL9: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = PRECALL9.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let main_tid = state.global().main_thread_id;
-        let curr_tid = state.global().current_thread_id;
-        if curr_tid == main_tid {
-            // Get the function index to identify which function this is
-            if let crate::state::LuaValue::Function(ref closure) = state.get_at(func_idx) {
-                if let lua_types::closure::LuaClosure::C(ref cl) = closure {
-                    let func_ptr = f as usize;
-                    let g = state.global();
-                    let registered_fn = if cl.func < g.c_functions.len() { g.c_functions[cl.func] as usize } else { 0 };
-                    drop(g);
-                    eprintln!("[DBG PRECALL9 #{}] func_ptr={:#x} cl.func={} registered={:#x}", n, func_ptr, cl.func, registered_fn);
-                }
-            }
-        }
-    }
     // C: checkstackGCp(L, LUA_MINSTACK, func)
     state.check_stack(LUA_MINSTACK as i32)?;
     state.gc_check_step();
@@ -1279,11 +1261,21 @@ fn precover(state: &mut LuaState, mut status: LuaStatus) -> LuaStatus {
         if let Some(ci_idx) = find_pcall(state) {
             // C: L->ci = ci; setcistrecst(ci, status)
             state.ci = ci_idx;
-            state.get_ci_mut(ci_idx).set_recover_status(status);
+            state.get_ci_mut(ci_idx).set_recover_status(status as i32);
             // C: status = luaD_rawrunprotected(L, unroll, NULL)
+            // PORT NOTE: In C, luaD_throw pushes the error value onto L->top before
+            // longjmp, so the catch in luaD_rawrunprotected leaves it there for
+            // finish_pcallk's seterrorobj to read at L->top-1. In Rust the value
+            // rides inside LuaError; push it explicitly to mirror the C invariant.
             status = match raw_run_protected(state, |s| unroll(s)) {
                 Ok(()) => LuaStatus::Ok,
-                Err(e) => e.to_status(),
+                Err(e) => {
+                    let s = e.to_status();
+                    if error_status(s) {
+                        state.push(e.into_value());
+                    }
+                    s
+                }
             };
         } else {
             break;

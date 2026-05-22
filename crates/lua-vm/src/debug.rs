@@ -79,6 +79,13 @@ fn runtime_bytes(msg: Vec<u8>) -> LuaError {
 /// function. Mirrors what `luaG_addinfo` does for messages routed through
 /// `luaG_runerror`; the typed error constructors below build their own
 /// message and skip that path, so we add the same prefix here.
+/// Public wrapper for `prefixed_runtime` so other VM modules can re-prefix
+/// bare runtime errors raised from typed-arith helpers with the current call
+/// frame's `source:line:`.
+pub(crate) fn prefixed_runtime_pub(state: &LuaState, msg: Vec<u8>) -> LuaError {
+    prefixed_runtime(state, msg)
+}
+
 fn prefixed_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
     let ci_idx = state.current_ci_idx();
     let ci = state.get_ci(ci_idx).clone();
@@ -1907,6 +1914,10 @@ pub(crate) fn trace_exec(state: &mut LuaState, pc: u32) -> Result<i32, LuaError>
     // C: if (ci->callstatus & CIST_HOOKYIELD) { ci->callstatus &= ~CIST_HOOKYIELD; return 1; }
     if ci.callstatus & CIST_HOOKYIELD != 0 {
         state.get_ci_mut(ci_idx).callstatus &= !CIST_HOOKYIELD;
+        return Ok(1);
+    }
+
+    if state.ci_lua_closure(ci_idx).is_none() {
         return Ok(1);
     }
 

@@ -10,7 +10,8 @@
 
 use lua_gc::{Marker, Trace};
 use crate::gc::GcRef;
-use crate::value::{LuaValue, LuaTable};
+use crate::value::LuaValue;
+use crate::table::LuaTable;
 use crate::upval::{UpVal, UpValState};
 use crate::string::LuaString;
 use crate::proto::LuaProto;
@@ -106,16 +107,10 @@ impl Trace for LuaTable {
         let mode = self.weak_mode();
         let trace_keys = (mode & WEAK_KEYS) == 0;
         let trace_values = (mode & WEAK_VALUES) == 0 && trace_keys;
-        let mut key = LuaValue::Nil;
-        while let Some((k, v)) = self.next_pair(&key) {
-            if trace_keys {
-                k.trace(m);
-            }
-            if trace_values {
-                v.trace(m);
-            }
-            key = k;
-        }
+        self.for_each_entry(|k, v| {
+            if trace_keys { k.trace(m); }
+            if trace_values { v.trace(m); }
+        });
         if let Some(mt) = self.metatable() {
             mt.trace(m);
         }

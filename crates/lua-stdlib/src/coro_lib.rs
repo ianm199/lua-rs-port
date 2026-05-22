@@ -104,6 +104,9 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
         if co_id == g.current_thread_id {
             return COS_RUN;
         }
+        if co_id == g.main_thread_id {
+            return COS_NORM;
+        }
         match g.threads.get(&co_id) {
             Some(e) => e.state.clone(),
             None => return COS_DEAD,
@@ -149,10 +152,6 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 ///
 /// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
 fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
-    static CALL_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let call_n = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let debug_this = true;
-    if debug_this { eprintln!("[DBG aux_resume #{}] start, narg={}", call_n, narg); }
     let co_id = co.id;
     let entry_rc = {
         let g = state.global();
@@ -187,22 +186,31 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
             lua_types::UpValState::Closed(_) => None,
         })
         .collect();
-    if debug_this && !parent_open_upval_slots.is_empty() {
-        eprintln!("[DBG aux_resume #{}] parent_open_upval_slots: {:?}", call_n, parent_open_upval_slots.iter().map(|(t,i)| (t, i.0)).collect::<Vec<_>>());
-    }
     {
         let mut g = state.global_mut();
         for (tid, idx) in &parent_open_upval_slots {
             let val = state.get_at(*idx);
-            if debug_this { eprintln!("[DBG aux_resume #{}] copying slot {} (type {:?}) to cross_thread_upvals", call_n, idx.0, std::mem::discriminant(&val)); }
             g.cross_thread_upvals.insert((*tid, *idx), val);
         }
+    }
+
+    // Snapshot the parent's live stack so GC collections triggered from inside
+    // the coroutine keep all parent stack values reachable.  The snapshot is
+    // pushed to `GlobalState::suspended_parent_stacks` (traced as GC roots)
+    // and popped immediately after the coroutine yields or returns.
+    {
+        let top = state.top_idx();
+        let stack_snapshot: Vec<LuaValue> = (0..top.0)
+            .map(|i| state.get_at(lua_vm::state::StackIdx(i)))
+            .collect();
+        state.global_mut().suspended_parent_stacks.push(stack_snapshot);
     }
 
     let (status, results_or_err): (LuaStatus, Vec<LuaValue>) = {
         let mut co_state = match entry_rc.try_borrow_mut() {
             Ok(b) => b,
             Err(_) => {
+                state.global_mut().suspended_parent_stacks.pop();
                 let mut g = state.global_mut();
                 for (tid, idx) in &parent_open_upval_slots {
                     g.cross_thread_upvals.remove(&(*tid, *idx));
@@ -214,6 +222,7 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         };
         if co_state.check_stack(narg + 1).is_err() {
             drop(co_state);
+            state.global_mut().suspended_parent_stacks.pop();
             let mut g = state.global_mut();
             for (tid, idx) in &parent_open_upval_slots {
                 g.cross_thread_upvals.remove(&(*tid, *idx));
@@ -243,11 +252,14 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         let new_co_top = if status == LuaStatus::Ok || status == LuaStatus::Yield {
             (co_top - count).max(ci_func + 1)
         } else {
-            ci_func + 1
+            co_top - count
         };
         co_state.set_top(lua_vm::state::StackIdx(new_co_top.max(0) as u32));
         (status, vals)
     };
+
+    // Pop the parent stack snapshot — the coroutine has yielded or returned.
+    state.global_mut().suspended_parent_stacks.pop();
 
     {
         let mut g = state.global_mut();
@@ -259,7 +271,6 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         }
         drop(g);
         for (idx, v) in flush {
-            if debug_this { eprintln!("[DBG aux_resume #{}] FLUSH: writing type {:?} to slot {}", call_n, std::mem::discriminant(&v), idx.0); }
             state.set_at(idx, v);
         }
     }
@@ -271,17 +282,8 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
                 return -1;
             }
             let n = results_or_err.len();
-            if debug_this {
-                eprintln!("[DBG aux_resume #{}] pushing {} results, state.top before={}", call_n, n, lua_vm::api::get_top(state));
-                for (i, v) in results_or_err.iter().enumerate() {
-                    eprintln!("[DBG aux_resume #{}]   result[{}] = {:?}", call_n, i, std::mem::discriminant(v));
-                }
-            }
             for v in results_or_err {
                 state.push(v);
-            }
-            if debug_this {
-                eprintln!("[DBG aux_resume #{}] state.top after push={}", call_n, lua_vm::api::get_top(state));
             }
             n as i32
         }
@@ -340,7 +342,6 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int luaB_auxwrap(lua_State *L)`
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
-    eprintln!("[DBG aux_wrap] called");
     let up = state.value_at(upvalue_index(1));
     let co = match up {
         LuaValue::Thread(t) => t,
@@ -517,6 +518,24 @@ fn close_suspended_or_dead(
     let parent_thread_id = state.global().current_thread_id;
     let caller_c_calls = state.c_calls();
 
+    let parent_open_upval_slots: Vec<(u64, lua_vm::state::StackIdx)> = state
+        .openupval
+        .iter()
+        .filter_map(|uv| match &*uv.slot() {
+            lua_types::UpValState::Open { thread_id, idx } => {
+                Some((*thread_id as u64, *idx))
+            }
+            lua_types::UpValState::Closed(_) => None,
+        })
+        .collect();
+    {
+        let mut g = state.global_mut();
+        for (tid, idx) in &parent_open_upval_slots {
+            let val = state.get_at(*idx);
+            g.cross_thread_upvals.insert((*tid, *idx), val);
+        }
+    }
+
     let (status, err_value): (i32, Option<LuaValue>) = {
         let mut co_state = entry_rc.borrow_mut();
         co_state.global_mut().current_thread_id = co_id;
@@ -537,6 +556,20 @@ fn close_suspended_or_dead(
             }
         }
     };
+
+    {
+        let mut g = state.global_mut();
+        let mut flush: Vec<(lua_vm::state::StackIdx, LuaValue)> = Vec::new();
+        for (tid, idx) in &parent_open_upval_slots {
+            if let Some(v) = g.cross_thread_upvals.remove(&(*tid, *idx)) {
+                flush.push((*idx, v));
+            }
+        }
+        drop(g);
+        for (idx, v) in flush {
+            state.set_at(idx, v);
+        }
+    }
 
     if status == LuaStatus::Ok as i32 {
         state.push(LuaValue::Bool(true));

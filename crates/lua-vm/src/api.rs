@@ -668,6 +668,21 @@ impl LuaState {
         pcall_k(self, nargs, nresults, msgh, 0, None).map(|_| ())
     }
 
+    /// C: `lua_pcallk(L, nargs, nresults, errfunc, ctx, k)` — yieldable
+    /// protected call. When `k` is set and the thread is yieldable, an
+    /// inner yield propagates as `LuaError::Yield` and the continuation
+    /// fires on resume via `finishCcall` → `finishpcallk`.
+    pub fn protected_call_k(
+        &mut self,
+        nargs: i32,
+        nresults: i32,
+        msgh: i32,
+        ctx: isize,
+        k: Option<crate::state::LuaKFunction>,
+    ) -> Result<(), LuaError> {
+        pcall_k(self, nargs, nresults, msgh, ctx, k).map(|_| ())
+    }
+
     pub fn push_string(&mut self, s: &[u8]) -> Result<(), LuaError> {
         push_lstring(self, s)?;
         Ok(())
@@ -1766,16 +1781,25 @@ pub fn call_k(
     // C: func = L->top.p - (nargs+1);
     let top = state.top_idx();
     let func_idx = top - (nargs + 1);
-    // C: if (k != NULL && yieldable(L)) { save continuation; luaD_call }
-    // C: else luaD_callnoyield(L, func, nresults);
-    // TODO(port): continuation (k) and yieldable check deferred to Phase E.
-    // Until continuation registration is wired, taking the yieldable path
-    // would trip the `finishCcall` debug_assert that demands `ci->u.c.k`
-    // is set on resume — leaving `call_no_yield` here is the safe choice.
-    state.call_no_yield(func_idx, nresults)?;
+    // C: if (k != NULL && yieldable(L)) {
+    //      L->ci->u.c.k = k; L->ci->u.c.ctx = ctx;
+    //      luaD_call(L, func, nresults);
+    //    } else {
+    //      luaD_callnoyield(L, func, nresults);
+    //    }
+    if k.is_some() && state.is_yieldable() {
+        let ci_idx = state.ci;
+        {
+            let ci = state.get_ci_mut(ci_idx);
+            ci.set_u_c_k(k);
+            ci.set_u_c_ctx(ctx);
+        }
+        state.call_at(func_idx, nresults)?;
+    } else {
+        state.call_no_yield(func_idx, nresults)?;
+    }
     // C: adjustresults(L, nresults);
     state.adjust_results(nresults);
-    let _ = (ctx, k);
     Ok(())
 }
 
@@ -1816,11 +1840,100 @@ pub fn pcall_k(
     let top = state.top_idx();
     let func_idx = top - (nargs + 1);
     // C: if (k == NULL || !yieldable(L)) { conventional protected call }
-    // TODO(port): continuation and yieldable deferred to Phase E.
-    let _ = (k, ctx);
-    state.protected_call_raw(func_idx, nresults, StackIdx(err_handler_idx as u32))?;
-    state.adjust_results(nresults);
-    Ok(LuaStatus::Ok)
+    if k.is_none() || !state.is_yieldable() {
+        state.protected_call_raw(func_idx, nresults, StackIdx(err_handler_idx as u32))?;
+        state.adjust_results(nresults);
+        return Ok(LuaStatus::Ok);
+    }
+    // Yieldable continuation path: arrange for an interrupted call (yield) to
+    // be resumable. Register the continuation on the active C frame so that
+    // on resume, `finishCcall` → `finishpcallk` → the continuation `k` will
+    // run, then call the inner function. A real error is caught and handled
+    // exactly like a conventional `protected_call_raw`; a yield propagates
+    // up as `LuaError::Yield` so `pcall_fn` can re-throw it to `lua_resume`.
+    //
+    // C: lapi.c:1066-1080 — yieldable-pcall branch.
+    let ci_idx = state.ci;
+    let allow = state.allowhook;
+    let saved_errfunc = state.errfunc;
+    let old_ci = state.ci;
+    let old_allowhook = state.allowhook;
+    {
+        let ci = state.get_ci_mut(ci_idx);
+        // C: ci->u.c.k = k; ci->u.c.ctx = ctx;
+        ci.set_u_c_k(k);
+        ci.set_u_c_ctx(ctx);
+        // C: ci->u2.funcidx = cast_int(savestack(L, c.func));
+        ci.set_u2_funcidx(func_idx.0 as i32);
+        // C: ci->u.c.old_errfunc = L->errfunc; L->errfunc = func;
+        ci.set_u_c_old_errfunc(saved_errfunc);
+        // C: setoah(ci->callstatus, L->allowhook);
+        ci.set_oah(allow);
+        // C: ci->callstatus |= CIST_YPCALL;
+        ci.callstatus |= crate::state::CIST_YPCALL;
+    }
+    state.errfunc = err_handler_idx;
+    // C: luaD_call(L, c.func, nresults) — yieldable call (NOT call_no_yield).
+    let call_result = crate::do_::raw_run_protected(state, |s| {
+        crate::do_::call(s, func_idx, nresults)
+    });
+    match call_result {
+        Ok(()) => {
+            // C: ci->callstatus &= ~CIST_YPCALL;
+            //    L->errfunc = ci->u.c.old_errfunc;
+            //    status = LUA_OK;
+            state.get_ci_mut(ci_idx).callstatus &= !crate::state::CIST_YPCALL;
+            state.errfunc = saved_errfunc;
+            state.adjust_results(nresults);
+            Ok(LuaStatus::Ok)
+        }
+        Err(crate::state::LuaError::Yield) => {
+            // Yield must propagate up to lua_resume. The recovery prep stays
+            // on `ci_idx` so that on resume, `finishCcall` will call
+            // `finishpcallk` followed by the continuation `k`.
+            Err(crate::state::LuaError::Yield)
+        }
+        Err(e) => {
+            // Real error: mirror `do_::pcall`'s error path — push the err,
+            // invoke the error handler (if any), then close + seterror +
+            // shrink. Clear the YPCALL prep so the assertion in `poscall`
+            // doesn't fire on the outer C-frame.
+            let mut status = e.to_status();
+            state.push(e.into_value());
+            // C: if (ef != 0 && error_status(s) && s != LUA_ERRERR) ...
+            if err_handler_idx != 0
+                && (status as i32) > (LuaStatus::Yield as i32)
+                && status != LuaStatus::ErrErr
+            {
+                let errfunc_stk = StackIdx(err_handler_idx as u32);
+                let arg = state.get_at(state.top_idx() - 1);
+                state.push(arg);
+                let handler = state.get_at(errfunc_stk);
+                state.set_at(state.top_idx() - 2, handler);
+                status = match state.call_no_yield(state.top_idx() - 2, 1) {
+                    Ok(()) => status,
+                    Err(_) => LuaStatus::ErrErr,
+                };
+            }
+            // C: L->ci = old_ci; L->allowhook = old_allowhooks;
+            state.ci = old_ci;
+            state.allowhook = old_allowhook;
+            // Clear the recovery prep — pcall_fn will catch the Err return and
+            // synthesise (false, msg) for the Lua caller.
+            state.get_ci_mut(ci_idx).callstatus &= !crate::state::CIST_YPCALL;
+            // C: status = luaD_closeprotected(L, old_top, status)
+            let status = crate::do_::close_protected(state, func_idx, status);
+            // C: luaD_seterrorobj(L, status, restorestack(L, old_top))
+            crate::do_::set_error_obj(state, status, func_idx);
+            // C: luaD_shrinkstack(L)
+            crate::do_::shrink_stack(state);
+            // C: L->errfunc = old_errfunc
+            state.errfunc = saved_errfunc;
+            let err_val = state.get_at(func_idx);
+            state.set_top(func_idx);
+            Err(crate::state::LuaError::Runtime(err_val))
+        }
+    }
 }
 
 // C: LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,

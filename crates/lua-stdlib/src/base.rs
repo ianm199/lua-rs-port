@@ -618,10 +618,10 @@ pub(crate) fn next_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 // ── pairs continuation (coroutine stub) ───────────────────────────────────────
 
 /// Continuation for `pairs` when the `__pairs` metamethod yields.
-/// In C this just returns 3; yields are stubbed in Phases A–D.
+/// Re-invoked by `finishCcall` after the yielded `__pairs` resumes.
 ///
 /// C: `static int pairscont(lua_State *L, int status, lua_KContext k)`
-fn pairs_cont(_state: &mut LuaState) -> Result<usize, LuaError> {
+fn pairs_cont(_state: &mut LuaState, _status: i32, _ctx: isize) -> Result<usize, LuaError> {
     // C: (void)L; (void)status; (void)k; return 3;
     Ok(3)
 }
@@ -644,8 +644,7 @@ pub(crate) fn pairs_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     } else {
         // C: lua_pushvalue(L, 1); lua_callk(L, 1, 3, 0, pairscont);
         state.push_copy(1)?;
-        // TODO(port): lua_callk continuation (pairscont) stubbed — coroutines Phase E.
-        state.call(1, 3)?;
+        state.call_k(1, 3, 0, Some(pairs_cont))?;
     }
     Ok(3)
 }
@@ -696,10 +695,9 @@ pub(crate) fn ipairs_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// C: `static int luaB_loadfile(lua_State *L)`
 pub(crate) fn loadfile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: const char *fname = luaL_optstring(L, 1, NULL);
-    // Clone to avoid borrow conflict with later state calls.
-    let fname: Option<Vec<u8>> = state.opt_arg_string_bytes(1).ok();
+    let fname: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
     // C: const char *mode = luaL_optstring(L, 2, NULL);
-    let mode: Option<Vec<u8>> = state.opt_arg_string_bytes(2).ok();
+    let mode: Option<Vec<u8>> = state.opt_arg_lstring(2, None)?;
     // C: int env = (!lua_isnone(L, 3) ? 3 : 0);
     let env = if state.type_at(3) != LuaType::None { 3 } else { 0 };
     // C: int status = luaL_loadfilex(L, fname, mode);
@@ -793,14 +791,14 @@ pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int dofilecont(lua_State *L, int d1, lua_KContext d2)`
 /// C: `static int luaB_dofile(lua_State *L)`
-fn dofile_cont(state: &mut LuaState) -> Result<usize, LuaError> {
+fn dofile_cont(state: &mut LuaState, _status: i32, _ctx: isize) -> Result<usize, LuaError> {
     // C: (void)d1; (void)d2; return lua_gettop(L) - 1;
     Ok((state.top() as i32 - 1) as usize)
 }
 
 pub(crate) fn dofile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: const char *fname = luaL_optstring(L, 1, NULL);
-    let fname: Option<Vec<u8>> = state.opt_arg_string_bytes(1).ok();
+    let fname: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
     // C: lua_settop(L, 1);
     lua_vm::api::set_top(state, 1)?;
     // C: if (l_unlikely(luaL_loadfile(L, fname) != LUA_OK)) return lua_error(L);
@@ -809,10 +807,9 @@ pub(crate) fn dofile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
         return Err(LuaError::from_value(state.pop()));
     }
     // C: lua_callk(L, 0, LUA_MULTRET, 0, dofilecont);
-    // TODO(port): lua_callk continuation (dofilecont) stubbed — coroutines Phase E.
-    state.call(0, LUA_MULTRET)?;
+    state.call_k(0, LUA_MULTRET, 0, Some(dofile_cont))?;
     // C: return dofilecont(L, 0, 0);
-    dofile_cont(state)
+    dofile_cont(state, 0, 0)
 }
 
 // ── assert ────────────────────────────────────────────────────────────────────
@@ -893,9 +890,11 @@ pub(crate) fn pcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: status = lua_pcallk(L, lua_gettop(L) - 2, LUA_MULTRET, 0, 0, finishpcall);
     // nargs = gettop - 2 (subtract the sentinel `true` and the function).
     let nargs = state.top() as i32 - 2;
-    // TODO(port): lua_pcallk continuation (finishpcall) stubbed — coroutines Phase E.
-    let ok = match state.protected_call(nargs, LUA_MULTRET, 0) {
+    let ok = match state.protected_call_k(nargs, LUA_MULTRET, 0, 0, Some(finish_pcall_k)) {
         Ok(()) => true,
+        // `LuaError::Yield` must bubble up to `lua_resume` so the continuation
+        // saved on this frame can be invoked on resume.
+        Err(LuaError::Yield) => return Err(LuaError::Yield),
         Err(e) => {
             state.push(e.into_value());
             false
@@ -903,6 +902,16 @@ pub(crate) fn pcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     };
     // C: return finishpcall(L, status, 0);
     finish_pcall(state, ok, 0)
+}
+
+/// Continuation matching `LuaKFunction`. Invoked by `finishCcall` on the
+/// resume path after a yield through pcall (or after a `__close` ran during
+/// pcall error recovery).
+///
+/// C: `static int finishpcall(lua_State *L, int status, lua_KContext extra)`
+fn finish_pcall_k(state: &mut LuaState, status: i32, extra: isize) -> Result<usize, LuaError> {
+    let ok = status == LuaStatus::Ok as i32 || status == LuaStatus::Yield as i32;
+    finish_pcall(state, ok, extra as i32)
 }
 
 // ── xpcall ────────────────────────────────────────────────────────────────────
@@ -923,9 +932,9 @@ pub(crate) fn xpcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.rotate(3, 2);
     // C: status = lua_pcallk(L, n - 2, LUA_MULTRET, 2, 2, finishpcall);
     // errfunc is at stack index 2; extra=2 means finishpcall skips 2 values.
-    // TODO(port): lua_pcallk continuation (finishpcall) stubbed — coroutines Phase E.
-    let ok = match state.protected_call(n - 2, LUA_MULTRET, 2) {
+    let ok = match state.protected_call_k(n - 2, LUA_MULTRET, 2, 2, Some(finish_pcall_k)) {
         Ok(()) => true,
+        Err(LuaError::Yield) => return Err(LuaError::Yield),
         Err(e) => {
             state.push(e.into_value());
             false

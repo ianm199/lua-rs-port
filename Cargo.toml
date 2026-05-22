@@ -11,6 +11,7 @@ members = [
     "crates/lua-coro",
     "crates/lua-cli",
     "crates/lua-cli-test-rust-module",
+    "crates/lua-rs-lfs",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ lua-vm      = { path = "crates/lua-vm" }
 lua-stdlib  = { path = "crates/lua-stdlib" }
 lua-gc      = { path = "crates/lua-gc" }
 lua-coro    = { path = "crates/lua-coro" }
+lua-rs-lfs  = { path = "crates/lua-rs-lfs" }
 
 [profile.release]
 opt-level = 3

@@ -4,6 +4,41 @@ The PORT_STRATEGY.md §8 "this is real software" demo. After Phase F lands us at
 
 This doc captures the strategic choice (Rust-native modules vs. C ABI compat) and the concrete path to a working demo.
 
+## STATUS 2026-05-19: LuaRocks 3.11.1 runs
+
+**Verified end-to-end:**
+
+```bash
+LUA_PATH="/tmp/luarocks-3.11.1/src/?.lua;/tmp/luarocks-3.11.1/src/?/init.lua" \
+  ./target/debug/lua-rs -e 'arg={[0]="luarocks","--version"}; dofile("/tmp/luarocks_noshebang.lua")'
+```
+
+LuaRocks loads ~50+ pure-Lua modules across its tree (`luarocks.core.cfg`, `luarocks.loader`, `luarocks.cmd`, `luarocks.fs.unix`, etc.), prints its full argparse help banner, prints version `LuaRocks 3.11.1`, dumps the config (`LUA_INCDIR`/`LUA_LIBDIR`/system/user config-file paths/rocks-tree list with `~/.luarocks ("user")`). Then errors with `error in error handling` during exit teardown — likely `os.exit()` interaction with our top-level pcall.
+
+**What landed to make this work:**
+- **G-1 lfs-rs** ✅ — `crates/lua-rs-lfs/` (663 LOC, 8 functions, zero `unsafe`, depends on `filetime`). Wired into `package.preload` from `lua-cli::register_preloaded_modules`. `require("lfs")` returns a usable table.
+- **G-2 os.execute hook** ✅ — `OsExecuteHook` type + `GlobalState::os_execute_hook` field. Backed in `lua-cli` by `std::process::Command::new("sh").arg("-c")`. Returns C-Lua's `(boolean, "exit"|"signal", code)` tuple.
+- **G-3 io.popen hook** ✅ — separate from os.execute. New `PopenHook` type + `PopenFile` enum in lua-cli that wraps `std::process::Child` and implements `LuaFileHandle` with proper Drop semantics (take()s the BufReader/BufWriter before `wait()` so write-mode children see EOF).
+- **F-3.b dofile yieldable branch** ✅ — `dofile` can now suspend across coroutine boundaries; LuaRocks doesn't yield from dofile but the broader yield path is unblocked.
+
+**What's still in front of `luarocks install <thing>`:**
+1. **`error in error handling` on exit** — debug `os.exit()` path in stdlib + top-level pcall. ~$10.
+2. **`=[C]` showing as program name** in argparse output — chunkname/`arg[0]` cosmetic issue. ~$5.
+3. **HTTP fetch** — needs G-4 (ureq via `lua-rs-socket` crate, ~$30) OR a `file://` local repo for the install demo.
+4. **MD5/SHA256 digests** — needs G-5 (RustCrypto shim, ~$5).
+
+A pure-Lua rockspec install against a file:// repo is ~$45 of additional work. A real HTTPS-served install is ~$75.
+
+**Cost realized vs. estimated:**
+- G-1 lfs-rs estimated $30-50, actual ~$40
+- G-2 os.execute estimated $5-10, actual bundled with F-3
+- G-3 popen wasn't in original plan, ~$25 actual
+- H-1 heavy.lua regression (table cap) — emergency unblock, ~$25
+- H-2 io stubs + popen — bundled fix, ~$25
+- **Total Phase F→G actual: ~$300** (including the F slices it depended on); end state is "LuaRocks runs `--version`" vs. plan's "LuaRocks installs a rock". Half the original Phase G work done; the other half (HTTP + digest + the install path) is well-scoped.
+
+---
+
 ## The strategic choice: C ABI compat vs. per-module Rust-native
 
 ### What is an ABI?

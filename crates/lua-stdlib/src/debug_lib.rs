@@ -337,9 +337,8 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
         settabsb(state, b"isvararg", ar.isvararg)?;
     }
     if options.contains(&b'n') {
-        // ar.name may be NULL in C → None in Rust.
-        settabss(state, b"name", Some(ar.name_bytes()))?;
-        // ar.namewhat is always non-NULL in C (may be empty string).
+        let name_opt: Option<&[u8]> = ar.name.as_deref();
+        settabss(state, b"name", name_opt)?;
         settabss(state, b"namewhat", Some(ar.namewhat_bytes()))?;
     }
     if options.contains(&b'r') {

@@ -19,7 +19,6 @@
 use lua_gc::{Marker, Trace};
 use crate::state::{LuaState, GlobalState};
 use crate::string::{LuaStringImpl, LuaUserDataImpl};
-use crate::table::LuaTable as VmLuaTable;
 
 /// Phase-B internal richer LuaString. The byte buffer is a Rust `Rc<[u8]>`
 /// (not GC-managed); no fields to mark.
@@ -32,23 +31,6 @@ impl Trace for LuaStringImpl {
 /// real when userdata machinery lands post-D-1.
 impl Trace for LuaUserDataImpl {
     fn trace(&self, _m: &mut Marker) {}
-}
-
-/// Phase-B internal LuaTable (separate from lua-types::LuaTable
-/// placeholder).
-impl Trace for VmLuaTable {
-    fn trace(&self, m: &mut Marker) {
-        for slot in self.array.iter() {
-            slot.trace(m);
-        }
-        for entry in self.node.iter() {
-            entry.key.trace(m);
-            entry.value.trace(m);
-        }
-        if let Some(mt) = self.metatable.as_ref() {
-            mt.trace(m);
-        }
-    }
 }
 
 impl Trace for LuaState {
@@ -102,12 +84,14 @@ impl Trace for GlobalState {
 
         self.main_thread_value.trace(m);
 
-        for entry in self.threads.values() {
-            if let Ok(s) = entry.state.try_borrow() {
-                s.trace(m);
-            }
-            entry.value.trace(m);
-        }
+        // PORT NOTE: `threads` entries are NOT traced unconditionally here.
+        // Tracing every registered coroutine as a root pinned it forever,
+        // breaking finalizer-on-unreachable-coroutine tests (gc.lua line 544).
+        // Instead, `collect_via_heap`'s post-mark hook runs a fixed-point
+        // loop that traces only the threads whose `GcRef<LuaThread>` was
+        // reached from some other root (e.g. a `LuaValue::Thread` on a live
+        // stack, or via `current_thread_id`). Entries whose `GcRef` was
+        // never visited are removed from `threads` after the collect.
 
         for slot in self.mt.iter() {
             if let Some(t) = slot {
@@ -154,6 +138,18 @@ impl Trace for GlobalState {
         // finalizer to run.
         for t in self.to_be_finalized.iter() {
             t.trace(m);
+        }
+
+        // Trace suspended parent stacks. When a coroutine is running, any
+        // parent threads are suspended and their stacks are not reachable from
+        // `threads` (which only holds coroutines, not the main thread). Before
+        // `aux_resume` resumes a coroutine it pushes a snapshot of the parent's
+        // live stack onto `suspended_parent_stacks` so those GC-managed values
+        // remain marked during collections triggered from inside the coroutine.
+        for stack_snapshot in self.suspended_parent_stacks.iter() {
+            for v in stack_snapshot.iter() {
+                v.trace(m);
+            }
         }
 
         // PORT NOTE: `strt` (the internal LuaStringImpl intern table) is a

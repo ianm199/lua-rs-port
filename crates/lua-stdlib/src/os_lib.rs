@@ -16,6 +16,7 @@
 // C: #include "lua.h" / "lauxlib.h" / "lualib.h"
 use lua_types::{LuaError, LuaType, LuaValue};
 use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use lua_vm::state::OsExecuteReason;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -480,22 +481,70 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
 /// C: `static int os_execute(lua_State *L)`
 ///
 /// Executes a shell command via the system shell.
-/// Without arguments: returns a boolean indicating whether a shell is available.
-/// With a command string: returns `true` on success, or `nil, errmsg, exitcode`
-/// on failure.
+///
+/// Without arguments: tests whether a shell is available — returns `true`
+/// when an `os_execute_hook` is installed (we always have `sh` in that case),
+/// `false` otherwise.
+///
+/// With a command string: dispatches through `os_execute_hook` and pushes the
+/// three C-Lua return values `(boolean|nil, "exit"|"signal", int)` as defined
+/// by `luaL_execresult`.  Returns the stub `nil, errmsg, -1` triple when no
+/// hook is installed.
 pub(crate) fn os_execute(state: &mut LuaState) -> Result<usize, LuaError> {
     let cmd = state.opt_arg_lstring(1, None)?;
     match cmd {
         None => {
-            state.push(LuaValue::Bool(false));
+            // C: lua_pushboolean(L, stat);  where stat = l_system(NULL) != 0
+            // We have a shell if and only if the embedder installed a hook.
+            let has_shell = state.global().os_execute_hook.is_some();
+            state.push(LuaValue::Bool(has_shell));
             Ok(1)
         }
-        Some(_cmd_bytes) => {
-            // C: return luaL_execresult(L, stat);
-            state.push(LuaValue::Nil);
-            state.push_string(b"os.execute: not implemented in lua-stdlib")?;
-            state.push(LuaValue::Int(-1));
-            Ok(3)
+        Some(cmd_bytes) => {
+            let hook = state.global().os_execute_hook;
+            match hook {
+                Some(execute_fn) => {
+                    // Clone to avoid holding a borrow across the hook call.
+                    let cmd_owned: Vec<u8> = cmd_bytes.to_vec();
+                    match execute_fn(&cmd_owned) {
+                        Ok(result) => {
+                            // C: luaL_execresult — push (boolean|nil, "exit"|"signal", int)
+                            if result.success {
+                                // C: if (*what == 'e' && stat == 0) lua_pushboolean(L, 1);
+                                state.push(LuaValue::Bool(true));
+                            } else {
+                                // C: luaL_pushfail(L) — pushes nil
+                                state.push(LuaValue::Nil);
+                            }
+                            let reason_str: &[u8] = match result.reason {
+                                OsExecuteReason::Exit => b"exit",
+                                OsExecuteReason::Signal => b"signal",
+                            };
+                            state.push_string(reason_str)?;
+                            state.push(LuaValue::Int(result.code as i64));
+                            Ok(3)
+                        }
+                        Err(e) => {
+                            // C: luaL_execresult with errno — pushes nil, errmsg, code
+                            state.push(LuaValue::Nil);
+                            let msg = match &e {
+                                LuaError::Runtime(LuaValue::Str(s)) => s.as_bytes().to_vec(),
+                                other => format!("{:?}", other).into_bytes(),
+                            };
+                            let s = state.intern_str(&msg)?;
+                            state.push(LuaValue::Str(s));
+                            state.push(LuaValue::Int(-1));
+                            Ok(3)
+                        }
+                    }
+                }
+                None => {
+                    state.push(LuaValue::Nil);
+                    state.push_string(b"os.execute: not implemented in lua-stdlib")?;
+                    state.push(LuaValue::Int(-1));
+                    Ok(3)
+                }
+            }
         }
     }
 }

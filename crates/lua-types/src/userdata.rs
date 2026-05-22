@@ -4,7 +4,8 @@
 use std::cell::RefCell;
 
 use crate::gc::GcRef;
-use crate::value::{LuaTable, LuaValue};
+use crate::table::LuaTable;
+use crate::value::LuaValue;
 
 #[derive(Debug)]
 pub struct LuaUserData {

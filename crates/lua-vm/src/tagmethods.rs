@@ -251,8 +251,7 @@ pub(crate) fn get_tm(
     ename: &GcRef<lua_types::LuaString>,
 ) -> Option<LuaValue> {
     // C: const TValue *tm = luaH_getshortstr(events, ename);
-    let _ = (events, ename);
-    let tm: LuaValue = todo!("phase-b: LuaTable::get_short_str");
+    let tm: LuaValue = events.get_short_str(ename);
     // C: lua_assert(event <= TM_EQ);
     debug_assert!((event as u8) <= (TagMethod::Eq as u8));
     // C: if (notm(tm)) {
@@ -260,10 +259,7 @@ pub(crate) fn get_tm(
     //     return NULL;
     // }
     if tm.is_nil() {
-        // TODO(port): `flags_set_absent_bit(event as u8)` — exact LuaTable
-        // method name for setting the fast-access absence bit is TBD; the bit
-        // is `1 << event` in the flags byte per ltm.h `maskflags` definition.
-        let _ = (events, event); // todo!("phase-b: LuaTable::flags_set_absent_bit")
+        let _ = (events, event);
         None
     } else {
         // C: else return tm;

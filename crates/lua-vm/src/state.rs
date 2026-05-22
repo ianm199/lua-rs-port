@@ -309,7 +309,13 @@ impl Default for CallInfo {
 impl CallInfo {
     pub fn is_lua(&self) -> bool { (self.callstatus & CIST_C) == 0 }
     pub fn is_lua_code(&self) -> bool { self.is_lua() }
-    pub fn is_vararg_func(&self) -> bool { todo!("phase-b: CallInfo::is_vararg_func") }
+    /// Whether the active function is a vararg function.
+    ///
+    /// Currently returns `false` unconditionally — vararg introspection via
+    /// `debug.getinfo` reports no vararg info instead of panicking.
+    ///
+    /// TODO(port): wire when CallInfo carries proto access for vararg detection.
+    pub fn is_vararg_func(&self) -> bool { false }
     pub fn saved_pc(&self) -> u32 {
         if let CallInfoFrame::Lua { savedpc, .. } = self.u { savedpc } else { 0 }
     }
@@ -324,9 +330,26 @@ impl CallInfo {
     pub fn set_trap(&mut self, t: bool) {
         if let CallInfoFrame::Lua { ref mut trap, .. } = self.u { *trap = t; }
     }
-    pub fn set_recover_status<T>(&mut self, _status: T) { todo!("phase-b: CallInfo::set_recover_status") }
-    pub fn recover_status(&self) -> i32 { todo!("phase-b: CallInfo::recover_status") }
+    /// Read the 3-bit recover-status field packed into bits 10-12 of callstatus.
+    ///
+    /// C: `#define getcistrecst(ci) (((ci)->callstatus >> CIST_RECST) & 7)`
+    pub fn recover_status(&self) -> i32 {
+        ((self.callstatus >> CIST_RECST) & 7) as i32
+    }
+    /// Write the 3-bit recover-status field. `status` must fit in three bits.
+    ///
+    /// C: `#define setcistrecst(ci,st)` (lstate.h)
+    pub fn set_recover_status<T: Into<i32>>(&mut self, status: T) {
+        let st = (status.into() & 7) as u16;
+        self.callstatus = (self.callstatus & !(7u16 << CIST_RECST)) | (st << CIST_RECST);
+    }
     pub fn get_oah(&self) -> bool { (self.callstatus & CIST_OAH) != 0 }
+    /// Store the current `allowhook` value into callstatus bit 0 (CIST_OAH).
+    ///
+    /// C: `#define setoah(st,v) ((st) = ((st) & ~CIST_OAH) | (v))`
+    pub fn set_oah(&mut self, allow: bool) {
+        self.callstatus = (self.callstatus & !CIST_OAH) | (if allow { CIST_OAH } else { 0 });
+    }
     pub fn u_c_old_errfunc(&self) -> isize {
         if let CallInfoFrame::C { old_errfunc, .. } = self.u { old_errfunc } else { 0 }
     }
@@ -335,6 +358,32 @@ impl CallInfo {
     }
     pub fn u_c_k(&self) -> Option<LuaKFunction> {
         if let CallInfoFrame::C { k, .. } = self.u { k } else { None }
+    }
+    /// Set continuation function on a C-call frame.
+    ///
+    /// Panics if invoked on a Lua frame (callers must check `is_lua()` first).
+    pub fn set_u_c_k(&mut self, k: Option<LuaKFunction>) {
+        if let CallInfoFrame::C { k: ref mut slot, .. } = self.u {
+            *slot = k;
+        }
+    }
+    /// Set continuation context on a C-call frame.
+    pub fn set_u_c_ctx(&mut self, ctx: isize) {
+        if let CallInfoFrame::C { ctx: ref mut slot, .. } = self.u {
+            *slot = ctx;
+        }
+    }
+    /// Set saved old_errfunc on a C-call frame.
+    pub fn set_u_c_old_errfunc(&mut self, old_errfunc: isize) {
+        if let CallInfoFrame::C { old_errfunc: ref mut slot, .. } = self.u {
+            *slot = old_errfunc;
+        }
+    }
+    /// Set the `u2.funcidx` field, used by yieldable pcall for error recovery.
+    ///
+    /// C: `ci->u2.funcidx = cast_int(savestack(L, c.func))`
+    pub fn set_u2_funcidx(&mut self, idx: i32) {
+        self.u2.value = idx;
     }
 }
 
@@ -481,26 +530,23 @@ impl LuaTableRefExt for GcRef<LuaTable> {
     fn metatable(&self) -> Option<GcRef<LuaTable>> { (**self).metatable() }
     fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
     fn get(&self, k: &LuaValue) -> LuaValue { (**self).get(k) }
-    fn get_int(&self, k: i64) -> LuaValue { (**self).get(&LuaValue::Int(k)) }
+    fn get_int(&self, k: i64) -> LuaValue { (**self).get_int(k) }
     fn get_short_str(&self, k: &GcRef<LuaString>) -> LuaValue { (**self).get_short_str(k) }
     fn raw_set(&self, _state: &mut LuaState, k: &LuaValue, v: LuaValue) -> Result<(), LuaError> {
         reject_invalid_table_key(k)?;
-        (**self).raw_set(k.clone(), v);
-        Ok(())
+        (**self).try_raw_set(k.clone(), v)
     }
     fn raw_set_int(&self, _state: &mut LuaState, k: i64, v: LuaValue) -> Result<(), LuaError> {
-        (**self).raw_set(LuaValue::Int(k), v);
-        Ok(())
+        (**self).try_raw_set_int(k, v)
     }
     fn invalidate_tm_cache(&self) {}
-    fn resize(&self, _state: &mut LuaState, _na: usize, _nh: usize) -> Result<(), LuaError> {
-        Ok(())
+    fn resize(&self, _state: &mut LuaState, na: usize, nh: usize) -> Result<(), LuaError> {
+        let na32 = na.min(u32::MAX as usize) as u32;
+        let nh32 = nh.min(u32::MAX as usize) as u32;
+        (**self).resize(na32, nh32)
     }
     fn next(&self, k: LuaValue) -> Result<Option<(LuaValue, LuaValue)>, LuaError> {
-        if !matches!(k, LuaValue::Nil) && !(**self).contains_key(&k) {
-            return Err(LuaError::runtime(format_args!("invalid key to 'next'")));
-        }
-        Ok((**self).next_pair(&k))
+        (**self).try_next_pair(&k)
     }
 }
 
@@ -616,6 +662,19 @@ pub type FileLoaderHook = fn(filename: &[u8]) -> Result<Vec<u8>, LuaError>;
 pub type FileOpenHook =
     fn(filename: &[u8], mode: &[u8]) -> Result<Box<dyn lua_types::LuaFileHandle>, LuaError>;
 
+/// Function-pointer signature for spawning a child process with a connected
+/// pipe, installed on [`GlobalState::popen_hook`] by the embedder.
+///
+/// `std::process::Command` is banned outside `lua-cli`, so `lua-stdlib`'s
+/// `io.popen` reaches the OS through this hook. `None` causes `io.popen` to
+/// raise a clean Lua error ("popen not enabled in this build"), which is
+/// appropriate for sandboxed embeddings.
+///
+/// `mode` is the Lua popen mode string — `b"r"` for reading the child's
+/// stdout, `b"w"` for writing to the child's stdin.
+pub type PopenHook =
+    fn(cmd: &[u8], mode: &[u8]) -> Result<Box<dyn lua_types::LuaFileHandle>, LuaError>;
+
 /// Function-pointer signature for removing a file, installed on
 /// [`GlobalState::file_remove_hook`] by the embedder.
 ///
@@ -629,6 +688,39 @@ pub type FileRemoveHook = fn(filename: &[u8]) -> Result<(), LuaError>;
 /// `std::fs` is banned outside `lua-cli`, so `lua-stdlib`'s `os.rename`
 /// reaches the filesystem via this hook. Returns `Ok(())` on success.
 pub type FileRenameHook = fn(from: &[u8], to: &[u8]) -> Result<(), LuaError>;
+
+/// Reason a shell command terminated, returned by [`OsExecuteHook`].
+///
+/// Mirrors the two string literals that C-Lua's `l_inspectstat` / `luaL_execresult`
+/// can produce: `"exit"` for normal process exit, `"signal"` for signal termination
+/// (POSIX only).
+#[derive(Clone, Copy, Debug)]
+pub enum OsExecuteReason {
+    /// Process exited with an exit code (`WIFEXITED` / `ExitStatus::code()` is `Some`).
+    Exit,
+    /// Process was terminated by a signal (`WIFSIGNALED` / `ExitStatus::signal()` is `Some`).
+    Signal,
+}
+
+/// Result returned by [`OsExecuteHook`], carrying the three values that
+/// C-Lua's `luaL_execresult` pushes: `(boolean|nil, "exit"|"signal", int)`.
+#[derive(Debug)]
+pub struct OsExecuteResult {
+    /// `true` when the command exited successfully (exit code 0).
+    pub success: bool,
+    /// How the process terminated.
+    pub reason: OsExecuteReason,
+    /// Exit code (for `Exit`) or signal number (for `Signal`).
+    pub code: i32,
+}
+
+/// Function-pointer signature for executing a shell command, installed on
+/// [`GlobalState::os_execute_hook`] by the embedder.
+///
+/// `std::process` is banned outside `lua-cli`, so `lua-stdlib`'s `os.execute`
+/// reaches the shell via this hook. Returns an [`OsExecuteResult`] on success,
+/// or a [`LuaError`] when the spawn itself fails.
+pub type OsExecuteHook = fn(cmd: &[u8]) -> Result<OsExecuteResult, LuaError>;
 
 /// Opaque handle to a dynamically loaded library, allocated by a
 /// [`DynLibLoadHook`] backend and stored in `package._CLIBS`.
@@ -735,6 +827,12 @@ pub struct GlobalState {
     /// (`io.stdin`, `io.stdout`, `io.stderr`) remain functional.
     pub file_open_hook: Option<FileOpenHook>,
 
+    /// Phase-G hook for spawning a child process and connecting one stream
+    /// (stdin or stdout) to a Lua file handle. Set by `lua-cli` since
+    /// `std::process::Command` is banned in `lua-stdlib`. `None` causes
+    /// `io.popen` to raise a Lua error rather than panic.
+    pub popen_hook: Option<PopenHook>,
+
     /// Phase-B hook for removing a file. Set by `lua-cli` since `std::fs` is
     /// banned in `lua-stdlib`. `None` causes `os.remove` to return an error.
     pub file_remove_hook: Option<FileRemoveHook>,
@@ -742,6 +840,11 @@ pub struct GlobalState {
     /// Phase-B hook for renaming a file. Set by `lua-cli` since `std::fs` is
     /// banned in `lua-stdlib`. `None` causes `os.rename` to return an error.
     pub file_rename_hook: Option<FileRenameHook>,
+
+    /// Phase-G hook for executing a shell command. Set by `lua-cli` since
+    /// `std::process` is banned in `lua-stdlib`. `None` causes `os.execute`
+    /// to report no shell available (matching C-Lua's `system(NULL) == 0`).
+    pub os_execute_hook: Option<OsExecuteHook>,
 
     /// Phase-D-3.5 hook for loading a dynamic library (`dlopen` /
     /// `LoadLibraryEx`). Set by `lua-cli` since `libloading` is FFI and
@@ -998,6 +1101,21 @@ pub struct GlobalState {
     /// be reached directly through any `Rc<RefCell<_>>`. The mirror is the
     /// shared scratchpad that bridges the gap for the duration of a resume.
     pub cross_thread_upvals: std::collections::HashMap<(u64, StackIdx), LuaValue>,
+
+    /// Phase F-1.a workaround for GC use-after-free across coroutine boundaries.
+    /// When `aux_resume` switches to a child thread, the parent's live stack
+    /// values would otherwise become unreachable to the tracer for the duration
+    /// of the resume (the parent `LuaState` is held only as a stack-borrowed
+    /// `&mut` up the call chain and is not part of any traced root set). To
+    /// keep those values alive, `aux_resume` pushes a snapshot of the parent
+    /// stack here before transferring control, and pops it on suspension or
+    /// completion. The tracer visits every snapshot as a GC root via the
+    /// `Trace for GlobalState` impl in `trace_impls.rs`.
+    ///
+    /// Phase F-2.b added a reachability-driven thread sweep that supersedes
+    /// most of this, but the snapshot still guards values that live only on
+    /// the parent's stack (i.e. not yet rooted by any thread node).
+    pub suspended_parent_stacks: Vec<Vec<LuaValue>>,
 }
 
 impl GlobalState {
@@ -1474,22 +1592,6 @@ impl LuaState {
     }
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
-        if i.0 == 9 {
-            static COUNT9: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n9 = COUNT9.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let tid = self.global().current_thread_id;
-            let main_tid = self.global().main_thread_id;
-            if tid == main_tid && matches!(v, LuaValue::Table(_)) {
-                let bt = std::backtrace::Backtrace::capture();
-                eprintln!("[DBG SLOT9 TABLE WRITE] write #{}", n9);
-                let bt_str = format!("{}", bt);
-                for line in bt_str.lines().take(50) {
-                    if line.contains("do_.rs") || line.contains("vm.rs") || line.contains("coro") || line.contains("state.rs:1484") {
-                        eprintln!("  bt: {}", line);
-                    }
-                }
-            }
-        }
         self.stack[i.0 as usize].val = v;
     }
     /// Set `top` to an absolute stack index. Grows the backing stack vector
@@ -1822,8 +1924,12 @@ impl LuaState {
     pub fn intern_or_create_str(&mut self, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
         self.intern_str(bytes)
     }
-    pub fn new_userdata(&mut self, _size: usize, _nuvalue: usize) -> Result<GcRef<LuaUserData>, LuaError> { todo!("phase-b: new_userdata") }
-    pub fn new_c_closure(&mut self, _f: LuaCFunction, _n: i32) -> Result<LuaClosure, LuaError> { todo!("phase-b: new_c_closure") }
+    pub fn new_userdata(&mut self, _size: usize, _nuvalue: usize) -> Result<GcRef<LuaUserData>, LuaError> {
+        Err(LuaError::runtime(format_args!("new_userdata not implemented in this Phase-B build; use new_userdata_typed instead")))
+    }
+    pub fn new_c_closure(&mut self, _f: LuaCFunction, _n: i32) -> Result<LuaClosure, LuaError> {
+        Err(LuaError::runtime(format_args!("new_c_closure not implemented in this Phase-B build; use push_cclosure in lua_vm::api instead")))
+    }
     pub fn push_closure(
         &mut self,
         proto_idx: usize,
@@ -1863,12 +1969,23 @@ impl LuaState {
     /// Read an open or closed upvalue.
     ///
     /// Closed upvalues own their value and read trivially. Open upvalues
-    /// point at a stack slot on the home thread that captured them. When
-    /// that home thread is the currently running thread, the value lives
-    /// in `self.stack`. When a coroutine resumes while the home thread
-    /// is suspended (Phase E-3), the value lives in
-    /// `GlobalState::cross_thread_upvals`, which `aux_resume` mirrors to
-    /// and from the home thread's stack across the resume boundary.
+    /// point at a stack slot on the home thread that captured them.
+    ///
+    /// Resolution order for an open upvalue whose home is not the current
+    /// thread:
+    ///
+    /// 1. If the home thread is registered in `GlobalState::threads` and
+    ///    its `RefCell` is currently borrowable, read straight from its
+    ///    stack. This is the path used when the main thread reads a
+    ///    closure created inside a now-suspended coroutine, or when one
+    ///    coroutine reads an upvalue homed on a sibling suspended
+    ///    coroutine.
+    /// 2. Otherwise fall back to `GlobalState::cross_thread_upvals`. This
+    ///    is the path used while inside a `coroutine.resume`: the parent
+    ///    thread's `LuaState` is held by an outer `&mut` and is not
+    ///    reachable through any `Rc<RefCell<_>>`, so `aux_resume`
+    ///    snapshots the parent's open upvalues into the mirror across the
+    ///    resume boundary.
     pub fn upvalue_get(&self, cl: &GcRef<LuaClosureLua>, n: usize) -> LuaValue {
         let uv = cl.upval(n);
         let slot = uv.slot().clone();
@@ -1876,23 +1993,35 @@ impl LuaState {
             lua_types::UpValState::Closed(v) => v,
             lua_types::UpValState::Open { thread_id, idx } => {
                 let current = self.global().current_thread_id;
-                if thread_id as u64 == current {
-                    self.stack[idx.0 as usize].val.clone()
-                } else {
+                let tid = thread_id as u64;
+                if tid == current {
+                    return self.stack[idx.0 as usize].val.clone();
+                }
+                let entry_rc = {
                     let g = self.global();
-                    g.cross_thread_upvals
-                        .get(&(thread_id as u64, idx))
-                        .cloned()
-                        .unwrap_or(LuaValue::Nil)
+                    g.threads.get(&tid).map(|e| e.state.clone())
+                };
+                if let Some(rc) = entry_rc {
+                    if let Ok(home_state) = rc.try_borrow() {
+                        return home_state.get_at(idx);
+                    }
+                }
+                let g = self.global();
+                match g.cross_thread_upvals.get(&(tid, idx)) {
+                    Some(v) => v.clone(),
+                    None => LuaValue::Nil,
                 }
             }
         }
     }
     /// Write an open or closed upvalue.
     ///
-    /// Mirrors [`upvalue_get`]: open upvalues whose home thread is the
-    /// currently running thread go to `self.stack`; cross-thread open
-    /// upvalues go through `GlobalState::cross_thread_upvals`.
+    /// Mirrors [`upvalue_get`]: open upvalues homed on the current thread
+    /// write through `self.stack`. For cross-thread open upvalues, the
+    /// home thread's stack is written directly when its `RefCell` is
+    /// borrowable, otherwise the write lands in
+    /// `GlobalState::cross_thread_upvals` (the active-resume case where
+    /// the home thread is borrow-locked further up the call stack).
     pub fn upvalue_set(&mut self, cl: &GcRef<LuaClosureLua>, n: usize, val: LuaValue) -> Result<(), LuaError> {
         let uv = cl.upval(n);
         let open_slot = match &*uv.slot() {
@@ -1904,10 +2033,20 @@ impl LuaState {
                 let current = self.global().current_thread_id;
                 if tid == current {
                     self.set_at(idx, val);
-                } else {
-                    let mut g = self.global_mut();
-                    g.cross_thread_upvals.insert((tid, idx), val);
+                    return Ok(());
                 }
+                let entry_rc = {
+                    let g = self.global();
+                    g.threads.get(&tid).map(|e| e.state.clone())
+                };
+                if let Some(rc) = entry_rc {
+                    if let Ok(mut home_state) = rc.try_borrow_mut() {
+                        home_state.set_at(idx, val);
+                        return Ok(());
+                    }
+                }
+                let mut g = self.global_mut();
+                g.cross_thread_upvals.insert((tid, idx), val);
             }
             None => {
                 let mut g = uv.state.borrow_mut();
@@ -2296,8 +2435,6 @@ impl LuaState {
             .expect("get_proto_instr: CallInfo does not hold a Lua closure");
         cl.proto.code[pc as usize]
     }
-    pub fn dump_proto(&self, _proto: &GcRef<LuaProto>, _writer: &mut dyn FnMut(&[u8]) -> Result<(), LuaError>, _strip: bool) -> Result<(), LuaError> { todo!("phase-b: dump_proto") }
-
     /// C: `int luaG_tracecall(lua_State *L)` — wrapper that returns the trap
     /// flag as `bool` (C returns `int` 0/1).
     ///
@@ -3519,13 +3656,17 @@ pub fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     state.status = LuaStatus::Ok as u8;
 
     // C: status = luaD_closeprotected(L, 1, status);
-    // TODO(port): crate::do_::close_protected(state, StackIdx(1), status) — ldo.c → do_.rs
-    // For Phase A, skip the actual close (upvalue closing requires ldo.c).
+    let close_status = crate::do_::close_protected(
+        state,
+        StackIdx(1),
+        LuaStatus::from_raw(status),
+    );
+    status = close_status as i32;
 
     // C: if (status != LUA_OK) luaD_seterrorobj(L, status, L->stack.p + 1);
     if status != LuaStatus::Ok as i32 {
         // C: luaD_seterrorobj(L, status, L->stack.p + 1);
-        // TODO(port): crate::do_::set_error_obj(state, status, StackIdx(1)) — ldo.c → do_.rs
+        crate::do_::set_error_obj(state, LuaStatus::from_raw(status), StackIdx(1));
     } else {
         // C: else L->top.p = L->stack.p + 1;
         state.top = StackIdx(1);
@@ -3649,8 +3790,10 @@ pub fn new_state() -> Option<LuaState> {
         parser_hook: None,
         file_loader_hook: None,
         file_open_hook: None,
+        popen_hook: None,
         file_remove_hook: None,
         file_rename_hook: None,
+        os_execute_hook: None,
         dynlib_load_hook: None,
         dynlib_symbol_hook: None,
         dynlib_unload_hook: None,
@@ -3718,6 +3861,7 @@ pub fn new_state() -> Option<LuaState> {
         c_functions: Vec::new(),
         heap: lua_gc::Heap::new(),
         cross_thread_upvals: std::collections::HashMap::new(),
+        suspended_parent_stacks: Vec::new(),
     };
 
     let global_rc = Rc::new(RefCell::new(global));

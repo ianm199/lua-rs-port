@@ -173,7 +173,28 @@ pub trait LuaStateStubExt {
     fn gc_inc(&mut self, pause: i32, step_mul: i32, step_size: i32) -> Result<i32, LuaError> { todo!("phase-b-reconcile: gc_inc") }
 
     fn call(&mut self, nargs: i32, nresults: i32) -> Result<(), LuaError> { todo!("phase-b-reconcile: call") }
+    fn call_k(
+        &mut self,
+        nargs: i32,
+        nresults: i32,
+        ctx: isize,
+        k: Option<fn(&mut LuaState, i32, isize) -> Result<usize, LuaError>>,
+    ) -> Result<(), LuaError> {
+        let _ = (nargs, nresults, ctx, k);
+        todo!("phase-b-reconcile: call_k")
+    }
     fn protected_call(&mut self, nargs: i32, nresults: i32, msgh: i32) -> Result<(), LuaError> { todo!("phase-b-reconcile: protected_call") }
+    fn protected_call_k(
+        &mut self,
+        nargs: i32,
+        nresults: i32,
+        msgh: i32,
+        ctx: isize,
+        k: Option<fn(&mut LuaState, i32, isize) -> Result<usize, LuaError>>,
+    ) -> Result<(), LuaError> {
+        let _ = (nargs, nresults, msgh, ctx, k);
+        todo!("phase-b-reconcile: protected_call_k")
+    }
     fn len_op(&mut self, idx: i32) -> Result<(), LuaError> { todo!("phase-b-reconcile: len_op") }
     fn arith(&mut self, op: ArithOp) -> Result<(), LuaError> { todo!("phase-b-reconcile: arith") }
 
@@ -364,6 +385,16 @@ impl LuaStateStubExt for LuaState {
 
     fn call(&mut self, nargs: i32, nresults: i32) -> Result<(), LuaError> {
         lua_vm::api::call_k(self, nargs, nresults, 0, None)
+    }
+
+    fn call_k(
+        &mut self,
+        nargs: i32,
+        nresults: i32,
+        ctx: isize,
+        k: Option<fn(&mut LuaState, i32, isize) -> Result<usize, LuaError>>,
+    ) -> Result<(), LuaError> {
+        lua_vm::api::call_k(self, nargs, nresults, ctx, k)
     }
 
     fn remove(&mut self, idx: i32) -> Result<(), LuaError> {
@@ -723,6 +754,17 @@ impl LuaStateStubExt for LuaState {
 
     fn protected_call(&mut self, nargs: i32, nresults: i32, msgh: i32) -> Result<(), LuaError> {
         lua_vm::api::pcall_k(self, nargs, nresults, msgh, 0, None)?;
+        Ok(())
+    }
+    fn protected_call_k(
+        &mut self,
+        nargs: i32,
+        nresults: i32,
+        msgh: i32,
+        ctx: isize,
+        k: Option<fn(&mut LuaState, i32, isize) -> Result<usize, LuaError>>,
+    ) -> Result<(), LuaError> {
+        lua_vm::api::pcall_k(self, nargs, nresults, msgh, ctx, k)?;
         Ok(())
     }
 

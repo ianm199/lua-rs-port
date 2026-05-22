@@ -254,6 +254,131 @@ fn file_open_hook(filename: &[u8], mode: &[u8]) -> Result<Box<dyn LuaFileHandle>
     })
 }
 
+/// `LuaFileHandle` backed by a `std::process::Child` and one of its pipes.
+///
+/// Mirrors POSIX `popen(3)` semantics: mode `"r"` exposes the child's stdout
+/// as a readable stream, mode `"w"` exposes the child's stdin as a writable
+/// stream. The pipe is stored as `Option<_>` so the closing path can take()
+/// it before calling `wait()`, ensuring the child sees EOF and exits — if
+/// the BufWriter/BufReader were left in place across `wait()`, write-mode
+/// children like `cat` or `wc` would block indefinitely.
+enum PopenFile {
+    Read(Option<BufReader<std::process::ChildStdout>>, std::process::Child),
+    Write(Option<BufWriter<std::process::ChildStdin>>, std::process::Child),
+}
+
+impl PopenFile {
+    fn spawn(cmd: &[u8], mode: &[u8]) -> io::Result<Self> {
+        let cmd_str = std::str::from_utf8(cmd).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "popen command not valid UTF-8")
+        })?;
+        let read_mode = match mode {
+            b"r" => true,
+            b"w" => false,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "popen mode must be \"r\" or \"w\"",
+                ));
+            }
+        };
+        let mut command = std::process::Command::new("/bin/sh");
+        command.arg("-c").arg(cmd_str);
+        if read_mode {
+            command.stdout(std::process::Stdio::piped());
+        } else {
+            command.stdin(std::process::Stdio::piped());
+        }
+        let mut child = command.spawn()?;
+        if read_mode {
+            let out = child.stdout.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "popen: child stdout was None")
+            })?;
+            Ok(PopenFile::Read(Some(BufReader::new(out)), child))
+        } else {
+            let inp = child.stdin.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "popen: child stdin was None")
+            })?;
+            Ok(PopenFile::Write(Some(BufWriter::new(inp)), child))
+        }
+    }
+}
+
+impl LuaFileHandle for PopenFile {
+    fn read_byte(&mut self) -> i32 {
+        match self {
+            PopenFile::Read(Some(r), _) => {
+                let mut buf = [0u8; 1];
+                match r.read(&mut buf) {
+                    Ok(1) => buf[0] as i32,
+                    _ => -1,
+                }
+            }
+            _ => -1,
+        }
+    }
+
+    fn unread_byte(&mut self, _byte: i32) {}
+
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<usize> {
+        match self {
+            PopenFile::Write(Some(w), _) => w.write(data),
+            _ => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "popen pipe not open for writing",
+            )),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            PopenFile::Write(Some(w), _) => w.flush(),
+            _ => Ok(()),
+        }
+    }
+
+    fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "popen pipe is not seekable"))
+    }
+
+    fn tell(&mut self) -> io::Result<u64> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "popen pipe is not seekable"))
+    }
+
+    fn clear_error(&mut self) {}
+
+    fn has_error(&self) -> bool { false }
+}
+
+impl Drop for PopenFile {
+    fn drop(&mut self) {
+        match self {
+            PopenFile::Read(reader, child) => {
+                drop(reader.take());
+                let _ = child.wait();
+            }
+            PopenFile::Write(writer, child) => {
+                if let Some(mut w) = writer.take() {
+                    let _ = w.flush();
+                }
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+fn popen_hook(cmd: &[u8], mode: &[u8]) -> Result<Box<dyn LuaFileHandle>, LuaError> {
+    PopenFile::spawn(cmd, mode)
+        .map(|p| Box::new(p) as Box<dyn LuaFileHandle>)
+        .map_err(|err| {
+            LuaError::runtime(format_args!(
+                "cannot popen '{}': {}",
+                String::from_utf8_lossy(cmd),
+                err
+            ))
+        })
+}
+
 // ─── Dynamic library backend (Phase D-3.5) ────────────────────────────────────
 //
 // `lua-stdlib` cannot use `libloading` because it forbids `unsafe`. The CLI
@@ -424,6 +549,22 @@ fn parser_hook(
     }))
 }
 
+/// Install Rust-native modules that ship with `lua-cli` into
+/// `package.preload`. After `open_libs` has populated the `package` library,
+/// each entry written to `package.preload[name]` becomes a loader that
+/// `require(name)` will invoke through the preload searcher.
+///
+/// Phase G-1 ships a single preloaded module — `lfs`, the Rust-native
+/// LuaFileSystem port from the `lua-rs-lfs` crate.
+fn register_preloaded_modules(state: &mut LuaState) -> Result<(), LuaError> {
+    lua_vm::api::get_global(state, b"package")?;
+    lua_vm::api::get_field(state, -1, b"preload")?;
+    lua_vm::api::push_cclosure(state, lua_rs_lfs::luaopen_lfs, 0)?;
+    lua_vm::api::set_field(state, -2, b"lfs")?;
+    state.pop_n(2);
+    Ok(())
+}
+
 const MULTRET: i32 = -1;
 
 fn render_lua_error(e: &LuaError) -> String {
@@ -530,6 +671,7 @@ fn main() -> ExitCode {
         state.global_mut().parser_hook = Some(parser_hook);
         state.global_mut().file_loader_hook = Some(file_loader_hook);
         state.global_mut().file_open_hook = Some(file_open_hook);
+        state.global_mut().popen_hook = Some(popen_hook);
         state.global_mut().file_remove_hook = Some(file_remove_hook);
         state.global_mut().file_rename_hook = Some(file_rename_hook);
         state.global_mut().dynlib_load_hook = Some(dynlib_load);
@@ -538,6 +680,9 @@ fn main() -> ExitCode {
 
         step!("[2/4] Opening standard library...");
         open_libs(&mut state).map_err(|e| format!("open_libs failed: {}", render_lua_error(&e)))?;
+
+        register_preloaded_modules(&mut state)
+            .map_err(|e| format!("preload registration failed: {}", render_lua_error(&e)))?;
 
         step!("[3/4] Loading source (parse + compile)...");
         let status = load_buffer(&mut state, &source, &chunkname)
@@ -601,5 +746,11 @@ fn main() -> ExitCode {
 //                  world program, not to be a complete interpreter. Hosts the
 //                  libloading-backed implementation of the three
 //                  dynlib_*_hook hooks on GlobalState (Phase D-3.5); ceiling
-//                  in harness/unsafe-budgets.toml = 3.
+//                  in harness/unsafe-budgets.toml = 3. Also installs
+//                  popen_hook (Phase F): spawns /bin/sh -c <cmd> via
+//                  std::process::Command, wraps the resulting pipe in
+//                  PopenFile (a LuaFileHandle) so io.popen and the LStream
+//                  read/write/close path Just Work for clients like
+//                  LuaRocks. No new unsafe — std::process is permitted in
+//                  lua-cli.
 // ──────────────────────────────────────────────────────────────────────────

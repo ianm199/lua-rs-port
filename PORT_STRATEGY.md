@@ -276,7 +276,7 @@ GC online. Programs that churn through millions of allocations work correctly.
 
 Coroutines and io online. This is where it stops looking like a toy.
 
-- **🥇 [LuaRocks](https://luarocks.org/) self-hosting.** The language's own package manager (written in Lua) running through our binary. `luarocks search inspect` or `luarocks list` end-to-end. **The canonical "actually works" moment.**
+- **🥇 [LuaRocks](https://luarocks.org/) self-hosting.** The language's own package manager (written in Lua) running through our binary. `luarocks search inspect` or `luarocks list` end-to-end. **The canonical "actually works" moment.** **PARTIAL ✅ as of 2026-05-19** — `luarocks --version` runs end-to-end (loads ~50 modules, prints version/help/config), failing only on the exit cleanup path. `luarocks install` not yet attempted (needs HTTP fetch + digest verification). Details in `docs/PHASE_G_LUAROCKS_PLAN.md`.
 - **🥈 Pandoc Lua filter.** Write a real markdown-AST filter; route execution through our impl via `pandoc --lua-filter`. Production toolchain integration.
 - **🥉 [Copas](https://lunarmodules.github.io/copas/) coroutine scheduler** stripped of its networking (we don't have sockets). Confirms coroutine semantics under load.
 

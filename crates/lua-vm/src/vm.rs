@@ -445,22 +445,19 @@ pub(crate) fn to_integer(obj: &LuaValue, mode: F2Imod) -> Option<i64> {
 /// `Ok(false)` with `*p` set to the limit, or `Err` if the limit is not a
 /// number at all.
 fn forlimit(
+    state: &mut LuaState,
     init: i64,
     lim: &LuaValue,
     step: i64,
 ) -> Result<(bool, i64), LuaError> {
-    // C: if (!luaV_tointeger(lim, p, (step < 0 ? F2Iceil : F2Ifloor)))
     let round = if step < 0 { F2Imod::Ceil } else { F2Imod::Floor };
     if let Some(p) = to_integer(lim, round) {
-        // C: return (step > 0 ? init > *p : init < *p);
         let skip = if step > 0 { init > p } else { init < p };
         return Ok((skip, p));
     }
-    // C: not coercible to int; try float
-    // C: if (!tonumber(lim, &flim)) luaG_forerror(L, lim, "limit");
     let flim = match tonumber(lim) {
         Some(f) => f,
-        None => return Err(LuaError::for_error(lim, "limit")),
+        None => return Err(crate::debug::for_error(state, lim, b"limit")),
     };
     // C: float out of integer bounds — clip to LUA_MAXINTEGER or MININTEGER
     if 0.0_f64 < flim {
@@ -501,7 +498,7 @@ pub(crate) fn forprep(state: &mut LuaState, ra: StackIdx) -> Result<bool, LuaErr
         // C: setivalue(s2v(ra+3), init)
         state.set_at(ra + 3, LuaValue::Int(init));
 
-        let (skip, limit) = forlimit(init, &plimit, step)?;
+        let (skip, limit) = forlimit(state, init, &plimit, step)?;
         if skip {
             return Ok(true);
         }
@@ -2707,7 +2704,13 @@ fn arith_op_checked(
 ) -> Result<(), LuaError> {
     if let (LuaValue::Int(i1), LuaValue::Int(i2)) = (v1, v2) {
         *pc += 1;
-        state.set_at(ra, LuaValue::Int(iop(*i1, *i2)?));
+        let result = iop(*i1, *i2).map_err(|e| match e {
+            LuaError::Runtime(LuaValue::Str(s)) => {
+                crate::debug::prefixed_runtime_pub(state, s.as_bytes().to_vec())
+            }
+            other => other,
+        })?;
+        state.set_at(ra, LuaValue::Int(result));
     } else {
         arith_float_aux(state, ra, v1, v2, pc, fop);
     }

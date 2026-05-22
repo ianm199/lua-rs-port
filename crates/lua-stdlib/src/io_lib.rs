@@ -408,6 +408,31 @@ fn get_lstream(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
     })
 }
 
+/// Look up the `LStream` registered for the userdata sitting at upvalue `idx`.
+///
+/// `aux_lines` stores the file-handle userdata as upvalue 1 of `io_readline`;
+/// this helper performs the same registry round-trip that `get_lstream` does
+/// for argument 1, but reads the value from the closure's upvalue slot instead
+/// of the call stack.
+fn lstream_from_upvalue(
+    state: &mut LuaState,
+    idx: i32,
+) -> Result<Rc<RefCell<LStream>>, LuaError> {
+    let v = state.value_at(crate::state_stub::upvalue_index(idx));
+    let ud_id = match v {
+        LuaValue::UserData(ud) => ud.identity(),
+        _ => {
+            return Err(LuaError::runtime(format_args!(
+                "invalid file handle in upvalue {}",
+                idx
+            )));
+        }
+    };
+    lookup_lstream(ud_id).ok_or_else(|| {
+        LuaError::runtime(format_args!("invalid file handle in upvalue {}", idx))
+    })
+}
+
 /// Validate that argument 1 is an open file handle; error if closed.
 /// C: `tofile` (returns `FILE *` in C; here we return the wrapping `Rc<RefCell<LStream>>`).
 fn tofile(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
@@ -662,6 +687,13 @@ pub fn io_open(state: &mut LuaState) -> Result<usize, LuaError> {
 }
 
 /// `io.popen(filename [, mode])`. C: `io_popen`.
+///
+/// `std::process::Command` is banned in `lua-stdlib`; the child process is
+/// spawned via `GlobalState::popen_hook`, which `lua-cli` installs. When the
+/// hook is absent (sandboxed embeddings), this returns a clean Lua failure
+/// shape (`nil, errmsg, errno`) rather than panicking, so clients such as
+/// LuaRocks that probe `io.popen` fall back gracefully instead of crashing
+/// the host.
 pub fn io_popen(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: luaL_argcheck(L, l_checkmodep(mode), 2, "invalid mode");
     // C: p->f = l_popen(L, filename, mode); p->closef = &io_pclose;
@@ -670,12 +702,38 @@ pub fn io_popen(state: &mut LuaState) -> Result<usize, LuaError> {
     if !check_mode_popen(&mode) {
         return Err(LuaError::arg_error(2, "invalid mode"));
     }
-    new_pre_file(state)?;
-    // TODO(port): std::process::Command — spawn child, capture pipe, store in LStream
-    let _ = (filename, mode);
-    Err(LuaError::runtime(format_args!(
-        "'popen' not supported in this build"
-    )))
+    let hook = state.global().popen_hook;
+    match hook {
+        Some(spawn_fn) => match spawn_fn(&filename, &mode) {
+            Ok(fh) => {
+                let cell = new_pre_file(state)?;
+                let mut p = cell.borrow_mut();
+                p.file = Some(fh);
+                p.close_fn = Some(io_pclose);
+                drop(p);
+                Ok(1)
+            }
+            Err(e) => {
+                let os_err = io::Error::new(
+                    io::ErrorKind::Other,
+                    match &e {
+                        LuaError::Runtime(LuaValue::Str(s)) => {
+                            String::from_utf8_lossy(s.as_bytes()).into_owned()
+                        }
+                        other => format!("{:?}", other),
+                    },
+                );
+                file_result(state, false, Some(&filename), os_err)
+            }
+        },
+        None => {
+            let os_err = io::Error::new(
+                io::ErrorKind::Unsupported,
+                "popen not enabled in this build",
+            );
+            file_result(state, false, Some(&filename), os_err)
+        }
+    }
 }
 
 /// `io.tmpfile()`. C: `io_tmpfile`.
@@ -1029,7 +1087,7 @@ fn g_read(
     // C: if (!success) { lua_pop(L, 1); luaL_pushfail(L); }
     if !success {
         state.pop_n(1);
-        state.push(LuaValue::Bool(false));
+        state.push(LuaValue::Nil);
     }
 
     // C: return n - first;
@@ -1475,16 +1533,15 @@ pub fn io_lines(state: &mut LuaState) -> Result<usize, LuaError> {
 fn io_readline(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: LStream *p = (LStream *)lua_touserdata(L, lua_upvalueindex(1));
     // C: int n = (int)lua_tointeger(L, lua_upvalueindex(2));
-    // TODO(port): access upvalues via state.get_upvalue(n); extract LStream from upvalue 1.
     let n = match state.value_at(crate::state_stub::upvalue_index(2)) {
         LuaValue::Int(i) => i as usize,
         _ => 0,
     };
 
+    let p_rc = lstream_from_upvalue(state, 1)?;
+
     // C: if (isclosed(p)) return luaL_error(L, "file is already closed");
-    // TODO(port): extract LStream from upvalue 1 and check is_closed()
-    let is_closed: bool = todo!("TODO(port): check LStream::is_closed() from upvalue 1");
-    if is_closed {
+    if p_rc.borrow().is_closed() {
         return Err(LuaError::runtime(format_args!("file is already closed")));
     }
 
@@ -1500,8 +1557,7 @@ fn io_readline(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     // C: n = g_read(L, p->f, 2);
-    // TODO(port): extract file from upvalue 1 LStream, call g_read(state, file, 2)
-    let result_n: usize = todo!("TODO(port): call g_read with file from upvalue 1");
+    let result_n: usize = g_read(state, &p_rc, 2)?;
 
     // C: lua_assert(n > 0);
     debug_assert!(result_n > 0, "g_read should return at least one value");
@@ -1601,10 +1657,20 @@ pub fn luaopen_io(state: &mut LuaState) -> Result<usize, LuaError> {
 //   source:        src/liolib.c  (841 lines, ~35 functions)
 //   target_crate:  lua-stdlib
 //   confidence:    medium
-//   todos:         64
+//   todos:         62
 //   port_notes:    2
 //   unsafe_blocks: 0   (must be 0 outside lua-gc/lua-coro)
-//   notes:         Logic faithfully translated. Three systemic Phase B blockers:
+//   notes:         Logic faithfully translated. Phase F closed the io_readline
+//                  is_closed/g_read stubs via lstream_from_upvalue (looks up
+//                  the LStream side-table from the GcRef<LuaUserData> sitting
+//                  at upvalue 1). io.popen is now wired through a new
+//                  GlobalState::popen_hook (mirrors file_open_hook): the
+//                  lua-cli backend spawns /bin/sh -c <cmd> and wraps the
+//                  resulting ChildStdout/ChildStdin in a PopenFile so the
+//                  existing LStream read/write/close path Just Works. With
+//                  no hook registered (sandboxed embeddings) io.popen
+//                  returns nil, errmsg, errno via file_result rather than
+//                  panicking. Remaining systemic Phase B blockers:
 //                  (1) All concrete LuaFileOps implementations need std::fs or
 //                  std::process, both banned outside lua-cli by PORTING.md; the
 //                  architecture must grant an exemption for lua-stdlib/src/io_lib.rs

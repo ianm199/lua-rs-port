@@ -1,0 +1,22 @@
+[package]
+name = "lua-rs-lfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Phase G-1: Rust-native port of LuaFileSystem (lfs). Linked statically into
+# `lua-cli` and exposed through `package.preload.lfs`, so `require('lfs')`
+# returns the table built by `luaopen_lfs`. This is a regular library crate
+# (rlib), not a cdylib — there is no dynamic loading involved.
+#
+# The crate uses `std::fs` and `std::env` directly. That's allowed here
+# (unlike inside `lua-stdlib`, which is required to be fs-free) because
+# `lua-rs-lfs` lives at the same architectural layer as `lua-cli`: the
+# embedding side, where it is the embedder's job to bridge OS resources to
+# the VM.
+
+[dependencies]
+lua-types.workspace = true
+lua-vm.workspace = true
+filetime = "0.2"
