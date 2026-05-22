@@ -284,3 +284,6 @@
 {"ts":"2026-05-16T20:11:47Z","action":"dispatch_done","detail":"type=implement func=precall cost=0.42421174999999994","total_cost":0.00}
 {"ts":"2026-05-16T20:11:47Z","action":"real_error","detail":"err=pcall_k failed: Runtime: attempt to call a nil value step=4/4 Executing chunk iter=9","total_cost":0.00}
 {"ts":"2026-05-16T20:11:47Z","action":"dispatch_start","detail":"type=debug err=pcall_k failed: Runtime: attempt to call a nil value iter=9","total_cost":0.00}
+{"ts":"2026-05-16T20:23:10Z","action":"dispatch_done","detail":"type=debug err=pcall_k failed: Runtime: attempt to call a nil value cost=6.457820500000001","total_cost":0.00}
+{"ts":"2026-05-16T20:23:11Z","action":"panic_detected","detail":"func=top iter=10","total_cost":0.00}
+{"ts":"2026-05-16T20:23:11Z","action":"dispatch_start","detail":"type=implement func=top iter=10","total_cost":0.00}

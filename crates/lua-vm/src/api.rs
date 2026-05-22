@@ -343,6 +343,12 @@ impl LuaState {
         Ok(())
     }
 
+    /// C: `lua_gettop(L)` — number of values in the active call frame
+    /// (stack top minus the slot just after the frame's `func`).
+    pub fn top(&self) -> i32 {
+        get_top(self)
+    }
+
     pub fn push_string(&mut self, s: &[u8]) -> Result<(), LuaError> {
         push_lstring(self, s)?;
         Ok(())
