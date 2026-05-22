@@ -441,11 +441,15 @@ pub fn unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     }
     // C: n = (lua_Unsigned)e - i  — unsigned subtraction avoids overflow at extremes
     let n = (e as u64).wrapping_sub(i as u64);
-    // C: ++n then check: n is now the actual element count
-    let n = n.wrapping_add(1);
-    // C: n >= (unsigned int)INT_MAX || !lua_checkstack(L, (int)n)
-    // TODO(port): state.check_stack_growth(n) → lua_checkstack; verify method name
-    if n >= i32::MAX as u64 || !state.check_stack_growth(n as i32) {
+    // C: n >= (unsigned int)INT_MAX || !lua_checkstack(L, (int)(++n))
+    // The size check uses the pre-increment value so that a wrapped-to-0 result
+    // (e.g. i=minI, e=maxI yields n = 2^64-1 pre-inc, 0 post-inc) still trips
+    // the error rather than silently entering a 2^64-iteration loop.
+    if n >= i32::MAX as u64 {
+        return Err(LuaError::runtime(format_args!("too many results to unpack")));
+    }
+    let n = n + 1;
+    if !state.check_stack_growth(n as i32) {
         return Err(LuaError::runtime(format_args!("too many results to unpack")));
     }
     let n = n as i64;

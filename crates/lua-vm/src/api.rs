@@ -1292,7 +1292,6 @@ pub fn get_i(state: &mut LuaState, idx: i32, n: i64) -> Result<LuaType, LuaError
     let result = state.table_get_with_tm(&t, &key)?;
     state.push(result);
     let top = state.top_idx();
-    eprintln!("DEBUG get_i: idx={} n={} top={:?}", idx, n, top);
     Ok(state.get_at(top - 1).base_type())
 }
 
