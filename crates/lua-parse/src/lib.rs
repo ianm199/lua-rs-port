@@ -3381,7 +3381,6 @@ fn primaryexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resu
             singlevar(ls, state, v)?;
         }
         _ => {
-            eprintln!("DEBUG[primaryexp]: unexpected token={} line={}", ls.t.token, ls.linenumber);
             return Err(LuaError::syntax(format_args!("unexpected symbol")));
         }
     }

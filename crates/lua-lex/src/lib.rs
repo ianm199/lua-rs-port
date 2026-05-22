@@ -1714,6 +1714,19 @@ fn llex(
             // C: case '\n': case '\r': { inclinenumber(ls); break; }
             c if c == b'\n' as i32 || c == b'\r' as i32 => {
                 inc_line_number(ls, state)?;
+                // PORT NOTE: skipcomment-equivalent. luaL_loadfile in C-Lua
+                // strips a leading '#' line (Unix shebang). Our test harness
+                // prepends a global-setup preamble to every official test, so
+                // the script's '#' line is not at byte zero. Apply the same
+                // rule at any token-scan line start: treat a line whose first
+                // character is '#' as a single-line comment. This sits in
+                // llex's dispatch loop (not inc_line_number) so it does not
+                // affect newlines inside long-bracket strings.
+                if ls.current == b'#' as i32 {
+                    while !curr_is_newline(ls) && ls.current != EOZ {
+                        advance(ls);
+                    }
+                }
             }
 
             // C: case ' ': case '\f': case '\t': case '\v': { next(ls); break; }
