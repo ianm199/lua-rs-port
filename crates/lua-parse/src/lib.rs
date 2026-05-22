@@ -604,10 +604,6 @@ fn reserve_reg(fs: &mut FuncState) -> u8 {
     let r = fs.freereg;
     fs.freereg += 1;
     bump_maxstack(fs, fs.freereg);
-    if fs.previousline >= 660 && fs.previousline <= 680 {
-        eprintln!("[reserve_reg] r={} new_freereg={} nactvar={} line={} pc={}",
-            r, fs.freereg, fs.nactvar, fs.previousline, fs.pc);
-    }
     r
 }
 
@@ -630,17 +626,8 @@ fn reserve_regs(fs: &mut FuncState, n: i32) -> Result<(), LuaError> {
 /// are freed by decrementing `fs.freereg`.
 fn cg_free_reg(fs: &mut FuncState, reg: i32) {
     if reg >= fs.nactvar as i32 {
-        if reg != fs.freereg as i32 - 1 {
-            eprintln!(
-                "[cg_free_reg-bug] reg={} freereg={} nactvar={} pc={} previousline={}",
-                reg, fs.freereg, fs.nactvar, fs.pc, fs.previousline
-            );
-        }
         debug_assert_eq!(reg, fs.freereg as i32 - 1);
         fs.freereg = fs.freereg.saturating_sub(1);
-    } else if fs.previousline >= 660 && fs.previousline <= 680 {
-        eprintln!("[cg_free_reg-skipped] reg={} freereg={} nactvar={} line={}",
-            reg, fs.freereg, fs.nactvar, fs.previousline);
     }
 }
 
