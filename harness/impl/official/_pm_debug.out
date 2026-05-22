@@ -3,21 +3,16 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing pattern matching
-START
-LN197 ok
-LN200-205 ok
-LN207-209 ok
-LN211-214 ok
-LN216-219 ok
-LN221-227 ok
-LN234-236 ok
-LN239-241 ok
-LN243-245 ok
-LN247-250 ok
-LN252-257 ok
-LN273-278 ok
-LN282-285 ok
-LN287 ok
-LN289-290 ok
-DONE
-[ok] execution completed, status=Ok
++
++
++
++
+[A227]
+[A236]
+[A241]
+[A250]
+[A257]
+[A270]
+[A278]
+[A282]
+[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:301: assertion failed!

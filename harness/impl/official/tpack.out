@@ -9,4 +9,8 @@ platform:
 	little endian
 	alignment: 8
 testing invalid formats
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:50: assertion failed!
+testing pack/unpack of floating-point numbers
+testing pack/unpack of strings
+testing alignment
+OK
+[ok] execution completed, status=Ok

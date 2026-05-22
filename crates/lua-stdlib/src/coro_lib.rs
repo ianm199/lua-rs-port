@@ -103,32 +103,19 @@ fn aux_status(_state: &mut LuaState, _co: &GcRef<lua_types::value::LuaThread>) -
 ///
 /// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
 fn aux_resume(state: &mut LuaState, _co: GcRef<lua_types::value::LuaThread>, _narg: i32) -> i32 {
-    // TODO(port): coroutine stub — the complete body requires all of:
-    //
-    //   1. if !lua_checkstack(co, narg) { push "too many arguments"; return -1; }
-    //      → co.ensure_stack(narg) — grow co's stack for the incoming arguments.
-    //
-    //   2. lua_xmove(L, co, narg)
-    //      → state.xmove(&co, narg) — transfer narg values from L's stack to co's.
-    //
-    //   3. status = lua_resume(co, L, narg, &nres)
-    //      → co.resume(state, narg) — execute co until it yields, returns, or errors.
-    //        Returns (LuaStatus, nres: i32).
-    //
-    //   4. On LUA_OK / LUA_YIELD success path:
-    //      if !lua_checkstack(L, nres + 1) { lua_pop(co, nres); push "too many results"; return -1; }
-    //      lua_xmove(co, L, nres) — move results back.
-    //      return nres;
-    //
-    //   5. On error path:
-    //      lua_xmove(co, L, 1) — move error message back.
-    //      return -1;
-    //
-    // All cross-thread operations depend on Phase E / corosensei runtime support.
-    let _ = state;
-    todo!(
-        "phase-e: coroutine_resume — stackful coroutines need corosensei (PORTING.md §2 #6)"
-    );
+    // Phase A–D stub: real cross-thread resume needs corosensei runtime
+    // support (PORTING.md §2 #6 — Phase E).  Emulate C's `auxresume` error
+    // path: push a string error object onto the caller's stack and return
+    // -1.  `co_resume` packages this as `(false, msg)` and `aux_wrap`
+    // re-raises it as a Lua error, matching C-Lua semantics on a coroutine
+    // that cannot run.  Phase E will replace this body with the full
+    // checkstack / xmove / lua_resume / xmove sequence.
+    let msg_bytes: &[u8] = b"coroutines not yet implemented (Phase E)";
+    match state.intern_str(msg_bytes) {
+        Ok(s) => state.push(LuaValue::Str(s)),
+        Err(_) => state.push(LuaValue::Nil),
+    }
+    -1
 }
 
 // ── Public library functions ──────────────────────────────────────────────────
@@ -181,8 +168,13 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
     let r = aux_resume(state, co.clone(), narg);
     let _ = co;
     if r < 0 {
-        // TODO(phase-b): needs cross-thread status, close_thread, xmove.
-        todo!("phase-b: coroutine wrap error path")
+        // Phase A–D stub: aux_resume placed an error object on top of the
+        // caller's stack and returned -1.  C's `luaB_auxwrap` would consult
+        // cross-thread status, close to-be-closed vars, and luaL_where-prefix
+        // the message before propagating; until Phase E wires those, raise
+        // the error value directly via `lua_error` semantics.
+        let err_val = state.pop();
+        Err(LuaError::from_value(err_val))
     } else {
         Ok(r as usize)
     }
@@ -234,13 +226,13 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int luaB_yield(lua_State *L)`
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: return lua_yield(L, lua_gettop(L));
-    // TODO(port): coroutine stub — state.yield_(n) suspends the coroutine and
-    // transfers n values back to the caller of resume; Phase E needed.
+    // Phase A–D stub: real `lua_yield` needs corosensei stackful coroutines
+    // (PORTING.md §2 #6 — Phase E).  Raise a Lua error so callers can pcall
+    // gracefully rather than crashing the host with a Rust panic.
     let _nargs = state.get_top();
-    todo!(
-        "phase-e: coroutine_yield — stackful coroutines need corosensei (PORTING.md §2 #6)"
-    );
+    Err(LuaError::runtime(format_args!(
+        "coroutine.yield: coroutines not yet implemented (Phase E)"
+    )))
 }
 
 /// `coroutine.status(co)` — return a string describing `co`'s current status.

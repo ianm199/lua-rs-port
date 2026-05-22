@@ -3,6 +3,4 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing bitwise operations
-DBG searcher_lua name="bwcoercion" LUA_PATH=Ok("/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/reference/lua-c/testes/?.lua;/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/reference/lua-c/testes/?/init.lua;./?.lua;./?/init.lua")
-DBG searcher_lua filename=None
-[err] pcall_k failed: Runtime: module 'bwcoercion' not found:
+[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:103: assertion failed!

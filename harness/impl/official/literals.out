@@ -9,7 +9,7 @@ testing scanner
 +
 +
 
-thread 'main' (7915968) panicked at crates/lua-stdlib/src/coro_lib.rs:129:5:
-coroutine.resume is not yet implemented (Phase A–D stub; see PORTING.md §2 #6)
+thread 'main' (7963158) panicked at crates/lua-stdlib/src/coro_lib.rs:129:5:
+not yet implemented: phase-e: coroutine_resume — stackful coroutines need corosensei (PORTING.md §2 #6)
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] coroutine.resume is not yet implemented (Phase A–D stub; see PORTING.md §2 #6)
+[panic] not yet implemented: phase-e: coroutine_resume — stackful coroutines need corosensei (PORTING.md §2 #6)

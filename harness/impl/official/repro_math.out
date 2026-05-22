@@ -2,7 +2,5 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-about to call checkerror with math.ceil(print)
-pcall_returned:	false	bad argument #1 (number expected, got function)
-DONE
-[ok] execution completed, status=Ok
+before assert
+[err] pcall_k failed: Runtime: attempt to perform arithmetic on a function value
