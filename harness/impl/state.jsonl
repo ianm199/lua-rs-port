@@ -215,3 +215,6 @@
 {"ts":"2026-05-16T19:11:36Z","action":"dispatch_done","detail":"type=implement func=set_ci_savedpc cost=0.340941","total_cost":0.00}
 {"ts":"2026-05-16T19:11:37Z","action":"panic_detected","detail":"func=ci_lua_closure iter=19","total_cost":0.00}
 {"ts":"2026-05-16T19:11:37Z","action":"dispatch_start","detail":"type=implement func=ci_lua_closure iter=19","total_cost":0.00}
+{"ts":"2026-05-16T19:12:54Z","action":"dispatch_done","detail":"type=implement func=ci_lua_closure cost=0.7956747499999999","total_cost":0.00}
+{"ts":"2026-05-16T19:12:54Z","action":"panic_detected","detail":"func=ci_savedpc iter=20","total_cost":0.00}
+{"ts":"2026-05-16T19:12:54Z","action":"dispatch_start","detail":"type=implement func=ci_savedpc iter=20","total_cost":0.00}
