@@ -176,10 +176,66 @@ impl InstructionExt for Instruction {
     fn arg_s_j(&self) -> i32 { self.arg_ax() - 0xFFFFFF }
     fn arg_s_bx(&self) -> i32 { self.arg_bx() - 0xFFFF }
     fn test_k(&self) -> bool { (self.raw() & (1 << 15)) != 0 }
-    fn test_a_mode(&self) -> bool { todo!("phase-b: test_a_mode") }
-    fn is_mm_mode(&self) -> bool { todo!("phase-b: is_mm_mode") }
-    fn is_vararg_prep(&self) -> bool { todo!("phase-b: is_vararg_prep") }
-    fn is_in_top(&self) -> bool { todo!("phase-b: is_in_top") }
+    fn test_a_mode(&self) -> bool {
+        (op_mode_byte(self.opcode()) & (1 << 3)) != 0
+    }
+    fn is_mm_mode(&self) -> bool {
+        (op_mode_byte(self.opcode()) & (1 << 7)) != 0
+    }
+    fn is_vararg_prep(&self) -> bool {
+        matches!(self.opcode(), OpCode::VarArgPrep)
+    }
+    fn is_in_top(&self) -> bool {
+        (op_mode_byte(self.opcode()) & (1 << 5)) != 0 && self.arg_b() == 0
+    }
+}
+
+/// C: `luaP_opmodes[op]` — bit-packed opcode property byte.
+///
+/// Layout (from lopcodes.h `opmode` macro):
+///   bit 7: MM (metamethod call)
+///   bit 6: OT (instruction sets `L->top` for next when C == 0)
+///   bit 5: IT (instruction reads `L->top` from prev when B == 0)
+///   bit 4: T  (test; next instruction must be a jump)
+///   bit 3: A  (instruction writes register A)
+///   bits 0-2: op format mode (iABC, iABx, iAsBx, iAx, isJ)
+///
+/// PORT NOTE: lua-types does not yet expose the canonical `OP_MODES` table; this
+/// is a local stand-in keyed off the vm.rs `OpCode` stub so the four mode
+/// predicates above can answer correctly until the real table lands.
+fn op_mode_byte(op: OpCode) -> u8 {
+    use OpCode::*;
+    match op {
+        Move => 0x08,
+        LoadI | LoadF => 0x0a,
+        LoadK | LoadKX | LoadKx => 0x09,
+        LoadFalse | LFalseSkip | LoadTrue | LoadNil => 0x08,
+        GetUpVal | GetUpval => 0x08,
+        SetUpVal => 0x00,
+        GetTabUp | GetTable | GetI | GetField => 0x08,
+        SetTabUp | SetTable | SetI | SetField => 0x00,
+        NewTable | Self_ => 0x08,
+        AddI | AddK | SubK | MulK | ModK | PowK | DivK | IDivK
+            | BAndK | BOrK | BXOrK | ShrI | ShlI => 0x08,
+        Add | Sub | Mul | Mod | Pow | Div | IDiv
+            | BAnd | BOr | BXOr | Shl | Shr => 0x08,
+        MmBin | MmBinI | MmBinK => 0x80,
+        Unm | BNot | Not | Len | Concat => 0x08,
+        Close | Tbc => 0x00,
+        Jmp => 0x04,
+        Eq | Lt | Le | EqK | EqI | LtI | LeI | GtI | GeI | Test => 0x10,
+        TestSet => 0x18,
+        Call | TailCall => 0x68,
+        Return => 0x20,
+        Return0 | Return1 => 0x00,
+        ForLoop | ForPrep | TForLoop | Closure => 0x09,
+        TForPrep => 0x01,
+        TForCall => 0x00,
+        SetList => 0x20,
+        VarArg => 0x48,
+        VarArgPrep => 0x28,
+        ExtraArg => 0x03,
+    }
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────

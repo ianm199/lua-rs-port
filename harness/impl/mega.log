@@ -463,3 +463,10 @@
 [2026-05-17T19:57:08Z mega]   surface scan returned 3 unique stub blockers
 [2026-05-17T19:57:08Z mega]   grouped into 1 disjoint-file agents (parallel cap 4)
 [2026-05-17T19:57:08Z mega]   [O8.1] dispatch on 'get_stack' @ crates/lua-stdlib/src/state_stub.rs:192:70 (budget $15) [parallel]
+[2026-05-17T20:03:07Z mega]   [O8.1] agent done. iter cost=$2.8810350000000007  total=$67.5460
+[2026-05-17T20:03:07Z mega] ─── outer round 9 (spent: $67.5460) ───
+[2026-05-17T20:03:38Z mega]   scan: 56/75 programs pass cleanly
+[2026-05-17T20:03:38Z mega]   surface scan returned 2 unique stub blockers
+[2026-05-17T20:03:38Z mega]   grouped into 2 disjoint-file agents (parallel cap 4)
+[2026-05-17T20:03:38Z mega]   [O9.1] dispatch on 'is_mm_mode' @ crates/lua-vm/src/vm.rs:180:36 (budget $15) [parallel]
+[2026-05-17T20:03:38Z mega]   [O9.2] dispatch on 'upvalue_id' @ crates/lua-stdlib/src/state_stub.rs:268:94 (budget $15) [parallel]
