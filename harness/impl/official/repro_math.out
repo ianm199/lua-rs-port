@@ -2,17 +2,7 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-testing numbers and math lib
-64-bit integers, 53-bit (mantissa) floats
-checkpoint A: before testing order block
-testing order (floats cannot represent all integers)
-checkpoint B: after testing order block
-checkpoint C: after NaN tests
-checkpoint D: before checkcompt calls
-checkpoint E: after divide by zero
-checkpoint F: after 2.3>>0
-checkpoint G: after 2.0^N & 1
-checkpoint H: after math.huge << 1
-checkpoint I: after 1|2.0^N
-checkpoint J: after 2.3~0.0
+about to call checkerror with math.ceil(print)
+pcall_returned:	false	bad argument #1 (number expected, got function)
+DONE
 [ok] execution completed, status=Ok

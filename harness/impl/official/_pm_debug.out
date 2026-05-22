@@ -3,19 +3,21 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing pattern matching
-+ MARK1
-+ MARK2
-+ MARK3
-+ MARK4
-M4a: about to do empty matches block
-M4b: passed gsub
-M4c: gmatch result =	-a-b-c-d-
-M5
-M6
-M7
-M7a: about to gsub with global f
-M8
-M8a: about to gsub with dostring
-M9
-M10
+START
+LN197 ok
+LN200-205 ok
+LN207-209 ok
+LN211-214 ok
+LN216-219 ok
+LN221-227 ok
+LN234-236 ok
+LN239-241 ok
+LN243-245 ok
+LN247-250 ok
+LN252-257 ok
+LN273-278 ok
+LN282-285 ok
+LN287 ok
+LN289-290 ok
+DONE
 [ok] execution completed, status=Ok
