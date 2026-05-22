@@ -480,7 +480,6 @@ pub struct LexToken {
 ///   `lua-lex` and `lua-parse` imports it. `FuncState` will move here
 ///   or be passed separately. The `fs` field creates a circular-crate
 ///   dependency that Phase B must resolve (likely: both live in one crate).
-#[derive(Debug)]
 pub struct LexState {
     /// C: current — current character (i32; -1 = EOZ)
     pub current: i32,
@@ -500,6 +499,44 @@ pub struct LexState {
     pub source: Option<GcRef<LuaString>>,
     /// C: envn — cached "_ENV" string
     pub envn: Option<GcRef<LuaString>>,
+    /// Underlying lexer state that owns the ZIO stream and lex buffer.
+    /// The parser drives the lexer by calling `lex_next` / `lex_lookahead`,
+    /// which forward to `lua_lex::next` / `lua_lex::lookahead` on this inner
+    /// state and then mirror the resulting token into `self.t` / `self.lookahead`.
+    pub lex: lua_lex::LexState,
+}
+
+/// Advance the lexer one token and mirror the resulting state into the
+/// parser's outer `LexState` fields. This is the canonical replacement for the
+/// Phase A `// TODO(port): lua_lex::next(ls, state)?;` stubs.
+fn lex_next(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
+    lua_lex::next(state, &mut ls.lex)?;
+    sync_from_lex(ls);
+    Ok(())
+}
+
+/// Populate the lookahead token and mirror lexer state. Replaces the
+/// `// TODO(port): lua_lex::lookahead(ls, state)?` stub.
+fn lex_lookahead(ls: &mut LexState, state: &mut LuaState) -> Result<TokenKind, LuaError> {
+    let kind = lua_lex::lookahead(state, &mut ls.lex)?;
+    sync_from_lex(ls);
+    Ok(kind)
+}
+
+/// Copy lexer-side current/line/token/lookahead values back into the parser's
+/// outer LexState. Used after every `lua_lex::next` / `lua_lex::lookahead`.
+fn sync_from_lex(ls: &mut LexState) {
+    ls.current = ls.lex.current;
+    ls.linenumber = ls.lex.linenumber;
+    ls.lastline = ls.lex.lastline;
+    ls.t = LexToken {
+        token: ls.lex.t.kind,
+        seminfo: local_token_value(&ls.lex.t.value),
+    };
+    ls.lookahead = LexToken {
+        token: ls.lex.lookahead.kind,
+        seminfo: local_token_value(&ls.lex.lookahead.value),
+    };
 }
 
 // TODO_ARCH(phase-b-reconcile): re-exporting canonical LuaState from lua-vm.
@@ -520,6 +557,7 @@ pub use lua_vm::state::LuaState;
 fn error_expected(ls: &LexState, token: TokenKind) -> LuaError {
     // C: luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "%s expected", luaX_token2str(ls, token)));
     // TODO(port): lua_lex::token_to_str(ls, token) for the token name
+    let _ = ls;
     LuaError::syntax(format_args!("{} expected", token))
 }
 
@@ -554,7 +592,7 @@ fn check_limit(fs: &FuncState, v: i32, l: i32, what: &str) -> Result<(), LuaErro
 fn test_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<bool, LuaError> {
     if ls.t.token == c {
         // C: luaX_next(ls)
-        // TODO(port): lua_lex::next(ls, state)?;
+        lex_next(ls, state)?;
         Ok(true)
     } else {
         Ok(false)
@@ -573,7 +611,7 @@ fn check(ls: &LexState, c: TokenKind) -> Result<(), LuaError> {
 fn check_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<(), LuaError> {
     check(ls, c)?;
     // C: luaX_next(ls)
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     Ok(())
 }
 
@@ -584,7 +622,7 @@ fn str_check_name(ls: &mut LexState, state: &mut LuaState) -> Result<GcRef<LuaSt
     check(ls, TK_NAME)?;
     let ts = ls.t.seminfo.ts.clone()
         .ok_or_else(|| LuaError::syntax(format_args!("name expected")))?;
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     Ok(ts)
 }
 
@@ -1443,7 +1481,7 @@ fn statlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 fn fieldsel(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     // C: luaK_exp2anyregup(fs, v); luaX_next(ls); codename(ls, &key); luaK_indexed(fs, v, &key)
     // TODO(port): lua_code::exp_to_any_reg_up(ls.fs.as_mut().unwrap(), v)?;
-    // TODO(port): lua_lex::next(ls, state)?; -- skip '.' or ':'
+    lex_next(ls, state)?; // skip '.' or ':'
     let mut key = ExprDesc::default();
     codename(ls, state, &mut key)?;
     // TODO(port): lua_code::indexed(ls.fs.as_mut().unwrap(), v, &mut key)?;
@@ -1454,7 +1492,7 @@ fn fieldsel(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result
 /// Handles '[' expr ']' indexing.
 fn yindex(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     // C: luaX_next(ls); expr(ls, v); luaK_exp2val(ls->fs, v); checknext(ls, ']')
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     expr(ls, state, v)?;
     // TODO(port): lua_code::exp_to_val(ls.fs.as_mut().unwrap(), v)?;
     check_next(ls, state, b']' as TokenKind)?;
@@ -1538,8 +1576,7 @@ fn field(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Resul
     match ls.t.token {
         TK_NAME => {
             // C: if (luaX_lookahead(ls) != '=') listfield else recfield
-            // TODO(port): lua_lex::lookahead(ls, state)?
-            let next_is_eq = false; // placeholder
+            let next_is_eq = lex_lookahead(ls, state)? == b'=' as TokenKind;
             if !next_is_eq {
                 listfield(ls, state, cc)?;
             } else {
@@ -1625,7 +1662,7 @@ fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
                     nparams += 1;
                 }
                 TK_DOTS => {
-                    // TODO(port): lua_lex::next(ls, state)?;
+                    lex_next(ls, state)?;
                     isvararg = true;
                 }
                 _ => {
@@ -1741,7 +1778,7 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
     let line = ls.linenumber;
     match ls.t.token {
         c if c == b'(' as TokenKind => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip '('
+            lex_next(ls, state)?; // skip '('
             if ls.t.token == b')' as TokenKind {
                 args.k = ExprKind::Void;
             } else {
@@ -1759,7 +1796,7 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
             let s = ls.t.seminfo.ts.clone()
                 .ok_or_else(|| LuaError::syntax(format_args!("string expected")))?;
             codestring(&mut args, s);
-            // TODO(port): lua_lex::next(ls, state)?;
+            lex_next(ls, state)?;
         }
         _ => {
             return Err(LuaError::syntax(format_args!("function arguments expected")));
@@ -1791,7 +1828,7 @@ fn primaryexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resu
     match ls.t.token {
         c if c == b'(' as TokenKind => {
             let line = ls.linenumber;
-            // TODO(port): lua_lex::next(ls, state)?;
+            lex_next(ls, state)?;
             expr(ls, state, v)?;
             check_match(ls, state, b')' as TokenKind, b'(' as TokenKind, line)?;
             // C: luaK_dischargevars(ls->fs, v)
@@ -1825,7 +1862,7 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
             }
             c if c == b':' as TokenKind => {
                 let mut key = ExprDesc::default();
-                // TODO(port): lua_lex::next(ls, state)?;
+                lex_next(ls, state)?;
                 codename(ls, state, &mut key)?;
                 // C: luaK_self(fs, v, &key)
                 // TODO(port): lua_code::self_call(ls.fs.as_mut().unwrap(), v, &mut key)?;
@@ -1847,30 +1884,24 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
         TK_FLT => {
             init_exp(v, ExprKind::KFlt, 0);
             v.u.nval = ls.t.seminfo.r;
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_INT => {
             init_exp(v, ExprKind::KInt, 0);
             v.u.ival = ls.t.seminfo.i;
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_STRING => {
             let s = ls.t.seminfo.ts.clone()
                 .ok_or_else(|| LuaError::syntax(format_args!("string value missing")))?;
             codestring(v, s);
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_NIL => {
             init_exp(v, ExprKind::Nil, 0);
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_TRUE => {
             init_exp(v, ExprKind::True, 0);
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_FALSE => {
             init_exp(v, ExprKind::False, 0);
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         TK_DOTS => {
             // C: check_condition(ls, fs->f->is_vararg, "cannot use '...' outside a vararg function")
@@ -1883,14 +1914,13 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
             // C: init_exp(v, VVARARG, luaK_codeABC(fs, OP_VARARG, 0, 0, 1))
             // TODO(port): let pc = lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Vararg, 0, 0, 1)?;
             init_exp(v, ExprKind::VarArg, 0 /* placeholder pc */);
-            // TODO(port): lua_lex::next(ls, state)?;
         }
         c if c == b'{' as TokenKind => {
             constructor(ls, state, v)?;
             return Ok(()); // C: return (no luaX_next)
         }
         TK_FUNCTION => {
-            // TODO(port): lua_lex::next(ls, state)?;
+            lex_next(ls, state)?;
             let line = ls.linenumber;
             body(ls, state, v, false, line)?;
             return Ok(()); // C: return (no luaX_next)
@@ -1901,7 +1931,7 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
         }
     }
     // C: luaX_next(ls) — for the simple literal cases
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     Ok(())
 }
 
@@ -1959,7 +1989,7 @@ fn subexpr(
     let uop = getunopr(ls.t.token);
     if uop != UnOpr::NoUnOpr {
         let line = ls.linenumber;
-        // TODO(port): lua_lex::next(ls, state)?; -- skip unary operator
+        lex_next(ls, state)?; // skip unary operator
         subexpr(ls, state, v, UNARY_PRIORITY)?;
         // C: luaK_prefix(ls->fs, uop, v, line)
         // TODO(port): lua_code::prefix(ls.fs.as_mut().unwrap(), uop, v, line)?;
@@ -1971,7 +2001,7 @@ fn subexpr(
     while op != BinOpr::NoBinOpr && PRIORITY[op as usize].0 as i32 > limit {
         let mut v2 = ExprDesc::default();
         let line = ls.linenumber;
-        // TODO(port): lua_lex::next(ls, state)?;
+        lex_next(ls, state)?;
         // C: luaK_infix(ls->fs, op, v)
         // TODO(port): lua_code::infix(ls.fs.as_mut().unwrap(), op, v)?;
         let nextop = subexpr(ls, state, &mut v2, PRIORITY[op as usize].1 as i32)?;
@@ -2127,7 +2157,7 @@ fn gotostat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 fn breakstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let line = ls.linenumber;
     // C: luaX_next(ls) — skip 'break'
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     // C: newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, luaK_jump(ls->fs))
     // TODO(port): intern b"break" via state
     // TODO(port): let pc = lua_code::jump(ls.fs.as_mut().unwrap())?;
@@ -2166,7 +2196,7 @@ fn labelstat(
 /// C: static void whilestat(LexState *ls, int line)
 fn whilestat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     // C: luaX_next(ls) — skip WHILE
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     // C: whileinit = luaK_getlabel(fs)
     // TODO(port): let whileinit = lua_code::get_label(ls.fs.as_mut().unwrap());
     let whileinit = ls.fs.as_ref().unwrap().pc; // placeholder
@@ -2191,7 +2221,7 @@ fn repeatstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), 
     enter_block(ls, true);   // loop block (bl1)
     enter_block(ls, false);  // scope block (bl2)
     // C: luaX_next(ls) — skip REPEAT
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     statlist(ls, state)?;
     check_match(ls, state, TK_UNTIL, TK_REPEAT, line)?;
     let condexit = cond(ls, state)?;
@@ -2345,7 +2375,7 @@ fn forlist(
 fn forstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     enter_block(ls, true); // scope for loop and control variables
     // C: luaX_next(ls) — skip 'for'
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     let varname = str_check_name(ls, state)?;
     match ls.t.token {
         c if c == b'=' as TokenKind => fornum(ls, state, varname, line)?,
@@ -2366,7 +2396,7 @@ fn test_then_block(
     escapelist: &mut i32,
 ) -> Result<(), LuaError> {
     // C: luaX_next(ls) — skip IF or ELSEIF
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     let mut v = ExprDesc::default();
     expr(ls, state, &mut v)?;
     check_next(ls, state, TK_THEN)?;
@@ -2376,7 +2406,7 @@ fn test_then_block(
         let line = ls.linenumber;
         // C: luaK_goiffalse(ls->fs, &v) — jumps if condition is true
         // TODO(port): lua_code::go_if_false(ls.fs.as_mut().unwrap(), &mut v)?;
-        // TODO(port): lua_lex::next(ls, state)?; -- skip 'break'
+        lex_next(ls, state)?; // skip 'break'
         enter_block(ls, false);
         // C: newgotoentry(ls, "break", line, v.t)
         // TODO(port): new_goto_entry(ls, state, break_str, line, v.t)?;
@@ -2542,7 +2572,7 @@ fn funcname(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result
 /// C: static void funcstat(LexState *ls, int line)
 fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     // C: luaX_next(ls) — skip FUNCTION
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
     let mut v = ExprDesc::default();
     let mut b = ExprDesc::default();
     let ismethod = funcname(ls, state, &mut v)?;
@@ -2563,7 +2593,6 @@ fn exprstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         restassign(ls, state, &mut v_assign, 1)?;
     } else {
         // C: stat -> func call; check it's a call, fix result count
-        eprintln!("[DEBUG exprstat] v.k={:?} after suffixedexp; current token={}", v_assign.v.k, ls.t.token);
         if v_assign.v.k != ExprKind::Call {
             return Err(LuaError::syntax(format_args!("syntax error")));
         }
@@ -2624,7 +2653,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     // TODO(port): state.inc_c_calls()?;
     match ls.t.token {
         c if c == b';' as TokenKind => {
-            // TODO(port): lua_lex::next(ls, state)?;
+            lex_next(ls, state)?;
         }
         TK_IF => {
             ifstat(ls, state, line)?;
@@ -2633,7 +2662,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             whilestat(ls, state, line)?;
         }
         TK_DO => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip DO
+            lex_next(ls, state)?; // skip DO
             block(ls, state)?;
             check_match(ls, state, TK_END, TK_DO, line)?;
         }
@@ -2647,7 +2676,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             funcstat(ls, state, line)?;
         }
         TK_LOCAL => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip LOCAL
+            lex_next(ls, state)?; // skip LOCAL
             if test_next(ls, state, TK_FUNCTION)? {
                 localfunc(ls, state)?;
             } else {
@@ -2655,19 +2684,19 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             }
         }
         TK_DBCOLON => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip '::'
+            lex_next(ls, state)?; // skip '::'
             let name = str_check_name(ls, state)?;
             labelstat(ls, state, name, line)?;
         }
         TK_RETURN => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip RETURN
+            lex_next(ls, state)?; // skip RETURN
             retstat(ls, state)?;
         }
         TK_BREAK => {
             breakstat(ls, state)?;
         }
         TK_GOTO => {
-            // TODO(port): lua_lex::next(ls, state)?; -- skip 'goto'
+            lex_next(ls, state)?; // skip 'goto'
             gotostat(ls, state)?;
         }
         _ => {
@@ -2710,7 +2739,7 @@ fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Resu
     // C: luaC_objbarrier(ls->L, fs->f, env->name) — no-op in Phase A
 
     // C: luaX_next(ls) — read first token
-    // TODO(port): lua_lex::next(ls, state)?;
+    lex_next(ls, state)?;
 
     statlist(ls, state)?;
 
@@ -2741,7 +2770,7 @@ pub fn parse(
     let rest_bytes: Vec<u8> = source.iter().skip(1).copied().collect();
     let z = lua_lex::ZIO::from_bytes(rest_bytes);
 
-    let mut lex_ls = lua_lex::LexState {
+    let lex_ls = lua_lex::LexState {
         current: firstchar,
         linenumber: 1,
         lastline: 1,
@@ -2753,24 +2782,25 @@ pub fn parse(
         h: None,
         dyd: None,
         source: source_str.0.clone(),
-        envn: envn_str.0,
+        envn: envn_str.0.clone(),
     };
-    lua_lex::next(state, &mut lex_ls)?;
-
-    let first_kind = lex_ls.t.kind;
-    let first_value = local_token_value(&lex_ls.t.value);
 
     let mut lexstate = LexState {
         current: lex_ls.current,
         linenumber: lex_ls.linenumber,
         lastline: lex_ls.lastline,
-        t: LexToken { token: first_kind, seminfo: first_value },
+        t: LexToken::default(),
         lookahead: LexToken::default(),
         fs: None,
         dyd,
         source: Some(source_str.clone()),
         envn: Some(GcRef(lex_ls.envn.clone())),
+        lex: lex_ls,
     };
+    // C: luaX_setinput is the only setup the C parser performs before
+    //   `mainfunc`; it does NOT pre-read the first token. `mainfunc` itself
+    //   issues the initial `luaX_next` once its prelude (open_func, vararg
+    //   marker, _ENV upvalue) is in place.
 
     let mut main_proto = Box::new(LuaProto::placeholder());
     main_proto.source = Some(source_str);

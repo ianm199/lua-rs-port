@@ -375,14 +375,16 @@ for ITER in $(seq 1 $MAX_ITER); do
             emit "  unknown failure mode — final output:"
             tail -15 "$output_file" | tee -a "$LOG"
             record "no_panic" "iter=$ITER rc=$rc"
-            break
+            err_msg="(unknown failure; see tail above)"
+            step=$(extract_step "$output_file")
+            CURRENT_KEY="unknown-$ITER"
             ;;
     esac
 
     if [ "$CURRENT_KEY" = "$PREV_FUNC" ]; then
         STUCK_COUNT=$((STUCK_COUNT + 1))
-        if [ "$STUCK_COUNT" -ge 2 ]; then
-            emit "  STUCK on \"$CURRENT_KEY\" after 2 consecutive iterations — bailing"
+        if [ "$STUCK_COUNT" -ge 4 ]; then
+            emit "  STUCK on \"$CURRENT_KEY\" after 4 consecutive iterations — bailing"
             record "stuck" "key=$CURRENT_KEY"
             break
         fi
