@@ -1916,19 +1916,22 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // StkId result = RA(pi);
                     // Protect(luaT_trybinTM(L, s2v(ra), rb, result, tm));
                     OpCode::MmBin => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let rb_idx = base + i.arg_b();
+                        let ra_v = state.get_at(ra_idx).clone();
+                        let rb_v = state.get_at(rb_idx).clone();
                         let tm = tagmethod_from_index(i.arg_c() as usize);
                         let prev_inst = state.proto_code(&cl, pc - 2);
                         let result_idx = base + prev_inst.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.try_bin_tm(&ra_v, &rb_v, result_idx, tm)?;
+                        state.try_bin_tm(&ra_v, Some(ra_idx), &rb_v, Some(rb_idx), result_idx, tm)?;
                         trap = state.ci_trap(ci);
                     }
                     // C: OP_MMBINI — metamethod for arith-with-immediate
                     OpCode::MmBinI => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let ra_v = state.get_at(ra_idx).clone();
                         let imm = i.arg_s_b() as i64;
                         let tm = tagmethod_from_index(i.arg_c() as usize);
                         let flip = i.arg_k() != 0;
@@ -1936,12 +1939,13 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let result_idx = base + prev_inst.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.try_bin_i_tm(&ra_v, imm, flip, result_idx, tm)?;
+                        state.try_bin_i_tm(&ra_v, Some(ra_idx), imm, flip, result_idx, tm)?;
                         trap = state.ci_trap(ci);
                     }
                     // C: OP_MMBINK — metamethod for arith-with-K
                     OpCode::MmBinK => {
-                        let ra_v = state.get_at(base + i.arg_a()).clone();
+                        let ra_idx = base + i.arg_a();
+                        let ra_v = state.get_at(ra_idx).clone();
                         let imm = state.proto_const(&cl, i.arg_b() as usize).clone();
                         let tm = tagmethod_from_index(i.arg_c() as usize);
                         let flip = i.arg_k() != 0;
@@ -1949,7 +1953,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let result_idx = base + prev_inst.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.try_bin_assoc_tm(&ra_v, &imm, flip, result_idx, tm)?;
+                        state.try_bin_assoc_tm(&ra_v, Some(ra_idx), &imm, None, flip, result_idx, tm)?;
                         trap = state.ci_trap(ci);
                     }
                     // ── OP_UNM ───────────────────────────────────────────────
@@ -1958,7 +1962,8 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    else Protect(luaT_trybinTM(L, rb, rb, ra, TM_UNM))
                     OpCode::Unm => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         match &rb_v {
                             LuaValue::Int(ib) => {
                                 state.set_at(ra, LuaValue::Int(intop_sub(0, *ib)));
@@ -1969,7 +1974,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             _ => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                state.try_bin_tm(&rb_v, &rb_v, ra, TagMethod::Unm)?;
+                                state.try_bin_tm(&rb_v, Some(rb_idx), &rb_v, Some(rb_idx), ra, TagMethod::Unm)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1978,14 +1983,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: if (tointegerns(rb, &ib)) setivalue(s2v(ra), intop(^, ~0u64, ib))
                     OpCode::BNot => {
                         let ra = base + i.arg_a();
-                        let rb_v = state.get_at(base + i.arg_b()).clone();
+                        let rb_idx = base + i.arg_b();
+                        let rb_v = state.get_at(rb_idx).clone();
                         if let Some(ib) = to_integer_ns(&rb_v, F2Imod::Eq) {
                             // C: intop(^, ~l_castS2U(0), ib) == bitwise NOT of ib
                             state.set_at(ra, LuaValue::Int(!ib));
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            state.try_bin_tm(&rb_v, &rb_v, ra, TagMethod::Bnot)?;
+                            state.try_bin_tm(&rb_v, Some(rb_idx), &rb_v, Some(rb_idx), ra, TagMethod::Bnot)?;
                             trap = state.ci_trap(ci);
                         }
                     }

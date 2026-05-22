@@ -1292,27 +1292,32 @@ fn var_info(state: &LuaState, val_idx: StackIdx) -> Vec<u8> {
     let ci_idx = state.current_ci_idx();
     let ci = state.get_ci(ci_idx).clone();
     let mut kind: Option<&[u8]> = None;
-    let mut name: &[u8] = b"?";
+    let mut name_owned: Vec<u8> = b"?".to_vec();
 
     if ci.is_lua() {
         // C: kind = getupvalname(ci, o, &name);
-        kind = get_upval_name(&ci, val_idx, &mut name, state);
-        if kind.is_none() {
+        let mut up_name: &[u8] = b"?";
+        kind = get_upval_name(&ci, val_idx, &mut up_name, state);
+        if kind.is_some() {
+            name_owned = up_name.to_vec();
+        } else {
             // C: int reg = instack(ci, o); if (reg >= 0) kind = getobjname(...);
             let reg = in_stack(&ci, val_idx, state);
             if reg >= 0 {
-                // TODO(phase-b): get_obj_name borrows proto for its &str output,
-                // but proto is local. Phase B should refactor to clone the bytes
-                // out of LuaString or extend lifetimes.
+                // get_obj_name writes into `nref`, which borrows from the local
+                // `proto`.  Copy the bytes out before proto is dropped so the
+                // name survives.
                 let proto = ci_lua_proto(&ci, state);
                 let mut nref: &[u8] = b"?";
                 let k = get_obj_name(&proto, current_pc(&ci), reg, &mut nref);
                 kind = k;
-                name = b"?";
+                if kind.is_some() {
+                    name_owned = nref.to_vec();
+                }
             }
         }
     }
-    format_var_info(kind, if kind.is_some() { Some(name) } else { None })
+    format_var_info(kind, if kind.is_some() { Some(&name_owned) } else { None })
 }
 
 // ─── Error-raising functions ──────────────────────────────────────────────────

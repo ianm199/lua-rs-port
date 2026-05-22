@@ -638,6 +638,7 @@ pub(crate) fn try_bin_assoc_tm(
 pub(crate) fn try_bini_tm(
     state: &mut LuaState,
     p1: &LuaValue,
+    p1_idx: Option<StackIdx>,
     i2: i64,
     flip: bool,
     res: StackIdx,
@@ -646,8 +647,9 @@ pub(crate) fn try_bini_tm(
     // C: TValue aux;
     // C: setivalue(&aux, i2);
     let aux = LuaValue::Int(i2);
+    // The immediate operand has no stack location, so it gets `None`.
     // C: luaT_trybinassocTM(L, p1, &aux, flip, res, event);
-    try_bin_assoc_tm(state, p1, &aux, flip, res, event)
+    try_bin_assoc_tm(state, p1, p1_idx, &aux, None, flip, res, event)
 }
 
 // ── luaT_callorderTM ─────────────────────────────────────────────────────────

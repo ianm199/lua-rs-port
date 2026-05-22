@@ -3,3 +3,4 @@
 1 1.4632495 reference/lua-c/testes/goto.lua
 7 1.0055972499999999 reference/lua-c/testes/calls.lua
 5 2.0396130000000006 reference/lua-c/testes/tpack.lua
+8 1.2116579999999997 reference/lua-c/testes/constructs.lua

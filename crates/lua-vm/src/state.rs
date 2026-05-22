@@ -1757,17 +1757,17 @@ impl LuaState {
     }
     pub fn table_getn(&self, _t: &GcRef<LuaTable>) -> i64 { todo!("phase-b: table_getn") }
 
-    pub fn try_bin_tm(&mut self, p1: &LuaValue, p2: &LuaValue, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, p2: &LuaValue, p2_idx: Option<StackIdx>, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
-        crate::tagmethods::try_bin_tm(self, p1, p2, res, event)
+        crate::tagmethods::try_bin_tm(self, p1, p1_idx, p2, p2_idx, res, event)
     }
-    pub fn try_bin_i_tm(&mut self, p1: &LuaValue, imm: i64, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_i_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, imm: i64, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
-        crate::tagmethods::try_bini_tm(self, p1, imm, flip, res, event)
+        crate::tagmethods::try_bini_tm(self, p1, p1_idx, imm, flip, res, event)
     }
-    pub fn try_bin_assoc_tm(&mut self, p1: &LuaValue, p2: &LuaValue, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_assoc_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, p2: &LuaValue, p2_idx: Option<StackIdx>, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
-        crate::tagmethods::try_bin_assoc_tm(self, p1, p2, flip, res, event)
+        crate::tagmethods::try_bin_assoc_tm(self, p1, p1_idx, p2, p2_idx, flip, res, event)
     }
     pub fn try_concat_tm(&mut self, _p1: &LuaValue, _p2: &LuaValue) -> Result<(), LuaError> {
         crate::tagmethods::try_concat_tm(self)
