@@ -96,14 +96,14 @@ detect_failure_type() {
         || grep -qE "(Runtime|Syntax|Error): phase-[a-z0-9_-]+:" "$out"; then
         echo "stub"; return
     fi
-    if grep -qE "^\[err\] .* failed:" "$out"; then
+    if grep -qE "^\[err\]" "$out"; then
         echo "real-error"; return
     fi
     echo "unknown"
 }
 
 extract_real_error() {
-    grep -oE "^\[err\] .*$" "$1" | head -1 | sed 's/^\[err\] //'
+    grep -E "^\[err\]" "$1" | head -1 | sed 's/^\[err\] //'
 }
 
 extract_step() {

@@ -213,3 +213,24 @@ help: use `let _ = ...` to ignore the resulting value
 [2026-05-16T17:08:31Z] ─── iter 3  (spent: $0.00) ───
 [2026-05-16T17:08:31Z]   stub blocker: hook lua-parse::parse
 [2026-05-16T17:08:32Z]   dispatching IMPLEMENT agent for hook lua-parse::parse at crates/lua-vm/src/do_.rs:39:5 (budget $10)
+[2026-05-16T17:11:36Z]   agent done. iter cost=$1.24374325  total=$0.00
+[2026-05-16T17:11:36Z] ─── iter 4  (spent: $0.00) ───
+[2026-05-16T17:11:36Z]   unknown failure mode — final output:
+   --> crates/lua-stdlib/src/auxlib.rs:156:17
+    |
+156 |                 state.replace(-3); // in the slot occupied by table
+    |                 ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+156 |                 let _ = state.replace(-3); // in the slot occupied by table
+    |                 +++++++
+
+[1/4] Creating LuaState...
+[2/4] Opening standard library...
+[3/4] Loading source (parse + compile)...
+[err] load_string returned non-zero status: 1
+[2026-05-16T17:11:36Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T17:11:36Z] Loop end. Total cost: $0.00  Total iterations: 3
+[2026-05-16T17:11:36Z] ═════════════════════════════════════════════════════════════════
