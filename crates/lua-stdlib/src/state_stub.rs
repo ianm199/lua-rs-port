@@ -288,7 +288,11 @@ pub trait LuaStateStubExt {
     fn as_bytes(&mut self, idx: i32) -> Option<Vec<u8>> { todo!("phase-b-reconcile: as_bytes") }
 }
 
-impl LuaStateStubExt for LuaState {}
+impl LuaStateStubExt for LuaState {
+    fn require_lib(&mut self, name: &[u8], openf: lua_CFunction, glb: bool) -> Result<(), LuaError> {
+        crate::auxlib::requiref(self, name, openf, glb)
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // PORT STATUS
