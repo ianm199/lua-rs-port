@@ -449,15 +449,20 @@ pub(crate) fn hook(
     state.allowhook = false;
     state.get_ci_mut(ci_idx).callstatus |= mask;
 
-    // C: lua_unlock(L) — no-op (macros.tsv)
-    // C: (*hook)(L, &ar)
-    // TODO(port): calling the hook while also holding `&mut LuaState` creates a
-    // borrow conflict — the hook closure is stored on `state.hook`. Phase E
-    // (debug support) must solve this by taking the hook out, calling it, and
-    // reinserting it (similar to the standard Rust "extract-callback" pattern).
-    // For Phase A the hook call is elided; the save/restore below still runs.
+    let mut ar = crate::debug::LuaDebug::default();
+    ar.event = event;
+    ar.currentline = line;
+    ar.ftransfer = ftransfer as u16;
+    ar.ntransfer = ntransfer as u16;
+    ar.i_ci = Some(ci_idx);
+    let hook_opt = state.hook.take();
+    if let Some(mut h) = hook_opt {
+        h(state, &ar);
+        if state.hook.is_none() {
+            state.hook = Some(h);
+        }
+    }
 
-    // C: lua_lock(L) — no-op (macros.tsv)
     debug_assert!(!state.allowhook);
     state.allowhook = true;
 
@@ -1378,6 +1383,31 @@ pub fn lua_yieldk(
 ) -> Result<i32, LuaError> {
     // TODO(port): coroutine support (Phase E). Yielding requires stack-switching;
     // stubbed here with a faithful translation of the C logic.
+
+    {
+        let ci_top = state.call_info.len();
+        eprintln!("DEBUG lua_yieldk: stack depth={}, nresults={}", ci_top, nresults);
+        for idx in 0..ci_top {
+            let ci = &state.call_info[idx];
+            let is_lua = ci.is_lua();
+            let func_slot = ci.func.0 as usize;
+            let func_val = if func_slot < state.stack.len() {
+                match &state.stack[func_slot].val {
+                    LuaValue::Function(f) => match f {
+                        lua_types::closure::LuaClosure::LightC(i) => format!("LightC({})", i),
+                        lua_types::closure::LuaClosure::C(c) => format!("CClosure({})", c.func),
+                        lua_types::closure::LuaClosure::Lua(_) => "LuaClosure".to_string(),
+                    },
+                    other => format!("{}", other.type_tag() as u8),
+                }
+            } else {
+                "(out of range)".to_string()
+            };
+            eprintln!("  ci[{}]: func_slot={}, is_lua={}, val={}", idx, func_slot, is_lua, func_val);
+        }
+        let n_cfuncs = state.global().c_functions.len();
+        eprintln!("  total registered c_functions: {}", n_cfuncs);
+    }
 
     // C: luai_userstateyield(L, nresults) — no-op (macros.tsv)
     // C: lua_lock(L) — no-op

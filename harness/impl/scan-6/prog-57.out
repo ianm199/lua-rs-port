@@ -4,4 +4,5 @@
 [4/4] Executing chunk...
 testing closures
 +
-[err] pcall_k failed: Runtime: [string "_soft = true..."]:266: assertion failed!
+OK
+[ok] execution completed, status=Ok

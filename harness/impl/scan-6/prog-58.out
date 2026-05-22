@@ -8,4 +8,9 @@ functions with errors
 long strings
 steps
 steps (2)
-[err] pcall_k failed: Runtime: [string "_soft = true..."]:202: assertion failed!
+clearing tables
+weak tables
++
+
+ >>> testC not active: skipping userdata GC tests <<<
+

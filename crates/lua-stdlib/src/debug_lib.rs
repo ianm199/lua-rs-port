@@ -42,7 +42,10 @@ pub(crate) type LibFn = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// A Rust hook callback registered with the Lua VM's hook mechanism.
 ///
 /// C: `lua_Hook` = `void (*)(lua_State *, lua_Debug *)`
-pub(crate) type HookFn = fn(&mut LuaState, &mut DebugInfo) -> Result<(), LuaError>;
+/// PORT NOTE: The Rust hook receives the event code and current line directly
+/// rather than a lua_Debug pointer, since the lua-stdlib `DebugInfo` and the
+/// canonical `lua_vm::debug::LuaDebug` are distinct types during Phase B.
+pub(crate) type HookFn = fn(&mut LuaState, i32, i32) -> Result<(), LuaError>;
 
 /// Opaque identity handle for an upvalue.
 ///
@@ -631,7 +634,7 @@ pub(crate) fn upvalue_join(state: &mut LuaState) -> Result<usize, LuaError> {
 /// and current line number.
 ///
 /// C: `static void hookf(lua_State *L, lua_Debug *ar)`
-pub(crate) fn hookf(state: &mut LuaState, ar: &mut DebugInfo) -> Result<(), LuaError> {
+pub(crate) fn hookf(state: &mut LuaState, event: i32, currentline: i32) -> Result<(), LuaError> {
     // C: lua_getfield(L, LUA_REGISTRYINDEX, HOOKKEY);
     state.get_registry_field(HOOKKEY)?;
     // C: lua_pushthread(L);
@@ -639,30 +642,22 @@ pub(crate) fn hookf(state: &mut LuaState, ar: &mut DebugInfo) -> Result<(), LuaE
     // C: if (lua_rawget(L, -2) == LUA_TFUNCTION) { ... }
     if state.raw_get(-2)? == LuaType::Function {
         // C: lua_pushstring(L, hooknames[(int)ar->event]);
-        // TODO(phase-b): LuaDebug has no `event` field yet; use currentline > 0 sentinel as placeholder for HOOKLINE.
-        let event_idx: usize = 0;
-        let _ = ar;
-        debug_assert!(event_idx < HOOKNAMES.len(), "hook event out of range");
+        let event_idx = event.clamp(0, HOOKNAMES.len() as i32 - 1) as usize;
         let event_str = state.intern_str(HOOKNAMES[event_idx])?;
         state.push(LuaValue::Str(event_str));
 
         // C: if (ar->currentline >= 0) lua_pushinteger(L, ar->currentline); else lua_pushnil(L);
-        if ar.currentline >= 0 {
-            state.push(LuaValue::Int(ar.currentline as i64));
+        if currentline >= 0 {
+            state.push(LuaValue::Int(currentline as i64));
         } else {
             state.push(LuaValue::Nil);
         }
 
-        // C: lua_assert(lua_getinfo(L, "lS", ar));
-        // Fills in source-location fields so the hook can inspect them.
-        debug_assert!(
-            state.get_debug_info(b"lS", ar).is_ok(),
-            "lua_getinfo(\"lS\") should always succeed in hookf"
-        );
-
         // C: lua_call(L, 2, 0);
         state.call(2, 0)?;
     }
+    // The caller (do_::hook) saves/restores the stack top, so any residual
+    // entries (hook table, non-function lookup result) are cleaned up there.
     Ok(())
 }
 
@@ -771,9 +766,14 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
 
     // C: lua_sethook(L1, func, mask, count);
     if target_is_self {
-        // TODO(phase-b): HookFn type in state_stub takes &mut LuaDebug; set_hook takes lua_CFunction. Wire through real hook registry once lua-vm lands.
-        let _ = hook_active;
-        state.set_hook_full(None, mask, count)?;
+        let hook_box: Option<Box<dyn FnMut(&mut LuaState, &lua_vm::debug::LuaDebug)>> = if hook_active {
+            Some(Box::new(|st, ar| {
+                let _ = hookf(st, ar.event, ar.currentline);
+            }))
+        } else {
+            None
+        };
+        lua_vm::debug::set_hook(state, hook_box, mask as i32, count);
     } else {
         // TODO(port): set hook on another thread — requires &mut LuaState for
         // the target concurrently with the current state.

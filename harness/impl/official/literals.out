@@ -8,7 +8,4 @@ testing scanner
 +
 +
 +
-
- >>> pt_BR locale not available: skipping decimal point tests <<<
-
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:345: assertion failed!
+lua: pcall_k failed: Runtime: attempt to yield from outside a coroutine
