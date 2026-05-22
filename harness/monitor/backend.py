@@ -26,6 +26,40 @@ from typing import Protocol
 FileStatus = str  # one of: "wait" "work" "done" "fail" "skip"
 
 
+def _summarize_tool_use(block: dict) -> str:
+    """Render a tool_use content block as 'Name(key_arg=value)' for the most
+    informative single argument (file_path, command, etc)."""
+    name = block.get("name", "?")
+    inp = block.get("input") or {}
+    if not isinstance(inp, dict):
+        return f"{name}(…)"
+    for key in ("file_path", "path", "command", "pattern", "query"):
+        val = inp.get(key)
+        if val is not None:
+            s = str(val).replace("\n", " ")
+            return f"{name}({key}={s[:140]})"
+    keys = list(inp.keys())
+    if not keys:
+        return f"{name}()"
+    return f"{name}({','.join(keys[:3])})"
+
+
+def _summarize_tool_result(block: dict) -> str:
+    """Render a tool_result content block: first non-empty line, truncated."""
+    body = block.get("content")
+    if isinstance(body, list) and body and isinstance(body[0], dict):
+        text = body[0].get("text") or ""
+    elif isinstance(body, str):
+        text = body
+    else:
+        text = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line[:160]
+    return "(empty)"
+
+
 @dataclass
 class FileEntry:
     cfile: str                     # "lvm.c"
@@ -229,7 +263,12 @@ class LiveBackend:
         skeleton = "source:" in text and "(none" in text and "skeleton" in text
         return has_c_source and not skeleton
 
-    def events(self, cfile: str, limit: int = 5) -> list[Event]:
+    def events(self, cfile: str, limit: int = 200) -> list[Event]:
+        """Extract high-signal events from a transcript: init, thinking turns
+        (one per assistant turn, last ~140 chars), assistant text, tool calls
+        (name + key arg), tool result first line, and final result. Streaming
+        deltas are intentionally skipped — the assistant/user blocks already
+        contain the finalized content."""
         basename = cfile.rsplit(".", 1)[0]
         path = self.results_dir / f"{basename}.transcript.jsonl"
         if not path.exists():
@@ -249,22 +288,35 @@ class LiveBackend:
             except json.JSONDecodeError:
                 continue
             t = ev.get("type")
-            if t == "assistant":
+            if t == "system" and ev.get("subtype") == "init":
+                model = ev.get("model", "?")
+                tools = len(ev.get("tools") or [])
+                events.append(Event("init", f"model={model} tools={tools}"))
+            elif t == "assistant":
                 content = ((ev.get("message") or {}).get("content") or [])
-                if content:
-                    c0 = content[0]
-                    if c0.get("type") == "text":
-                        text = (c0.get("text") or "").replace("\n", " ").strip()
+                for c in content:
+                    ctype = c.get("type")
+                    if ctype == "thinking":
+                        thought = (c.get("thinking") or "").strip()
+                        if thought:
+                            events.append(Event("think", thought[:4000]))
+                    elif ctype == "text":
+                        text = (c.get("text") or "").strip()
                         if text:
-                            events.append(Event("text", text[:200]))
-                    elif c0.get("type") == "tool_use":
-                        name = c0.get("name", "?")
-                        inp = json.dumps(c0.get("input") or {}, ensure_ascii=False)[:120]
-                        events.append(Event("tool", f"{name}({inp})"))
+                            events.append(Event("text", text[:2000]))
+                    elif ctype == "tool_use":
+                        events.append(Event("tool", _summarize_tool_use(c)))
+            elif t == "user":
+                content = ((ev.get("message") or {}).get("content") or [])
+                for c in content:
+                    if c.get("type") == "tool_result":
+                        events.append(Event("result", _summarize_tool_result(c)))
             elif t == "result":
                 cost = ev.get("total_cost_usd", 0.0)
                 turns = ev.get("num_turns", "?")
-                events.append(Event("done", f"cost=${cost:.4f} turns={turns}"))
+                dur = ev.get("duration_ms")
+                dur_s = f" dur={dur/1000:.0f}s" if isinstance(dur, (int, float)) else ""
+                events.append(Event("done", f"cost=${cost:.4f} turns={turns}{dur_s}"))
         return events[-limit:]
 
     def summary(self) -> Summary:

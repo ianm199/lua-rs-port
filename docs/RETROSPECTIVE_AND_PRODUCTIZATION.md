@@ -188,9 +188,12 @@ agent work — most of our spend is conversation, not translation.
 | Idempotency over-skipped skeleton files | llex/lparser lib.rs (skeleton trailer) treated as ported | Trailer must reference `.c/.h` source AND not start with `(none` |
 | `--bare` blocks OAuth auth | "Not logged in" in 50ms with subscription | Remove `--bare`; let auto-discovery handle settings/agents |
 | `--max-turns` doesn't exist in current CLI | Silent flag rejection | Drop; `--max-budget-usd` is effective cap |
+| Unsafe-budget scans every crate, blames wrong worker | Worker porting `ldebug.c` failed because `lua-types/closure.rs` had `unsafe extern fn` introduced by an earlier crate | Either scope to the worker's crate via `CLAUDE_TARGET_RS_FILE`, or split "blocking violations in my crate" from "informational diagnostics elsewhere" |
 
-All eight bugs are now committed fixes. The first two were the most expensive
-because they caused us to misread results.
+All nine bugs are now committed fixes. The first three were the most expensive
+because they caused us to misread results. The last one bit us specifically when
+we cross-cut the harness with our own type-foundation work — proof that
+"per-worker scope" must apply to every hook, not just the ones we noticed.
 
 ## 5. What a productized version looks like
 
@@ -304,3 +307,99 @@ A new port = pick a template, customize `PORTING.md`, run the analysis
 generator, fire `fanout.sh`. Should be hours, not days.
 
 That's the product.
+
+## 9. The closed-loop question: can this run unattended?
+
+The natural endpoint of this work is "tokens in → working codebase out, no
+human in the loop." For *this shape of problem* the answer is **yes, with
+four preconditions and four remaining engineering gaps.**
+
+### 9.1 The four preconditions
+
+1. **The test suite is the ground truth.** "Passes tests ≈ is correct" must
+   hold. Lua's testsuite satisfies this. Most production C codebases do not —
+   their tests cover happy paths and leave UB, concurrency, and edge cases
+   untested. This is the single biggest filter on the addressable market.
+2. **The target language is within a translatability radius of the source.**
+   C → Rust: yes (procedural, manual memory, same control flow primitives).
+   C → Haskell: would need much heavier architectural reasoning. The radius
+   roughly tracks "shared paradigm" + "shared performance model."
+3. **Architecture is pre-specified.** The hardest things in our port weren't
+   translations — they were decisions: `GcRef = Rc` placeholder, errors carry
+   payloads, stack uses indices not pointers, `LuaState` lives in `lua-vm`.
+   A closed loop needs those locked up front in `PORT_STRATEGY.md`, or an
+   "architect" agent that derives them by principle. We did this by hand.
+4. **You accept "OK" idiomaticness, not great.** Closed-loop output is
+   faithful. A Rust expert would re-shape half of it. That's a separate
+   polish pass — either a final "idiomatize" agent or a human pass.
+
+### 9.2 The four remaining gaps
+
+What we'd need to actually close the loop, beyond what we built:
+
+1. **Test runner inside the agent loop.** Our oracle scripts exist but are
+   one-shot post-hoc validators. They need to be a tool the Verifier agent
+   calls iteratively until tests pass, not a final check. The pattern is
+   "rustc check in-loop" (Section 2.3) generalized to "test runner in-loop."
+2. **Phase-spanning regression detection.** When Phase C breaks a Phase B
+   contract (e.g. lua-stdlib calls a method that lua-vm just renamed), the
+   system needs to detect, attribute, and route the fix. Currently a human
+   notices and dispatches. A "regression watcher" subagent that owns
+   cross-crate contracts could close this gap.
+3. **Self-tuning budgets.** We picked $2 → $4 → $0.50 by feel. A closed
+   loop measures marginal value per dollar — files that are converging get
+   their budget extended; files that aren't get killed early. The signal is
+   already in the JSONL stream (lines of output per turn, error count delta
+   per turn). Wire it.
+4. **Pre-translation test synthesis.** This is the unlock for projects
+   without great test suites. Use AI to write characterization tests in the
+   *source* language before translation begins, then translate the tests
+   alongside the code. Source-language tests have a higher signal-to-noise
+   ratio than translated tests would. Done well, this 10x's the addressable
+   market.
+
+### 9.3 The product framing
+
+The right product is **not** "an AI that ports your code." It's a **harness
+generator**:
+
+```
+Input:  source dir
+        + target language
+        + test suite path (or a flag to synthesize one)
+        + a 1-page prescription (memory model, error model, sync/async)
+
+Output: auto-generated harness (oracle, hooks, ANALYSES, subagents, phase plan)
+        + a long-running execution that produces the codebase
+        + a real-time monitor URL/TUI
+        + a final retrospective like this doc
+```
+
+The LLM is a commodity input you swap (Claude / GPT / Gemini / Llama). The
+**harness is the IP** — analysis TSVs, hook chain, defense-in-depth
+validation, monitor protocol, fanout orchestration, retrospective generation.
+We hand-built ours in two days. Productizing means generating 70-80% of it
+automatically for a new project. The remaining 20-30% (which patterns to
+ban, the type vocabulary, the pre-computed TSV schema) is the 1-page human
+prescription.
+
+### 9.4 What this means commercially
+
+This is sellable to a narrow audience with a deep wallet:
+- Companies sitting on a strategic-but-stale C/C++/Zig/TS codebase they need
+  to keep but want in a memory-safer language.
+- Open source projects whose maintainers want to bootstrap a port but don't
+  have the bandwidth.
+- Internal platform teams who want to migrate from one runtime to another
+  (Node → Bun, Java → Kotlin, etc.) at scale.
+
+Pricing model isn't "per token" — it's **fixed-fee per port** with a quality
+SLA (tests passing rate). The harness lets you commit to that SLA because
+it removes most of the variance.
+
+Open question we cannot yet answer: **what fraction of the harness can be
+auto-generated vs. always-bespoke?** Our intuition is 70-80% generic
+(fanout, hooks, monitor, oracle, subagents) and 20-30% specific (TSV schemas,
+type vocabulary, ban list, validator config). Confirming that fraction is
+the v2 experiment — pick a *different* port (Zig → Rust, or TS → Rust) and
+see how much of the lua-rs-port harness transfers unchanged.

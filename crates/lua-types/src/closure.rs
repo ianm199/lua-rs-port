@@ -7,11 +7,11 @@ use crate::proto::LuaProto;
 use crate::upval::UpVal;
 use crate::value::LuaValue;
 
-/// Forward-declared function type that takes any "Lua-state-like" arg.
-/// Real lua-vm crate will narrow this once `LuaState` exists. For now it's
-/// a void pointer so callers can store function pointers without circular
-/// deps. The Compiler-fixer pass replaces this with the real signature.
-pub type LuaCFnPtr = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+/// Placeholder Phase-A C-function pointer type. Real signature
+/// (`fn(&mut LuaState) -> Result<usize, LuaError>`) lives in `lua-vm`;
+/// lua-types can't reference `LuaState` without a circular dep. Compiler-
+/// fixer pass replaces every use of this placeholder with the real type.
+pub type LuaCFnPtr = fn() -> i32;
 
 #[derive(Debug, Clone)]
 pub enum LuaClosure {

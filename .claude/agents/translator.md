@@ -37,6 +37,24 @@ ending in a `PORT STATUS` trailer per PORTING.md §12.
 4. For each C macro you encounter: look it up in `ANALYSES/macros.tsv`; translate the *call site*, not the definition.
 5. End the file with a PORT STATUS trailer (§12 of PORTING.md). Required fields: source, target_crate, confidence, todos, port_notes, unsafe_blocks, notes.
 
+# MANDATORY: split big writes
+
+A single `Write` or `Edit` call cannot emit more than the per-response output
+token cap (~64k tokens, roughly 1200-1600 lines of Rust). If your translation
+is larger than ~800 lines:
+
+1. Make a FIRST `Write` containing: module docstring + every `use` + every
+   `pub type`/`pub struct`/`pub enum`/`pub trait` declaration + the PORT
+   STATUS trailer at the bottom. NO function bodies yet.
+2. Then make multiple `Edit` calls (one per logical section of the C file,
+   e.g. "stack ops", "table ops", "metamethod dispatch") that insert the
+   function bodies between the headers and the trailer.
+3. After each `Edit`, run the syntax check below.
+
+Trying to write a 4000-line file in one `Write` will fail with `API Error:
+Claude's response exceeded the 32000 output token maximum` and burn your
+whole budget. Split aggressively for any C file >1000 LoC.
+
 # MANDATORY: syntax-check your output before stopping
 
 After writing the file (or after each major Edit), run:

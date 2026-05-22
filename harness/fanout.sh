@@ -48,6 +48,11 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
     exit 2
 fi
 
+# Sonnet 4.6 supports 64k single-response output; default cap is 32k which
+# blew up `lparser.c` (1700-line C → ~4000-line Rust in one Write call).
+# Bumping ahead of the largest files; smaller files cost nothing extra.
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-64000}"
+
 for tool in claude jq awk; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "FATAL: '$tool' not found in PATH." >&2
