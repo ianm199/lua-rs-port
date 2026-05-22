@@ -2143,11 +2143,15 @@ fn check_readonly(ls: &mut LexState, state: &mut LuaState, e: &ExprDesc) -> Resu
         }
     };
     if let Some(vname) = varname {
-        // C: luaK_semerror(ls, luaO_pushfstring(..., "attempt to assign to const variable '%s'", ...))
-        return Err(LuaError::syntax(format_args!(
+        // C: luaK_semerror(ls, ...) prepends the `[source]:line:` prefix via
+        // luaX_syntaxerror; route through `syntax_error` here for parity so
+        // constructs.lua's checkload(":1: attempt to assign...") matches.
+        let _ = state;
+        let msg = format!(
             "attempt to assign to const variable '{}'",
             String::from_utf8_lossy(vname.as_bytes())
-        )));
+        );
+        return Err(lua_lex::syntax_error(&mut ls.lex, msg.as_bytes()));
     }
     Ok(())
 }
