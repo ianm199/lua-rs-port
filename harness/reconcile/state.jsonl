@@ -1,0 +1,13 @@
+{"ts":"2026-05-16T13:14:06Z","action":"run_start","detail":""}
+{"ts":"2026-05-16T13:14:32Z","action":"run_start","detail":""}
+{"ts":"2026-05-16T13:14:32Z","action":"dispatch_start","detail":"lua-stdlib"}
+{"ts":"2026-05-16T13:14:32Z","action":"dispatch_start","detail":"lua-lex"}
+{"ts":"2026-05-16T13:14:32Z","action":"dispatch_start","detail":"lua-code"}
+{"ts":"2026-05-16T13:14:32Z","action":"dispatch_start","detail":"lua-parse"}
+{"ts":"2026-05-16T13:14:32Z","action":"dispatch_start","detail":"lua-gc"}
+{"ts":"2026-05-16T13:17:01Z","action":"dispatch_done","detail":"lua-parse cost=1.5628189999999997 is_error=false"}
+{"ts":"2026-05-16T13:17:22Z","action":"dispatch_done","detail":"lua-code cost=1.5471772499999998 is_error=false"}
+{"ts":"2026-05-16T13:17:44Z","action":"dispatch_done","detail":"lua-lex cost=2.4028460000000007 is_error=false"}
+{"ts":"2026-05-16T13:22:49Z","action":"dispatch_done","detail":"lua-gc cost=4.051844750000001 is_error=false"}
+{"ts":"2026-05-16T13:26:35Z","action":"dispatch_done","detail":"lua-stdlib cost=8.284109 is_error=true"}
+{"ts":"2026-05-16T13:26:35Z","action":"all_done","detail":""}

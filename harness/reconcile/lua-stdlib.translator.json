@@ -1,0 +1,94 @@
+{
+  "type": "result",
+  "subtype": "error_max_budget_usd",
+  "duration_ms": 721744,
+  "duration_api_ms": 710216,
+  "is_error": true,
+  "num_turns": 122,
+  "stop_reason": "tool_use",
+  "session_id": "e5f872e5-2150-4aa1-83ce-e5712995fd1c",
+  "total_cost_usd": 8.284109,
+  "usage": {
+    "input_tokens": 44,
+    "cache_creation_input_tokens": 678538,
+    "cache_read_input_tokens": 3378015,
+    "output_tokens": 58032,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 678538,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 3624,
+        "cache_read_input_tokens": 18899,
+        "cache_creation_input_tokens": 136252,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 136252
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1137,
+      "outputTokens": 18,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001227,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-7[1m]": {
+      "inputTokens": 45,
+      "outputTokens": 58238,
+      "cacheReadInputTokens": 3396914,
+      "cacheCreationInputTokens": 820520,
+      "webSearchRequests": 0,
+      "costUSD": 8.282882,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01XWhVRKDT6irMWs9qSZHDe2",
+      "tool_input": {
+        "command": "for f in auxlib base coro_lib init io_lib loadlib os_lib string_lib table_lib utf8_lib; do\n  /usr/bin/sed -i '' 's|use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};|use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};|' \"/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/crates/lua-stdlib/src/${f}.rs\"\ndone\n/usr/bin/sed -i '' 's|use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug as DebugInfo};|use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug as DebugInfo};|' /Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/crates/lua-stdlib/src/debug_lib.rs\n/usr/bin/sed -i '' 's|use crate::state_stub::{LuaState, lua_CFunction as LuaCFn, upvalue_index, CompareOp, LuaDebug};|use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction as LuaCFn, upvalue_index, CompareOp, LuaDebug};|' /Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/crates/lua-stdlib/src/math_lib.rs\ngrep -n \"use crate::state_stub\" /Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/crates/lua-stdlib/src/*.rs",
+        "description": "Add LuaStateStubExt to imports across stdlib modules"
+      }
+    },
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01J35CxrSi4b8C3bePJ918oE",
+      "tool_input": {
+        "command": "cargo check -p lua-stdlib 2>&1 > /tmp/lua-stdlib-errs.txt; wc -l /tmp/lua-stdlib-errs.txt",
+        "description": "Capture full error output"
+      }
+    },
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01YaYiTGWUG7DtCCyJFgL8m8",
+      "tool_input": {
+        "command": "python3 - <<'EOF'\nimport re, glob, os\nroot = \"/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/crates/lua-stdlib/src\"\nfiles = sorted(glob.glob(os.path.join(root, \"*.rs\")))\nchanges = {}\nfor f in files:\n    if f.endswith(\"state_stub.rs\"): continue\n    with open(f) as fh:\n        src = fh.read()\n    new = src\n    # 1. Add ? to state.intern_str(...) when used in `let X = state.intern_str(...);` lines\n    new = re.sub(r'(let\\s+[A-Za-z_][A-Za-z0-9_]*\\s*=\\s*state\\.intern_str\\([^;]*?\\));', r'\\1?;', new)\n    # 2. Strip ? from state.push(...)?; -> state.push(...);\n    new = re.sub(r'state\\.push\\(([^)]*?)\\)\\?;', r'state.push(\\1);', new)\n    # 3. Strip ? from state.push(...)?, -> state.push(...),  (match-arm)\n    new = re.sub(r'state\\.push\\(([^)]*?)\\)\\?,', r'state.push(\\1),', new)\n    # 4. Strip ? from state.set_top(...)?;\n    new = re.sub(r'state\\.set_top\\(([^)]*?)\\)\\?;', r'state.set_top(\\1);', new)\n    # 5. Strip ? from state.new_table()?; (returns GcRef, not Result)\n    new = re.sub(r'state\\.new_table\\(\\)\\?;', r'state.new_table();', new)\n    # 6. state.top_idx() as i32 -> state.top_idx().0 as i32\n    new = re.sub(r'state\\.top_idx\\(\\)\\s+as\\s+i32', r'(state.top_idx().0 as i32)', new)\n    # 7. state.top_idx() as usize -> state.top_idx().0 as usize\n    new = re.sub(r'state\\.top_idx\\(\\)\\s+as\\s+usize', r'(state.top_idx().0 as usize)', new)\n    if new != src:\n        with open(f, 'w') as fh:\n            fh.write(new)\n        changes[os.path.basename(f)] = src.count('\\n') - new.count('\\n')\nprint(\"Changed files:\", changes)\nEOF",
+        "description": "Bulk-fix push/intern_str/top_idx patterns"
+      }
+    }
+  ],
+  "fast_mode_state": "off",
+  "uuid": "d68f68c8-9e0a-495b-a924-824d843ccfc7",
+  "errors": [
+    "Reached maximum budget ($8)"
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 189370,
+  "duration_api_ms": 188738,
+  "ttft_ms": 3369,
+  "num_turns": 40,
+  "result": "Clean compile, no FAILs for lua-lex in the audit.\n\n## Report\n\n**FAIL violations in lua-lex (before → after):** 2 → 0\n- Before: `struct LuaState` (line 49), `enum LuaError` (line 2022) both FAIL; `LuaString`/`LuaTable` also flagged as WARN duplicates.\n- After: no warnings or fails for lua-lex.\n\n**Cargo deps added:** `lua-vm.workspace = true` (lua-types was already present).\n\n**todo!() stubs introduced:** 1 — at the `is_reserved` branch in `llex` (line ~1875), because canonical `lua_types::LuaString` does not expose the `extra` byte (reserved-word index). The previous code read `ts.extra.get()` to recover the keyword id; with the real type that accessor doesn't exist. Replaced with `todo!(\"phase-b-reconcile: LuaString::extra accessor missing on canonical type\")` and a `TODO_ARCH` comment.\n\n**Other adjustments:**\n- Removed local stubs for `LuaState`, `LuaString`, `LuaTable`, and the inner `mod lua_types { enum LuaError }`.\n- `intern_str_stub` now constructs via `LuaString::from_bytes(bytes.to_vec())` instead of the (vanished) struct literal.\n- `lex_error` passes `&full_msg` to `LuaError::syntax_raw` (signature is `&[u8]`, not `Vec<u8>`).\n\n**Top unresolved issue:** The reserved-word path leans on `LuaString.extra`, which canonical lua-types deliberately doesn't expose. A real fix needs either a public accessor on `lua_types::LuaString` or restructuring `lua-lex`'s keyword handling to look up the index from a static table — both out of scope per the \"don't touch other crates\" rule. Captured as the single `todo!()` stub plus a `TODO_ARCH` note.",
+  "stop_reason": "end_turn",
+  "session_id": "b9f9b64c-e8b3-4d16-8e4b-3d516eb24865",
+  "total_cost_usd": 2.4028460000000007,
+  "usage": {
+    "input_tokens": 38,
+    "cache_creation_input_tokens": 116466,
+    "cache_read_input_tokens": 2817401,
+    "output_tokens": 10592,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 116466,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 661,
+        "cache_read_input_tokens": 116280,
+        "cache_creation_input_tokens": 186,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 186
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1143,
+      "outputTokens": 20,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001243,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-7[1m]": {
+      "inputTokens": 38,
+      "outputTokens": 10592,
+      "cacheReadInputTokens": 2817401,
+      "cacheCreationInputTokens": 116466,
+      "webSearchRequests": 0,
+      "costUSD": 2.401603,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "1eb02ea4-8d24-479a-8328-513646e2af84"
+}

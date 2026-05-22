@@ -3,6 +3,11 @@
 # harness/unsafe-budgets.toml. Fail if any crate exceeds its ceiling.
 #
 # Reads `harness/unsafe-budgets.toml`; default ceiling for unlisted crates: 0.
+#
+# Scoping: if CLAUDE_TARGET_RS_FILE is set, only check the crate containing
+# that file. Otherwise scan every crate. This prevents the failure mode
+# where an agent working on lua-stdlib is blocked because lua-gc has
+# pre-existing unsafe-budget debt unrelated to the current work.
 
 set -uo pipefail
 
@@ -14,8 +19,25 @@ if [ ! -f "$BUDGETS" ]; then
     exit 2
 fi
 
+scope_crates=()
+if [ -n "${CLAUDE_TARGET_RS_FILE:-}" ]; then
+    target="$CLAUDE_TARGET_RS_FILE"
+    [[ "$target" != /* ]] && target="$ROOT/$target"
+    rel="${target#"$ROOT"/}"
+    if [[ "$rel" == crates/*/* ]]; then
+        crate_name="${rel#crates/}"
+        crate_name="${crate_name%%/*}"
+        if [ -d "$ROOT/crates/$crate_name/" ]; then
+            scope_crates=("$ROOT/crates/$crate_name/")
+        fi
+    fi
+fi
+if [ "${#scope_crates[@]}" = "0" ]; then
+    for d in "$ROOT"/crates/*/; do scope_crates+=("$d"); done
+fi
+
 fail=0
-for crate_dir in "$ROOT"/crates/*/; do
+for crate_dir in "${scope_crates[@]}"; do
     crate=$(basename "$crate_dir")
     # extract ceiling from TOML (simple, no full parser)
     ceiling=$(awk -F'[= \t#]+' -v c="\"$crate\"" '$1==c {print $2; exit}' "$BUDGETS")

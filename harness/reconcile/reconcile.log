@@ -1,0 +1,36 @@
+[2026-05-16T13:14:05Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T13:14:05Z] Reconcile types — start 2026-05-16T13:14:05Z
+[2026-05-16T13:14:06Z]   Pre-audit FAIL count: 10
+0
+[2026-05-16T13:14:06Z]   Crates targeted: lua-stdlib lua-lex lua-code lua-parse lua-gc
+[2026-05-16T13:14:06Z]   Mode: dry-run
+[2026-05-16T13:14:06Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T13:14:06Z]   [DRY] would dispatch: lua-stdlib (~prompt length     2356 chars)
+[2026-05-16T13:14:06Z]   [DRY] would dispatch: lua-lex (~prompt length     2338 chars)
+[2026-05-16T13:14:06Z]   [DRY] would dispatch: lua-code (~prompt length     2344 chars)
+[2026-05-16T13:14:06Z]   [DRY] would dispatch: lua-parse (~prompt length     2350 chars)
+[2026-05-16T13:14:06Z]   [DRY] would dispatch: lua-gc (~prompt length     2332 chars)
+[2026-05-16T13:14:06Z] Dry run complete.
+[2026-05-16T13:14:32Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T13:14:32Z] Reconcile types — start 2026-05-16T13:14:32Z
+[2026-05-16T13:14:32Z]   Pre-audit FAIL count: 10
+[2026-05-16T13:14:32Z]   Crates targeted: lua-stdlib lua-lex lua-code lua-parse lua-gc
+[2026-05-16T13:14:32Z]   Mode: dispatch
+[2026-05-16T13:14:32Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T13:14:32Z]   dispatching: lua-stdlib
+[2026-05-16T13:14:32Z]   dispatching: lua-lex
+[2026-05-16T13:14:32Z]   dispatching: lua-code
+[2026-05-16T13:14:32Z]   dispatching: lua-parse
+[2026-05-16T13:14:32Z]   dispatching: lua-gc
+[2026-05-16T13:14:32Z] All 5 agents dispatched. Waiting for completion...
+[2026-05-16T13:17:01Z]   done: lua-parse cost=$1.5628189999999997 is_error=false
+[2026-05-16T13:17:22Z]   done: lua-code cost=$1.5471772499999998 is_error=false
+[2026-05-16T13:17:44Z]   done: lua-lex cost=$2.4028460000000007 is_error=false
+[2026-05-16T13:22:49Z]   done: lua-gc cost=$4.051844750000001 is_error=false
+[2026-05-16T13:26:35Z]   done: lua-stdlib cost=$8.284109 is_error=true
+[2026-05-16T13:26:35Z] All agents complete. Re-auditing...
+[2026-05-16T13:26:36Z] Report: harness/reconcile/RECONCILE_REPORT.md
+[2026-05-16T13:26:36Z]   Post-audit FAIL count: 0 (was ? before)
+[2026-05-16T13:26:36Z]   Workspace errors: 29
+[2026-05-16T13:26:36Z]   Total cost: $17.8487
+[2026-05-16T13:26:36Z] ═════════════════════════════════════════════════════════════════
