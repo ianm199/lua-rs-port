@@ -1512,6 +1512,72 @@ pub fn raw_set_i(state: &mut LuaState, idx: i32, n: i64) -> Result<(), LuaError>
     Ok(())
 }
 
+/// Returns true if `mt` (a metatable) holds a non-nil `__gc` entry.
+///
+/// PORT NOTE: Mirrors the body of C's `tofinalize` in `lgc.c` minus the bits
+/// that consult per-object GC bits (irrelevant in Phase B's Rc world).
+fn metatable_has_gc(state: &LuaState, mt: &GcRef<LuaTable>) -> bool {
+    let name = state.global().tmname[crate::tagmethods::TagMethod::Gc as usize].clone();
+    !matches!(mt.get_short_str(&name), LuaValue::Nil)
+}
+
+/// Pin `tbl` in `pending_finalizers` if not already present.
+fn register_finalizable_table(state: &mut LuaState, tbl: &GcRef<LuaTable>) {
+    let already = state
+        .global()
+        .pending_finalizers
+        .iter()
+        .any(|t| GcRef::ptr_eq(t, tbl));
+    if !already {
+        state.global_mut().pending_finalizers.push(tbl.clone());
+    }
+}
+
+/// Phase-B `__gc` driver.
+///
+/// Scans `pending_finalizers` for tables whose only strong ref is the list
+/// itself (`Rc::strong_count == 1`), runs their `__gc` metamethod in a
+/// protected call, then drops the list's pin so the table can be freed.
+/// Iterates in reverse so the most-recently registered finalizers run first,
+/// matching C-Lua's order (`finobj` is a LIFO stack).
+///
+/// PORT NOTE: This stands in for C-Lua's `GCSatomic` finalizer-promotion step
+/// plus `GCTM`. The real GC walks the heap to decide which `finobj` entries
+/// are unreachable; in Phase B we use the `Rc` strong-count as the proxy.
+/// Replaced by `lua_gc::run_pending_finalizers` when Phase D's incremental
+/// GC lands.
+pub fn run_pending_finalizers(state: &mut LuaState) {
+    loop {
+        let target_idx = {
+            let pending = &state.global().pending_finalizers;
+            let mut found: Option<usize> = None;
+            for (i, t) in pending.iter().enumerate().rev() {
+                if std::rc::Rc::strong_count(&t.0) == 1 {
+                    found = Some(i);
+                    break;
+                }
+            }
+            found
+        };
+        let Some(i) = target_idx else { break; };
+        let tbl = state.global_mut().pending_finalizers.swap_remove(i);
+        let mt = tbl.metatable();
+        let gc_fn = match mt {
+            Some(ref m) => {
+                let name = state.global().tmname[crate::tagmethods::TagMethod::Gc as usize].clone();
+                m.get_short_str(&name)
+            }
+            None => LuaValue::Nil,
+        };
+        if !matches!(gc_fn, LuaValue::Function(_)) {
+            continue;
+        }
+        state.push(gc_fn);
+        state.push(LuaValue::Table(tbl));
+        let _ = pcall_k(state, 1, 0, 0, 0, None);
+    }
+}
+
 // C: LUA_API int lua_setmetatable (lua_State *L, int objindex)
 pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaError> {
     // C: api_checknelems(L, 1);
@@ -1535,17 +1601,25 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
         LuaValue::Table(ref tbl) => {
             if mt.is_some() {
                 // C: luaC_objbarrier(L, gcvalue(obj), mt);
-                // C: luaC_checkfinalizer(L, gcvalue(obj), mt);
                 state.gc().obj_barrier(tbl, mt.as_ref().unwrap());
-                // TODO(port): luaC_checkfinalizer
             }
             // C: hvalue(obj)->metatable = mt;
-            tbl.set_metatable(mt);
+            tbl.set_metatable(mt.clone());
             if tbl.weak_mode() != 0 {
                 state
                     .global_mut()
                     .weak_tables_registry
                     .push(std::rc::Rc::downgrade(&tbl.0));
+            }
+            // C: luaC_checkfinalizer(L, gcvalue(obj), mt);
+            // Phase-B finalizer registration: if the new metatable carries
+            // `__gc` and `obj` was not already registered, pin `obj` in the
+            // pending-finalizers list so that `run_pending_finalizers` can
+            // invoke the finalizer before the object is freed.
+            if let Some(ref mt_table) = mt {
+                if metatable_has_gc(state, mt_table) {
+                    register_finalizable_table(state, tbl);
+                }
             }
         }
         LuaValue::UserData(ref ud) => {
@@ -1788,6 +1862,11 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             };
             lua_types::value::sweep_weak_tables(&live_weak_tables);
             drop(live_weak_tables);
+            // Phase-B: drain pending __gc finalizers for tables whose user
+            // refs have all been dropped. Performed after the weak-table
+            // sweep so weak entries are cleared first (matches C-Lua, which
+            // runs finalizers after the atomic weak-pass).
+            run_pending_finalizers(state);
             // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
             // so total_bytes() only ever shrinks (each `Step` simulates
             // freed memory). Refill to a baseline here so subsequent Step

@@ -723,6 +723,19 @@ pub struct GlobalState {
     /// Phase D's incremental sweep lands.
     pub weak_tables_registry: Vec<std::rc::Weak<lua_types::value::LuaTable>>,
 
+    /// Phase-B pending-finalizer registry.
+    ///
+    /// Each entry is a strong `GcRef<LuaTable>` to a table whose metatable
+    /// carried `__gc` at the time `setmetatable` was called. The strong ref
+    /// pins the table so a normal `Rc::drop` does not destroy it before its
+    /// `__gc` metamethod runs. The Phase-B finalizer sweep
+    /// (`crate::api::run_pending_finalizers`) scans this list, takes any
+    /// entry whose strong count is 1 (only this list holds it — i.e. the
+    /// user has dropped every reference), and invokes its `__gc` before
+    /// releasing the ref. Replaced by `finobj` / `tobefnz` when the real
+    /// incremental GC lands in Phase D.
+    pub pending_finalizers: Vec<GcRef<lua_types::value::LuaTable>>,
+
     // C: GCObject *tobefnz — pending finalizers; Phase D
     // types.tsv: global_State.tobefnz → Vec<GcRef<dyn Collectable>>
     pub tobefnz: Vec<GcRef<dyn Collectable>>,
@@ -1911,8 +1924,20 @@ impl LuaState {
     pub fn trace_call(&mut self, _idx: CallInfoIdx) -> Result<bool, LuaError> { todo!("phase-b: trace_call") }
     pub fn trace_exec(&mut self, _idx: CallInfoIdx, _pc: u32) -> Result<bool, LuaError> { todo!("phase-b: trace_exec") }
     pub fn hook_call(&mut self, _idx: CallInfoIdx) -> Result<(), LuaError> { todo!("phase-b: hook_call_idx") }
-    pub fn gc_check_step(&mut self) { /* phase-b no-op */ }
-    pub fn gc_cond_step(&mut self) { /* phase-b no-op */ }
+    pub fn gc_check_step(&mut self) {
+        // Phase-B: drive the __gc finalizer queue from common allocation
+        // sites so loops like `repeat u = {} until finish` make progress
+        // without an explicit `collectgarbage()`. No-op when the queue is
+        // empty (the common case).
+        if !self.global().pending_finalizers.is_empty() {
+            crate::api::run_pending_finalizers(self);
+        }
+    }
+    pub fn gc_cond_step(&mut self) {
+        if !self.global().pending_finalizers.is_empty() {
+            crate::api::run_pending_finalizers(self);
+        }
+    }
     pub fn gc_barrier_back<T, U>(&mut self, _t: T, _v: U) { /* phase-b no-op */ }
     pub fn gc_barrier_upval<T, U, V>(&mut self, _cl: T, _uv: U, _v: V) { /* phase-b no-op */ }
     /// C: `(G(L)->mainthread == L)` — true if `self` is the main thread.
@@ -2868,6 +2893,7 @@ pub fn new_state() -> Option<LuaState> {
         ephemeron: Vec::new(),
         allweak: Vec::new(),
         weak_tables_registry: Vec::new(),
+        pending_finalizers: Vec::new(),
         // C: g->twups = NULL;
         twups: Vec::new(),
         // C: g->panic = NULL;
