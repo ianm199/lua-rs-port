@@ -764,7 +764,10 @@ pub fn check_integer(state: &mut LuaState, arg: i32) -> Result<i64, LuaError> {
     // C: int isnum; lua_Integer d = lua_tointegerx(L, arg, &isnum);
     match state.to_integer_x(arg) {
         Some(d) => Ok(d),
-        None => int_error(state, arg),
+        None => {
+            int_error(state, arg)?;
+            unreachable!("int_error always returns Err")
+        }
     }
 }
 
@@ -1497,12 +1500,20 @@ impl Default for LuaDebug {
 //   source:        src/lauxlib.c  (1127 lines, ~50 functions)
 //   target_crate:  lua-stdlib
 //   confidence:    medium
-//   todos:         12
-//   port_notes:    5
+//   todos:         19
+//   port_notes:    7
 //   unsafe_blocks: 0
-//   notes:         Buffer simplified from stack-based C UBox to Vec<u8>.
-//                  File I/O (load_filex) stubbed; std::fs banned outside lua-cli.
-//                  Warning system implemented with fn-pointer callbacks.
-//                  LuaState/LuaDebug stubs present; wire imports in Phase B.
-//                  add_size / set_len for buffer direct-write is a no-op in Phase A.
+//   notes:         Buffer simplified from stack-based C UBox/box-on-Lua-stack to
+//                  plain Vec<u8> (LuaBuffer); UBox/resizebox/boxgc/boxmt/newbox
+//                  machinery dropped entirely — Rust Drop handles deallocation.
+//                  File I/O in load_filex stubbed with Err; std::fs banned outside
+//                  lua-cli per PORTING.md (Phase B to resolve).
+//                  Warning system uses fn-ptr callbacks matching lua_WarnFunction
+//                  type; warnfoff/warnfon/warnfcont translated faithfully.
+//                  LuaState / LuaDebug / GcRef are Phase-A stubs; Phase B replaces
+//                  with real imports from lua-vm / lua-types.
+//                  add_size() is a no-op in Phase A (Vec tracks length implicitly);
+//                  direct buffer writes via spare capacity need revisit in Phase B.
+//                  int_error() return type changed from `!` to `Result<usize,_>` as
+//                  the never type is nightly-only on stable Rust.
 // ──────────────────────────────────────────────────────────────────────────
