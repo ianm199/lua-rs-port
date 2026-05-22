@@ -1,1 +1,1 @@
-raw_seti
+set_funcs_with_upvalues

@@ -179,3 +179,6 @@
 {"ts":"2026-05-16T18:43:34Z","action":"dispatch_done","detail":"type=implement func=push_c_closure cost=0.46256875000000003","total_cost":0.00}
 {"ts":"2026-05-16T18:43:34Z","action":"panic_detected","detail":"func=raw_seti iter=7","total_cost":0.00}
 {"ts":"2026-05-16T18:43:34Z","action":"dispatch_start","detail":"type=implement func=raw_seti iter=7","total_cost":0.00}
+{"ts":"2026-05-16T18:44:11Z","action":"dispatch_done","detail":"type=implement func=raw_seti cost=0.40154750000000006","total_cost":0.00}
+{"ts":"2026-05-16T18:44:11Z","action":"panic_detected","detail":"func=set_funcs_with_upvalues iter=8","total_cost":0.00}
+{"ts":"2026-05-16T18:44:11Z","action":"dispatch_start","detail":"type=implement func=set_funcs_with_upvalues iter=8","total_cost":0.00}

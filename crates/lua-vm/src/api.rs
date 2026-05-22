@@ -378,6 +378,28 @@ impl LuaState {
         Ok(())
     }
 
+    /// Register each entry in `funcs` as a C closure on the table at index
+    /// `-(nup + 2)`, sharing the `nup` values currently on top of the stack
+    /// as upvalues. The upvalues are popped at the end.
+    ///
+    /// C: `luaL_setfuncs(L, l, nup)`.
+    pub fn set_funcs_with_upvalues(
+        &mut self,
+        funcs: &[(&[u8], LuaCFunction)],
+        nup: i32,
+    ) -> Result<(), LuaError> {
+        check_stack(self, nup);
+        for (name, f) in funcs {
+            for _ in 0..nup {
+                push_value(self, -nup);
+            }
+            push_cclosure(self, *f, nup)?;
+            set_field(self, -(nup + 2), name)?;
+        }
+        self.pop_n(nup as usize);
+        Ok(())
+    }
+
     pub fn set_metatable(&mut self, objindex: i32) -> Result<(), LuaError> {
         set_metatable(self, objindex)?;
         Ok(())
