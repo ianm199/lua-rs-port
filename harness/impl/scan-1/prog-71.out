@@ -8,6 +8,4 @@ testing tables, next, and for
 
 +
 +
-+
-testing next x GC of deleted keys
-[err] pcall_k failed: Runtime: bad argument #1 (table expected, got nil)
+[err] pcall_k failed: Runtime: invalid key to 'next'

@@ -8,11 +8,3 @@ functions with errors
 long strings
 steps
 steps (2)
-clearing tables
-weak tables
-+
-
- >>> testC not active: skipping userdata GC tests <<<
-
-self-referenced threads
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:549: not yet implemented: coroutines (Phase E)

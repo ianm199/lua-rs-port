@@ -3,6 +3,3 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing closures
-+
-OK
-[ok] execution completed, status=Ok
