@@ -1854,6 +1854,7 @@ pub enum GcWhat {
 
 // C: LUA_API int lua_gc (lua_State *L, int what, ...)
 // PORT NOTE: C varargs replaced by explicit GcArgs enum; callers supply parameters directly.
+#[derive(Debug)]
 pub enum GcArgs {
     Stop,
     Restart,
@@ -1869,8 +1870,10 @@ pub enum GcArgs {
 }
 
 pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
+    eprintln!("[DBG] api::gc called args={:?} gcstp={}", args, state.global().gc_stop_flags());
     // C: if (g->gcstp & GCSTPGC) return -1;
     if state.global().is_gc_stopped_internally() {
+        eprintln!("[DBG] api::gc returned -1 due to gcstp");
         return -1;
     }
     match args {

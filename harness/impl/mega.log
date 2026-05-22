@@ -1123,3 +1123,4 @@
 [2026-05-18T18:32:33Z mega]   skip prog (in SKIP_TESTS): reference/lua-c/testes/calls.lua
 [2026-05-18T18:32:33Z mega]   skip prog (in SKIP_TESTS): reference/lua-c/testes/nextvar.lua
 [2026-05-18T18:38:01Z mega]   → committed 71b48a8 (debug/reference/lua-c/testes/errors.lua )
+[2026-05-18T18:43:12Z mega]   [O1.D5] DEBUG dispatch on file: reference/lua-c/testes/files.lua [model=sonnet] [parallel]

@@ -45,6 +45,17 @@
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
+lvl=0 what=C namewhat=field name=getinfo linedefined=-1 currentline=-1 short_src=[C]
+[DBG] collect_via_heap: force=false snapshot.len=0
+lvl=1 what=Lua namewhat=upvalue name=inspect linedefined=10 currentline=12 short_src=stdin
+[DBG] collect_via_heap: force=false snapshot.len=0
+lvl=2 what=Lua namewhat=metamethod name=close linedefined=25 currentline=26 short_src=stdin
+[DBG] collect_via_heap: force=false snapshot.len=0
+lvl=3 what=Lua namewhat= name=? linedefined=24 currentline=29 short_src=stdin
+[DBG] collect_via_heap: force=false snapshot.len=0
+lvl=4 what=C namewhat=global name=xpcall linedefined=-1 currentline=-1 short_src=[C]
+[DBG] collect_via_heap: force=false snapshot.len=0
+lvl=5 what=main namewhat= name=? linedefined=0 currentline=31 short_src=stdin
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
@@ -61,24 +72,12 @@
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
 [DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-testing i/o
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-[DBG] collect_via_heap: force=false snapshot.len=0
-lua: pcall_k failed: Runtime: stdin:80: assertion failed!
+===traceback===
+stdin:27: @x123
+stack traceback:
+	[C]: in function 'error'
+	stdin:27: in function <:-1>
+	stdin:29: in function <:-1>
+	[C]: in function 'xpcall'
+	stdin:31: in function <:-1>
+[ok] execution completed, status=Ok

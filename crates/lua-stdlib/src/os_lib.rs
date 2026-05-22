@@ -848,16 +848,25 @@ pub(crate) fn os_setlocale(state: &mut LuaState) -> Result<usize, LuaError> {
     ];
 
     // C: const char *l = luaL_optstring(L, 1, NULL);
-    let _locale: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
+    let locale: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
 
     // C: int op = luaL_checkoption(L, 2, "all", catnames);
     let _op: usize = state.check_arg_option(2, Some(b"all"), CAT_NAMES)?;
 
     // C: lua_pushstring(L, setlocale(cat[op], l));
-    // TODO(port): call `libc::setlocale(cat[op], locale_ptr)` using the `libc` crate.
-    // The LC_* constants and `setlocale` function are not available in Rust std.
-    // Phase B should link against libc and implement this properly.
-    state.push(LuaValue::Nil);
+    // PORT NOTE: calling libc::setlocale requires unsafe (banned in lua-stdlib, budget=0).
+    // Rust programs inherit the "C" locale by default and never change it, so returning
+    // "C" for the C locale (and nil for anything else) is faithful for this build:
+    // "C" is the only locale guaranteed available on every POSIX system.
+    let result_locale: Option<&[u8]> = match locale.as_deref() {
+        None => Some(b"C"),          // query: return current locale (always "C" here)
+        Some(b"C") | Some(b"POSIX") => Some(b"C"),  // setting to "C"/"POSIX" always succeeds
+        Some(_) => None,             // any other locale: unsupported in this build
+    };
+    match result_locale {
+        Some(s) => { state.push_string(s); }
+        None => state.push(LuaValue::Nil),
+    }
     Ok(1)
 }
 

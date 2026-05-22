@@ -14,7 +14,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
-use lua_stdlib::auxlib::{load_buffer, load_string};
+use lua_stdlib::auxlib::load_buffer;
 use lua_stdlib::init::open_libs;
 use lua_types::closure::LuaLClosure;
 use lua_types::error::LuaError;
@@ -300,12 +300,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let (source, chunkname): (Vec<u8>, Option<Vec<u8>>) = if args_os[1] == "-e" {
+    let (source, chunkname): (Vec<u8>, Vec<u8>) = if args_os[1] == "-e" {
         if args_os.len() < 3 {
             eprintln!("-e requires an argument");
             return ExitCode::from(2);
         }
-        (os_str_bytes(&args_os[2]), Some(b"=(command line)".to_vec()))
+        (os_str_bytes(&args_os[2]), b"=stdin".to_vec())
     } else {
         let path = std::path::Path::new(&args_os[1]);
         if path.is_file() {
@@ -313,7 +313,7 @@ fn main() -> ExitCode {
                 Ok(bytes) => {
                     let mut name = vec![b'@'];
                     name.extend_from_slice(&os_str_bytes(&args_os[1]));
-                    (bytes, Some(name))
+                    (bytes, name)
                 }
                 Err(e) => {
                     eprintln!("cannot read {}: {}", path.display(), e);
@@ -321,7 +321,7 @@ fn main() -> ExitCode {
                 }
             }
         } else {
-            (os_str_bytes(&args_os[1]), None)
+            (os_str_bytes(&args_os[1]), b"=stdin".to_vec())
         }
     };
 
@@ -340,12 +340,8 @@ fn main() -> ExitCode {
         open_libs(&mut state).map_err(|e| format!("open_libs failed: {}", render_lua_error(&e)))?;
 
         step!("[3/4] Loading source (parse + compile)...");
-        let status = match &chunkname {
-            Some(name) => load_buffer(&mut state, &source, name)
-                .map_err(|e| format!("load_buffer failed: {}", render_lua_error(&e)))?,
-            None => load_string(&mut state, &source)
-                .map_err(|e| format!("load_string failed: {}", render_lua_error(&e)))?,
-        };
+        let status = load_buffer(&mut state, &source, &chunkname)
+            .map_err(|e| format!("load_buffer failed: {}", render_lua_error(&e)))?;
         if status != 0 {
             let msg = match to_lua_string(&mut state, -1) {
                 Ok(Some(s)) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
