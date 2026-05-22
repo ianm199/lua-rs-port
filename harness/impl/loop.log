@@ -3067,3 +3067,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T22:29:19Z] ─── iter 1  (spent: $0.00) ───
 [2026-05-16T22:29:19Z]   real-error blocker at step 3/4 Loading source (parse + compile): crates/lua-parse/src/lib.rs:2897:5:
 [2026-05-16T22:29:19Z]   dispatching DEBUG agent for real-error (budget $15)
+[2026-05-16T22:31:37Z]   agent done. iter cost=$0.8971955  total=$0.00
+[2026-05-16T22:31:37Z] ─── iter 2  (spent: $0.00) ───
+[2026-05-16T22:31:37Z]   real-error blocker at step 3/4 Loading source (parse + compile): crates/lua-parse/src/lib.rs:1404:37:
+[2026-05-16T22:31:37Z]   dispatching DEBUG agent for real-error (budget $15)

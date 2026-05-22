@@ -2965,8 +2965,10 @@ fn fornum(
 ) -> Result<(), LuaError> {
     let base = ls.fs.as_ref().unwrap().freereg as i32;
     // C: new_localvarliteral(ls, "(for state)") × 3 + new_localvar(ls, varname)
-    // TODO(port): intern b"(for state)" via state
-    // new_local_var(ls, state, for_state_str)?; × 3
+    let for_state_str = state.intern_str(b"(for state)")?;
+    new_local_var(ls, state, for_state_str.clone())?;
+    new_local_var(ls, state, for_state_str.clone())?;
+    new_local_var(ls, state, for_state_str)?;
     new_local_var(ls, state, varname)?;
     check_next(ls, state, b'=' as TokenKind)?;
     exp1(ls, state)?; // initial value
@@ -2993,7 +2995,11 @@ fn forlist(
     let mut nvars: i32 = 5; // gen, state, control, toclose, 'indexname'
     let base = ls.fs.as_ref().unwrap().freereg as i32;
     // C: new_localvarliteral × 4 (for state vars)
-    // TODO(port): intern b"(for state)" × 4
+    let for_state_str = state.intern_str(b"(for state)")?;
+    new_local_var(ls, state, for_state_str.clone())?;
+    new_local_var(ls, state, for_state_str.clone())?;
+    new_local_var(ls, state, for_state_str.clone())?;
+    new_local_var(ls, state, for_state_str)?;
     new_local_var(ls, state, indexname)?;
     while test_next(ls, state, b',' as TokenKind)? {
         let extra_name = str_check_name(ls, state)?;
