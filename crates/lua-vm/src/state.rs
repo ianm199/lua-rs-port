@@ -1175,7 +1175,9 @@ impl LuaState {
     pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].top }
     pub fn ci_trap(&mut self, _idx: CallInfoIdx) -> bool { todo!("phase-b: ci_trap") }
     pub fn ci_savedpc(&self, _idx: CallInfoIdx) -> u32 { todo!("phase-b: ci_savedpc") }
-    pub fn set_ci_savedpc(&mut self, _idx: CallInfoIdx, _pc: u32) { todo!("phase-b: set_ci_savedpc") }
+    pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
+        self.call_info[idx.as_usize()].set_saved_pc(pc);
+    }
     pub fn set_ci_previous(&mut self, _idx: CallInfoIdx) { todo!("phase-b: set_ci_previous") }
     pub fn ci_previous(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
     pub fn ci_adjust_func<D>(&mut self, _idx: CallInfoIdx, _delta: D) { todo!("phase-b: ci_adjust_func") }

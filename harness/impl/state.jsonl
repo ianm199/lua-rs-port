@@ -209,3 +209,6 @@
 {"ts":"2026-05-16T19:05:04Z","action":"dispatch_done","detail":"type=debug err=open_libs failed: Runtime: attempt to index a string value cost=4.318149749999999","total_cost":0.00}
 {"ts":"2026-05-16T19:05:04Z","action":"real_error","detail":"err=pcall_k failed: Runtime: attempt to call a nil value step=4/4 Executing chunk iter=17","total_cost":0.00}
 {"ts":"2026-05-16T19:05:04Z","action":"dispatch_start","detail":"type=debug err=pcall_k failed: Runtime: attempt to call a nil value iter=17","total_cost":0.00}
+{"ts":"2026-05-16T19:11:06Z","action":"dispatch_done","detail":"type=debug err=pcall_k failed: Runtime: attempt to call a nil value cost=3.2995807500000005","total_cost":0.00}
+{"ts":"2026-05-16T19:11:07Z","action":"panic_detected","detail":"func=set_ci_savedpc iter=18","total_cost":0.00}
+{"ts":"2026-05-16T19:11:07Z","action":"dispatch_start","detail":"type=implement func=set_ci_savedpc iter=18","total_cost":0.00}
