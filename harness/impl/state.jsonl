@@ -124,3 +124,6 @@
 {"ts":"2026-05-16T17:22:15Z","action":"dispatch_done","detail":"type=debug err=load_string status=1: print(\"hello\"): Lua text parser not yet wired (phase-b: lua-parse::parse) cost=2.9143534999999994","total_cost":0.00}
 {"ts":"2026-05-16T17:22:15Z","action":"real_error","detail":"err=load_string status=1: unexpected symbol step=3/4 Loading source (parse + compile) iter=3","total_cost":0.00}
 {"ts":"2026-05-16T17:22:15Z","action":"dispatch_start","detail":"type=debug err=load_string status=1: unexpected symbol iter=3","total_cost":0.00}
+{"ts":"2026-05-16T17:30:21Z","action":"dispatch_done","detail":"type=debug err=load_string status=1: unexpected symbol cost=3.1359052499999995","total_cost":0.00}
+{"ts":"2026-05-16T17:30:22Z","action":"panic_detected","detail":"func=lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1) iter=4","total_cost":0.00}
+{"ts":"2026-05-16T17:30:22Z","action":"dispatch_start","detail":"type=implement func=lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1) iter=4","total_cost":0.00}
