@@ -63,7 +63,11 @@ run_test() {
 }
 
 extract_panic_func() {
-    grep -oE "not yet implemented: [a-z0-9_-]+: [a-z0-9_]+" "$1" | head -1 | sed 's/.*: //'
+    # Panic tags follow the pattern: `not yet implemented: <phase-tag>: <symbol>`
+    # where <symbol> can be a plain function (`require_lib`), a method on a
+    # type (`LuaTable::get`), or a generic-instantiated name. Allow letters,
+    # digits, underscores, and `::` in the symbol.
+    grep -oE "not yet implemented: [a-z0-9_-]+: [A-Za-z0-9_:]+" "$1" | head -1 | sed 's/^.*: //'
 }
 
 dispatch_implement_agent() {
@@ -79,8 +83,10 @@ todo!() with a real implementation.
 
 Process:
 
-1. Find where \`$func\` is defined. Search:
-   grep -rn 'fn $func' crates/lua-vm/src/ crates/lua-stdlib/src/
+1. Find where \`$func\` is defined. If it has a Type::method form, search
+   for the method inside the impl block:
+   - For 'LuaTable::get' → grep -rn 'impl LuaTable' then read the body
+   - For plain 'require_lib' → grep -rn 'fn require_lib' crates/lua-vm/src/ crates/lua-stdlib/src/
 
 2. Read the C source for context. The canonical mapping is in
    ANALYSES/file_deps.txt; typical Lua functions live in:

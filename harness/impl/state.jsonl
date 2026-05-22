@@ -13,3 +13,6 @@
 {"ts":"2026-05-16T13:55:01Z","action":"dispatch_done","detail":"func=table_get_with_tm cost=1.9590297499999993","total_cost":0.00}
 {"ts":"2026-05-16T13:55:01Z","action":"panic_detected","detail":"func=fast_get iter=5","total_cost":0.00}
 {"ts":"2026-05-16T13:55:01Z","action":"dispatch_start","detail":"func=fast_get iter=5","total_cost":0.00}
+{"ts":"2026-05-16T13:58:19Z","action":"dispatch_done","detail":"func=fast_get cost=1.85217225","total_cost":0.00}
+{"ts":"2026-05-16T13:58:19Z","action":"no_panic","detail":"iter=6 rc=101","total_cost":0.00}
+{"ts":"2026-05-16T13:58:19Z","action":"run_end","detail":"iterations=5 total_cost=0.00","total_cost":0.00}

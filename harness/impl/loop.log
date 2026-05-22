@@ -21,3 +21,24 @@
 [2026-05-16T13:55:01Z] ─── iter 5  (spent: $0.00) ───
 [2026-05-16T13:55:01Z]   blocked on: fast_get
 [2026-05-16T13:55:01Z]   dispatching agent for fast_get (budget $10)
+[2026-05-16T13:58:19Z]   agent done. iter cost=$1.85217225  total=$0.00
+[2026-05-16T13:58:19Z] ─── iter 6  (spent: $0.00) ───
+[2026-05-16T13:58:19Z]   no todo!() panic detected — final output:
+    |                 ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+156 |                 let _ = state.replace(-3); // in the slot occupied by table
+    |                 +++++++
+
+[1/4] Creating LuaState...
+[2/4] Opening standard library...
+
+thread 'main' (4401610) panicked at crates/lua-vm/src/state.rs:437:48:
+not yet implemented: phase-b: LuaTable::get
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[panic] not yet implemented: phase-b: LuaTable::get
+[2026-05-16T13:58:19Z] ═════════════════════════════════════════════════════════════════
+[2026-05-16T13:58:19Z] Loop end. Total cost: $0.00  Total iterations: 5
+[2026-05-16T13:58:19Z] ═════════════════════════════════════════════════════════════════
