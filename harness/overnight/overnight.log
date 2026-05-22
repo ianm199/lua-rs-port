@@ -37,3 +37,4 @@ fanout: mode=files  files=12  workers=6  dry_run=0
   [linit.c] → crates/lua-stdlib/src/init.rs
     status=syntax_failed  cost=$0.80223135  duration=282s  hooks=true  syntax=false (residual=2)
     status=ok  cost=$1.2856239999999999  duration=821s  hooks=true  syntax=true (residual=0)
+    status=syntax_failed  cost=$1.43949845  duration=600s  hooks=true  syntax=false (residual=161)
