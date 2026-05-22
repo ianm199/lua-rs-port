@@ -60,3 +60,11 @@ Per-file outputs: harness/oracle/results/*.translator.json + *.hooks.log
 [2026-05-16T04:44:39Z]   committed: 1b5d874 Phase C compiler-fixer pass 2: lua-stdlib 483 → 114 errors
 [2026-05-16T04:44:39Z]   → pass 3: dispatching compiler-fixer (budget $6)
 [2026-05-16T04:52:42Z]   pass 3: 114 → 62 errors, $5.959006250000005
+[2026-05-16T04:52:42Z]   committed: 778dcc1 Phase C compiler-fixer pass 3: lua-stdlib 114 → 62 errors
+[2026-05-16T04:52:42Z] ════ Phase D: GC translate + fix (lua-gc) ════
+fanout: mode=files  files=2  workers=2  dry_run=0
+         auth=personal subscription (CLAUDE_CONFIG_DIR=/Users/ianmclaughlin/.claude-personal)
+                                   (ANTHROPIC_API_KEY explicitly unset)
+
+  [lgc.c] → crates/lua-gc/src/gc.rs
+  [lmem.c] SKIP: crates/lua-gc/src/mem.rs already ported
