@@ -210,7 +210,7 @@ Use the Translator subagent (.claude/agents/translator.md). When done, stop — 
         --output-format stream-json \
         --include-partial-messages \
         --verbose \
-        --max-budget-usd 2.00 \
+        --max-budget-usd 4.00 \
         "$prompt" \
         2>>"$RESULTS_DIR/$basename.stderr" \
         | tee "$transcript" \
