@@ -859,7 +859,7 @@ pub struct GlobalState {
     /// once (with a yield buffer installed), collects all yielded values here,
     /// then dispenses them one per iterator call. Cleared when the iterator is
     /// exhausted. Phase E replaces this with real stackful coroutines.
-    pub wrap_iter_state: std::collections::HashMap<usize, (Vec<LuaValue>, usize)>,
+    pub wrap_iter_state: std::collections::HashMap<usize, (Vec<Vec<LuaValue>>, usize)>,
 }
 
 impl GlobalState {
@@ -1113,13 +1113,15 @@ pub struct LuaState {
     // types.tsv: GCObject.marked → u8
     pub marked: u8,
 
-    /// Stack of yield buffers used by the Phase A–D buffering coroutine
-    /// emulation. Each `coroutine.wrap` invocation pushes an empty buffer
+    /// Stack of yield-batch buffers used by the Phase A–D buffering coroutine
+    /// emulation. Each `coroutine.wrap` invocation pushes an empty entry
     /// before running the wrapped function, and pops it when the function
-    /// returns. While a buffer is on top, `coroutine.yield(v...)` appends
-    /// its arguments instead of suspending. Phase E replaces this with the
-    /// real stackful coroutine runtime (corosensei).
-    pub yield_buffers: Vec<Vec<LuaValue>>,
+    /// returns. While an entry is on top, `coroutine.yield(v...)` appends a
+    /// new batch (all current args) instead of suspending. The outer Vec is a
+    /// stack for nested wraps; the inner `Vec<Vec<LuaValue>>` is the list of
+    /// yield batches accumulated for one wrap invocation. Phase E replaces
+    /// this with the real stackful coroutine runtime (corosensei).
+    pub yield_buffers: Vec<Vec<Vec<LuaValue>>>,
 }
 
 impl LuaState {
@@ -1190,10 +1192,11 @@ impl LuaState {
         self.yield_buffers.push(Vec::new());
     }
 
-    /// Pop the top yield buffer, returning its accumulated values.
+    /// Pop the top yield buffer, returning its accumulated batches.
+    /// Each batch is the slice of values from one `coroutine.yield(...)` call.
     /// Caller must ensure the buffer stack is non-empty (i.e. a matching
     /// `push_yield_buffer` was issued earlier).
-    pub fn pop_yield_buffer(&mut self) -> Vec<LuaValue> {
+    pub fn pop_yield_buffer(&mut self) -> Vec<Vec<LuaValue>> {
         self.yield_buffers
             .pop()
             .expect("pop_yield_buffer with empty buffer stack")
@@ -1205,11 +1208,13 @@ impl LuaState {
         !self.yield_buffers.is_empty()
     }
 
-    /// Append a value to the top yield buffer. Caller must ensure the
-    /// buffer stack is non-empty (typically guarded by `has_yield_buffer`).
-    pub fn yield_buffer_push(&mut self, v: LuaValue) {
+    /// Append one yield batch to the top yield buffer. Each call to
+    /// `coroutine.yield(v...)` maps to one batch; `v...` are the batch values.
+    /// Caller must ensure the buffer stack is non-empty (guarded by
+    /// `has_yield_buffer`).
+    pub fn yield_buffer_push_batch(&mut self, batch: Vec<LuaValue>) {
         let n = self.yield_buffers.len();
-        self.yield_buffers[n - 1].push(v);
+        self.yield_buffers[n - 1].push(batch);
     }
 
     /// Reset the hook countdown to the baseline.

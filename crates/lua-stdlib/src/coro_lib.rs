@@ -154,13 +154,14 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 /// C: `static int luaB_auxwrap(lua_State *L)`
 ///
 /// Phase A–D emulation: on the first call, runs the entire wrapped function
-/// with a yield buffer installed, collects all yielded values, stores them in
-/// `GlobalState::wrap_iter_state` keyed by this closure's identity, and
-/// returns the first buffered value. Subsequent calls dispense the remaining
-/// values one at a time until exhausted (returns 0). This handles generator
-/// functions that use `coroutine.yield` recursively (e.g. the `gen` function
-/// in `testes/literals.lua`). Phase E will replace this with the full
-/// cross-thread `auxresume` sequence once stackful coroutines land.
+/// with a yield buffer installed, collects all yield batches (one per
+/// `coroutine.yield(...)` call) and the function's final return values as
+/// the last batch, stores them in `GlobalState::wrap_iter_state` keyed by
+/// this closure's identity, and returns the first batch. Subsequent calls
+/// dispense one batch per call (matching real coroutine semantics) until the
+/// final-return batch is returned, at which point the entry is removed.
+/// Phase E replaces this with the full cross-thread `auxresume` sequence
+/// once stackful coroutines land.
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
     let ci_func = state.current_call_info().func;
     let func_val = state.get_at(ci_func);
@@ -174,13 +175,13 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
     };
     drop(func_val);
 
-    let maybe_next: Option<Option<LuaValue>> = {
+    let maybe_next: Option<Option<Vec<LuaValue>>> = {
         let mut g = state.global_mut();
-        g.wrap_iter_state.get_mut(&cache_key).map(|(values, idx)| {
-            if *idx < values.len() {
-                let v = values[*idx].clone();
+        g.wrap_iter_state.get_mut(&cache_key).map(|(batches, idx)| {
+            if *idx < batches.len() {
+                let batch = batches[*idx].clone();
                 *idx += 1;
-                Some(v)
+                Some(batch)
             } else {
                 None
             }
@@ -188,9 +189,12 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
     };
 
     match maybe_next {
-        Some(Some(v)) => {
-            state.push(v);
-            return Ok(1);
+        Some(Some(batch)) => {
+            let n = batch.len();
+            for v in batch {
+                state.push(v);
+            }
+            return Ok(n);
         }
         Some(None) => {
             state.global_mut().wrap_iter_state.remove(&cache_key);
@@ -199,6 +203,7 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
         None => {}
     }
 
+    // First call: run the wrapped function with a yield buffer active.
     let nargs = state.get_top();
     let func = state.value_at(upvalue_index(1));
     state.push(func);
@@ -206,24 +211,44 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
         state.insert(1)?;
     }
     state.push_yield_buffer();
-    let call_result = state.call(nargs, 0);
-    let buffered = state.pop_yield_buffer();
+    // Use LUA_MULTRET (-1) so the function's final return values reach the stack.
+    let call_result = state.call(nargs, -1);
+
+    // Collect final return values before popping the yield buffer.
+    let nret = state.get_top() as i32;
+    let final_batch: Vec<LuaValue> = (1..=nret).map(|i| state.value_at(i)).collect();
+
+    // Pop yield buffer — always done, even if the call failed.
+    let mut batches = state.pop_yield_buffer();
+
+    // Propagate call errors after recovering the buffer.
     call_result?;
 
-    if buffered.is_empty() {
+    // Append the function's final return values as the last batch.
+    batches.push(final_batch);
+
+    // Clear the return values off the stack; we'll push the first batch instead.
+    lua_vm::api::set_top(state, 0)?;
+
+    if batches.is_empty() {
         return Ok(0);
     }
 
-    let first = buffered[0].clone();
-    if buffered.len() > 1 {
+    // Remove and return the first batch; save the rest for subsequent calls.
+    let first = batches.remove(0);
+    let first_n = first.len();
+
+    if !batches.is_empty() {
         state
             .global_mut()
             .wrap_iter_state
-            .insert(cache_key, (buffered, 1));
+            .insert(cache_key, (batches, 0));
     }
 
-    state.push(first);
-    Ok(1)
+    for v in first {
+        state.push(v);
+    }
+    Ok(first_n)
 }
 
 /// `coroutine.create(f)` — create a new coroutine that will run function `f`.
@@ -287,10 +312,8 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
     if state.has_yield_buffer() {
         let n = state.get_top();
-        for i in 1..=n {
-            let v = state.value_at(i);
-            state.yield_buffer_push(v);
-        }
+        let batch: Vec<LuaValue> = (1..=n).map(|i| state.value_at(i)).collect();
+        state.yield_buffer_push_batch(batch);
         return Ok(0);
     }
     let n = state.get_top();
