@@ -53,6 +53,9 @@ if _VERSION == nil then _VERSION = "Lua 5.4" end
 
 { printf '%s\n' "$PREAMBLE"; cat "$TEST_FILE"; } > "$COMBINED"
 
+TESTES_DIR="$(cd "$(dirname "$TEST_FILE")" && pwd)"
+export LUA_PATH="$TESTES_DIR/?.lua;$TESTES_DIR/?/init.lua;./?.lua;./?/init.lua"
+
 run_with_timeout() {
     local src_file="$1"
     local out_file="$2"

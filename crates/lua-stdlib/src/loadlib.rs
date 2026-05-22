@@ -671,8 +671,10 @@ fn checkload(state: &mut LuaState, stat: bool, filename: &[u8]) -> Result<usize,
 fn searcher_lua(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: const char *name = luaL_checkstring(L, 1);
     let name = state.check_arg_string(1)?.to_vec();
+    eprintln!("DBG searcher_lua name={:?} LUA_PATH={:?}", String::from_utf8_lossy(&name), std::env::var("LUA_PATH"));
     // C: filename = findfile(L, name, "path", LUA_LSUBSEP);
     let filename = findfile(state, &name, b"path", LUA_LSUBSEP)?;
+    eprintln!("DBG searcher_lua filename={:?}", filename.as_ref().map(|f| String::from_utf8_lossy(f).into_owned()));
     if filename.is_none() {
         // C: if (filename == NULL) return 1;  -- error message on stack
         return Ok(1);

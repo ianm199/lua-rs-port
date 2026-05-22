@@ -1659,8 +1659,7 @@ fn getnum(fmt: &[u8], pos: &mut usize, df: i32) -> i32 {
     while *pos < fmt.len() && is_digit(fmt[*pos]) {
         a = a * 10 + (fmt[*pos] - b'0') as i32;
         *pos += 1;
-        // C: && a <= ((int)MAXSIZE - 9)/10
-        if a > (usize::MAX as i32 - 9) / 10 {
+        if a > (i32::MAX - 9) / 10 {
             break;
         }
     }
