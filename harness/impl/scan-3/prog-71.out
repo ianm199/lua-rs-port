@@ -10,4 +10,5 @@ testing tables, next, and for
 +
 +
 testing next x GC of deleted keys
-lua: pcall_k failed: Runtime: stdin:402: bad argument #1 to 'for iterator' (table expected, got nil)
+DEBUG co_yield called with 1 args, stack top=30
+lua: pcall_k failed: Runtime: attempt to yield from outside a coroutine

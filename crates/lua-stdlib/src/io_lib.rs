@@ -1168,13 +1168,11 @@ pub fn f_seek(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: static const char *const modenames[] = {"set","cur","end",NULL};
     static MODE_NAMES: &[&[u8]] = &[b"set", b"cur", b"end"];
 
-    let _ = tofile(state)?; // validates stream is open
+    let p_rc = tofile(state)?;
     // C: int op = luaL_checkoption(L, 2, "cur", modenames);
     let op = state.check_arg_option(2, Some(b"cur"), MODE_NAMES)?;
     // C: lua_Integer p3 = luaL_optinteger(L, 3, 0);
     let p3: i64 = state.opt_arg_integer(3, 0)?;
-    // C: luaL_argcheck(L, (lua_Integer)offset == p3, 3, "not an integer in proper range");
-    // (lua_Integer is i64 and l_seeknum is off_t/i64 on 64-bit; always satisfied)
 
     let seek_pos = match op {
         0 => SeekFrom::Start(p3 as u64),
@@ -1186,12 +1184,18 @@ pub fn f_seek(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: op = l_fseek(f, offset, mode[op]);
     // C: if (op) return luaL_fileresult(L, 0, NULL);
     // C: else { lua_pushinteger(L, l_ftell(f)); return 1; }
-    // TODO(port): borrow split — cannot call seek on extracted &mut dyn LuaFileOps
-    //             while state is also borrowed. Phase B fix: RefCell or StackIdx API.
-    let _ = seek_pos;
-    Err(LuaError::runtime(format_args!(
-        "TODO(port): borrow split needed for f_seek"
-    )))
+    let result = {
+        let mut p = p_rc.borrow_mut();
+        let fh = p.file.as_mut().expect("open stream has no file handle");
+        fh.seek(seek_pos)
+    };
+    match result {
+        Ok(pos) => {
+            state.push(LuaValue::Int(pos as i64));
+            Ok(1)
+        }
+        Err(e) => file_result(state, false, None, e),
+    }
 }
 
 /// `file:setvbuf(mode [, size])`. C: `f_setvbuf`.
@@ -1223,20 +1227,57 @@ pub fn f_setvbuf(state: &mut LuaState) -> Result<usize, LuaError> {
 pub fn io_flush(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: FILE *f = getiofile(L, IO_OUTPUT);
     // C: return luaL_fileresult(L, fflush(f) == 0, NULL);
-    // TODO(port): borrow split needed for io_flush
-    Err(LuaError::runtime(format_args!(
-        "TODO(port): borrow split needed for io_flush"
-    )))
+    let ud_id: Option<usize> = {
+        state.registry_get(IO_OUTPUT_KEY)?;
+        let id = state
+            .test_arg_userdata(-1, LUA_FILE_HANDLE)
+            .map(|ud| ud.identity());
+        state.pop_n(1);
+        id
+    };
+    if let Some(id) = ud_id {
+        if let Some(rc) = lookup_lstream(id) {
+            let result = {
+                let mut p = rc.borrow_mut();
+                if p.is_closed() {
+                    return Err(LuaError::runtime(format_args!(
+                        "default output file is closed"
+                    )));
+                }
+                let fh = p.file.as_mut().expect("open stream has no file handle");
+                fh.flush()
+            };
+            return match result {
+                Ok(()) => {
+                    state.push(LuaValue::Bool(true));
+                    Ok(1)
+                }
+                Err(e) => file_result(state, false, None, e),
+            };
+        }
+    }
+    // No live default output file: behave like a successful no-op flush of stdout.
+    state.push(LuaValue::Bool(true));
+    Ok(1)
 }
 
 /// `file:flush()`. C: `f_flush`.
 pub fn f_flush(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: FILE *f = tofile(L);
     // C: return luaL_fileresult(L, fflush(f) == 0, NULL);
-    // TODO(port): borrow split needed for f_flush
-    Err(LuaError::runtime(format_args!(
-        "TODO(port): borrow split needed for f_flush"
-    )))
+    let p_rc = tofile(state)?;
+    let result = {
+        let mut p = p_rc.borrow_mut();
+        let fh = p.file.as_mut().expect("open stream has no file handle");
+        fh.flush()
+    };
+    match result {
+        Ok(()) => {
+            state.push(LuaValue::Bool(true));
+            Ok(1)
+        }
+        Err(e) => file_result(state, false, None, e),
+    }
 }
 
 // ── Lines iterator ───────────────────────────────────────────────────────────

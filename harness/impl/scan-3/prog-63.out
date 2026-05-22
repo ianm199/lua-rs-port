@@ -4,4 +4,8 @@
 [4/4] Executing chunk...
 testing strings and string library
 testing 'format %a %A'
-lua: pcall_k failed: Runtime: stdin:467: assertion failed!
+
+ >>> testC not active: skipping 'pushfstring' tests <<<
+
+OK
+[ok] execution completed, status=Ok

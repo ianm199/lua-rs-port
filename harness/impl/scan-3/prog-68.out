@@ -6,8 +6,7 @@ testing local variables and environments
 +
 testing to-be-closed variables
 testing errors in __close
-
-thread 'main' (13497069) panicked at crates/lua-vm/src/api.rs:1328:5:
-table expected
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] table expected
+to-be-closed variables in coroutines
+DEBUG co_yield called with 1 args, stack top=39
+DEBUG co_yield called with 1 args, stack top=36
+lua: pcall_k failed: Runtime: attempt to yield from outside a coroutine
