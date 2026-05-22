@@ -1,1 +1,1 @@
-new_metatable
+new_lib_table
