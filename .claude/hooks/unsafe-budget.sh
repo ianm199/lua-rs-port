@@ -25,10 +25,16 @@ for crate_dir in "$ROOT"/crates/*/; do
         ''|*[!0-9]*) ceiling=0 ;;
     esac
 
-    # count `unsafe` keyword occurrences in this crate's .rs files
+    # Count actual `unsafe` keyword USAGE — not the word in comments / trailers.
+    # Match `unsafe` followed by one of {fn,impl,trait,extern,block,{} (the
+    # only syntactic contexts where it's a real keyword). Exclude lines that
+    # are inside a single-line comment (start with optional whitespace + //).
     count=0
     if [ -d "$crate_dir/src" ]; then
-        count=$(grep -rE '\bunsafe\b' "$crate_dir/src" --include='*.rs' 2>/dev/null | wc -l | tr -d ' ')
+        count=$(grep -rhnE '\bunsafe[[:space:]]+(fn|impl|trait|extern|block|\{)' \
+                    "$crate_dir/src" --include='*.rs' 2>/dev/null \
+                | grep -vE '^\s*//' \
+                | wc -l | tr -d ' ')
     fi
 
     if [ "$count" -gt "$ceiling" ]; then
