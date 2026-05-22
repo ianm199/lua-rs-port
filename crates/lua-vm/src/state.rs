@@ -478,7 +478,7 @@ impl LuaTableRefExt for GcRef<LuaTable> {
         Ok(())
     }
     fn next(&self, k: LuaValue) -> Result<Option<(LuaValue, LuaValue)>, LuaError> {
-        if !matches!(k, LuaValue::Nil) && matches!((**self).get(&k), LuaValue::Nil) {
+        if !matches!(k, LuaValue::Nil) && !(**self).contains_key(&k) {
             return Err(LuaError::runtime(format_args!("invalid key to 'next'")));
         }
         Ok((**self).next_pair(&k))

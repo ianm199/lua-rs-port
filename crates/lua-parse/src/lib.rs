@@ -787,11 +787,25 @@ fn cg_posfix_fold(
 
     cg_discharge_vars(fs, line, e1)?;
     cg_discharge_vars(fs, line, e2)?;
+    let pre_e1_k = e1.k;
+    let pre_e1_info = e1.u.info;
+    let pre_e2_k = e2.k;
+    let pre_e2_info = e2.u.info;
+    let pre_freereg = fs.freereg;
     let v2 = cg_exp_to_any_reg(fs, line, e2)?;
     let v1 = cg_exp_to_any_reg(fs, line, e1)?;
 
     let inst = lua_code::opcodes::Instruction::abck(opcode, 0, v1 as u32, v2 as u32, 0);
     let pc = emit_inst(fs, line, inst);
+    if e1.u.info >= fs.nactvar as i32 && e1.k == ExprKind::NonReloc
+        && e1.u.info != fs.freereg as i32 - 1 && e1.u.info != fs.freereg as i32 - 2
+    {
+        eprintln!(
+            "[posfix-debug] op={:?} pre_e1={:?}/{} pre_e2={:?}/{} pre_freereg={} v1={} v2={} e1={:?}/{} e2={:?}/{} freereg={} nactvar={} line={}",
+            op, pre_e1_k, pre_e1_info, pre_e2_k, pre_e2_info, pre_freereg,
+            v1, v2, e1.k, e1.u.info, e2.k, e2.u.info, fs.freereg, fs.nactvar, line
+        );
+    }
     cg_free_exps(fs, e1, e2);
     e1.u.info = pc;
     e1.k = ExprKind::Reloc;

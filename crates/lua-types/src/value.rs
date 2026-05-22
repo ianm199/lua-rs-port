@@ -166,23 +166,31 @@ impl LuaTable {
 
     /// Raw set without metamethod dispatch. nil keys are rejected (Lua
     /// semantics: `table[nil] = x` is an error; we silently ignore here
-    /// since callers should validate). Setting a value to nil removes it.
+    /// since callers should validate). Setting a value to nil clears the
+    /// slot's value but retains the key as a tombstone so that
+    /// `next(t, k)` callers iterating while erasing can still locate the
+    /// last-yielded key — matching C-Lua's hash-slot semantics.
     pub fn raw_set(&self, k: LuaValue, v: LuaValue) {
         if matches!(k, LuaValue::Nil) { return; }
         let mut entries = self.entries.borrow_mut();
         for i in 0..entries.len() {
             if lua_key_eq(&entries[i].0, &k) {
-                if matches!(v, LuaValue::Nil) {
-                    entries.swap_remove(i);
-                } else {
-                    entries[i].1 = v;
-                }
+                entries[i].1 = v;
                 return;
             }
         }
         if !matches!(v, LuaValue::Nil) {
             entries.push((k, v));
         }
+    }
+
+    /// Returns true if `k` is currently a slot in the entries table,
+    /// regardless of whether its value is nil. Used by `next` to
+    /// distinguish "key was here (now value=nil)" from "key was never
+    /// inserted" — only the latter is an "invalid key to 'next'" error.
+    pub fn contains_key(&self, k: &LuaValue) -> bool {
+        if matches!(k, LuaValue::Nil) { return false; }
+        self.entries.borrow().iter().any(|(ek, _)| lua_key_eq(ek, k))
     }
 
     pub fn metatable(&self) -> Option<GcRef<LuaTable>> {
@@ -211,17 +219,21 @@ impl LuaTable {
             entries.retain(|(ek, ev)| !entry_is_weakly_dead(ek, ev, mode));
         }
         let entries = self.entries.borrow();
-        if matches!(k, LuaValue::Nil) {
-            return entries.first().cloned();
+        let start = if matches!(k, LuaValue::Nil) {
+            0
+        } else {
+            let mut found = None;
+            for (i, (ek, _)) in entries.iter().enumerate() {
+                if lua_key_eq(ek, k) { found = Some(i + 1); break; }
+            }
+            found?
+        };
+        for (ek, ev) in entries[start..].iter() {
+            if !matches!(ev, LuaValue::Nil) {
+                return Some((ek.clone(), ev.clone()));
+            }
         }
-        let mut idx = None;
-        for (i, (ek, _)) in entries.iter().enumerate() {
-            if lua_key_eq(ek, k) { idx = Some(i); break; }
-        }
-        match idx {
-            Some(i) => entries.get(i + 1).cloned(),
-            None    => None,
-        }
+        None
     }
 }
 
