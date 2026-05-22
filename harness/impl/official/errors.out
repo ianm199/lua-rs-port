@@ -6,4 +6,4 @@ testing errors
 
  >>> testC not active: skipping tests for messages in C <<<
 
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:39: assertion failed!
+lua: pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:39: assertion failed!

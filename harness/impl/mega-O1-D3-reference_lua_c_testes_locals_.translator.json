@@ -1,0 +1,102 @@
+{
+  "type": "result",
+  "subtype": "error_max_budget_usd",
+  "duration_ms": 1019893,
+  "duration_api_ms": 989714,
+  "is_error": true,
+  "num_turns": 115,
+  "stop_reason": "end_turn",
+  "session_id": "c5541c2b-24cc-4cf0-a65b-065d4c04c1d0",
+  "total_cost_usd": 8.003488749999999,
+  "usage": {
+    "input_tokens": 119,
+    "cache_creation_input_tokens": 154339,
+    "cache_read_input_tokens": 10891447,
+    "output_tokens": 59670,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 154339,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 174,
+        "cache_read_input_tokens": 154134,
+        "cache_creation_input_tokens": 205,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 205
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 1497,
+      "outputTokens": 16,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.001577,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-7": {
+      "inputTokens": 120,
+      "outputTokens": 60492,
+      "cacheReadInputTokens": 11045786,
+      "cacheCreationInputTokens": 154579,
+      "webSearchRequests": 0,
+      "costUSD": 8.00191175,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_011r5VnqN2HTWhF9R9NeHoZZ",
+      "tool_input": {
+        "command": "cat > /tmp/test_close.lua << 'EOF'\nlocal function func2close (f)\n  return setmetatable({}, {__close = f})\nend\n\nlocal function foo (...)\n  local x123 <close> = func2close(function () error(\"@x123\") end)\nend\n\nlocal st, msg = xpcall(foo, debug.traceback)\nprint(\"st=\", st)\nprint(\"msg=\", msg)\nprint(\"match:\", string.match(msg, \"^[^ ]* @x123\"))\nprint(\"find close:\", string.find(msg, \"in metamethod 'close'\"))\nEOF\ntarget/debug/lua-rs \"$(cat /tmp/test_close.lua)\" 2>&1",
+        "description": "Test close handler error format"
+      }
+    },
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01UKAotKxsEiy3pWqohEbUCi",
+      "tool_input": {
+        "command": "target/debug/lua-rs \"$(cat /tmp/test_close.lua)\" 2>&1",
+        "description": "Run the close-error reproducer"
+      }
+    },
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_01HWmMdjKzQfZTbMMj2vSQ48",
+      "tool_input": {
+        "command": "target/debug/lua-rs \"$(< /tmp/test_close.lua)\" 2>&1",
+        "description": "Run reproducer (shell expand)"
+      }
+    },
+    {
+      "tool_name": "Bash",
+      "tool_use_id": "toolu_019hKcpiAqZCf5o1UU2BzEx7",
+      "tool_input": {
+        "command": "rm /tmp/test_err.lua 2>/dev/null; echo cleared",
+        "description": "Clear stale file"
+      }
+    }
+  ],
+  "fast_mode_state": "off",
+  "uuid": "41f8e86f-07d7-47ca-8f18-9a87d945217e",
+  "errors": [
+    "Reached maximum budget ($8)"
+  ]
+}

@@ -2,9 +2,5 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-'os.tmpname' file cannot be open; skipping file tests
-+
-testing date/time
-test done on 18/05/2026, at 18:02:34
-Lua 5.4
-[ok] execution completed, status=Ok
+testing i/o
+lua: pcall_k failed: Runtime: [string "_soft = true..."]:79: assertion failed!

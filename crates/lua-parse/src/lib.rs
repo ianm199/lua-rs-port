@@ -3649,30 +3649,73 @@ fn block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 
 /// C: static void check_conflict(LexState *ls, struct LHS_assign *lh, expdesc *v)
 /// Checks and fixes register/upvalue conflicts in multi-assignment.
+///
+/// When a non-indexed LHS variable `v` also appears as the table or key in an
+/// indexed LHS variable, the indexed entry must be redirected to a copy made
+/// before any assignments occur. For an upvalue table that becomes a register
+/// copy, the ExprKind is changed from IndexUp to IndexStr so cg_storevar emits
+/// SETFIELD (register table) instead of SETTABUP (upvalue table).
 fn check_conflict(
     ls: &mut LexState,
-    state: &mut LuaState,
+    _state: &mut LuaState,
     lh: &mut LhsAssign,
     v: &ExprDesc,
 ) -> Result<(), LuaError> {
     let extra = ls.fs.as_ref().unwrap().freereg as i32;
+    let line = ls.linenumber;
     let mut conflict = false;
-    // Iterate through the lh chain
-    let mut current = Some(lh as *mut LhsAssign);
-    // TODO(port): raw pointer iteration — borrow rules prevent clean chain traversal.
-    //   Phase B should restructure LhsAssign to use indices or a Vec instead of Box chain.
-    // For Phase A, use a TODO stub:
-    // TODO(port): check_conflict chain traversal needs unsafe or restructuring
+
+    conflict |= check_one_lhs_entry(&mut lh.v, v, extra);
+    let mut prev = lh.prev.as_deref_mut();
+    while let Some(node) = prev {
+        conflict |= check_one_lhs_entry(&mut node.v, v, extra);
+        prev = node.prev.as_deref_mut();
+    }
+
     if conflict {
-        // C: copy the conflicting value to register 'extra'
-        if v.k == ExprKind::Local {
-            // TODO(port): lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Move, extra, v.u.var_ridx as i32, 0)?;
+        let fs = ls.fs.as_mut().unwrap();
+        let inst = if v.k == ExprKind::Local {
+            lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::Move,
+                extra as u32, v.u.var_ridx as u32, 0, 0,
+            )
         } else {
-            // TODO(port): lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::GetUpval, extra, v.u.info, 0)?;
-        }
-        // TODO(port): lua_code::reserve_regs(ls.fs.as_mut().unwrap(), 1)?;
+            lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::GetUpVal,
+                extra as u32, v.u.info as u32, 0, 0,
+            )
+        };
+        emit_inst(fs, line, inst);
+        reserve_regs(fs, 1)?;
     }
     Ok(())
+}
+
+fn check_one_lhs_entry(entry: &mut ExprDesc, v: &ExprDesc, extra: i32) -> bool {
+    if !entry.k.is_indexed() {
+        return false;
+    }
+    let mut found = false;
+    if entry.k == ExprKind::IndexUp {
+        if v.k == ExprKind::UpVal && entry.u.ind_t == v.u.info as u8 {
+            found = true;
+            entry.k = ExprKind::IndexStr;
+            entry.u.ind_t = extra as u8;
+        }
+    } else {
+        if v.k == ExprKind::Local && entry.u.ind_t == v.u.var_ridx {
+            found = true;
+            entry.u.ind_t = extra as u8;
+        }
+        if entry.k == ExprKind::Indexed
+            && v.k == ExprKind::Local
+            && entry.u.ind_idx == v.u.var_ridx as i16
+        {
+            found = true;
+            entry.u.ind_idx = extra as i16;
+        }
+    }
+    found
 }
 
 /// C: static void restassign(LexState *ls, struct LHS_assign *lh, int nvars)

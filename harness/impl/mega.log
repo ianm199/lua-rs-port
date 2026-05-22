@@ -1097,3 +1097,16 @@
 [2026-05-18T18:02:50Z mega]   [O1.D3] DEBUG dispatch on file: reference/lua-c/testes/locals.lua [model=opus] [parallel]
 [2026-05-18T18:02:50Z mega]   skip prog (in SKIP_TESTS): reference/lua-c/testes/calls.lua
 [2026-05-18T18:02:50Z mega]   skip prog (in SKIP_TESTS): reference/lua-c/testes/nextvar.lua
+[2026-05-18T18:07:31Z mega]   [O1.D4] DEBUG dispatch on file: reference/lua-c/testes/errors.lua [model=sonnet] [parallel]
+[2026-05-18T18:19:53Z mega]   → committed 2441e59 (debug/reference/lua-c/testes/locals.lua )
+[2026-05-18T18:19:55Z mega]   [O1.D5] DEBUG dispatch on file: reference/lua-c/testes/attrib.lua [model=sonnet] [parallel]
+[2026-05-18T18:23:36Z mega]   → committed 66ccd3d (debug/reference/lua-c/testes/gc.lua )
+[2026-05-18T18:31:23Z mega] loaded 79 test programs (with expected outputs)
+[2026-05-18T18:31:23Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-18T18:31:23Z mega] mega-loop start. 79 test programs.
+[2026-05-18T18:31:23Z mega]   MAX_OUTER=20  MAX_PER_OUTER=25  PER_AGENT_BUDGET=$20.00  SESSION_BUDGET=$400.00
+[2026-05-18T18:31:23Z mega]   MODEL_DEFAULT=sonnet  MODEL_ESCALATE=opus
+[2026-05-18T18:31:23Z mega]   SKIP_TESTS=calls.lua,nextvar.lua,gengc.lua
+[2026-05-18T18:31:23Z mega]   HARD_TESTS=gc.lua,locals.lua
+[2026-05-18T18:31:23Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-18T18:31:23Z mega] ─── outer round 1 (spent: $0) ───

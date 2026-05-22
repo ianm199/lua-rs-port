@@ -605,3 +605,146 @@ must enforce *semantic* invariants explicitly, because the agents' physical-
 scope constraints alone produce silent semantic drift. Every nginx-grade
 governance gap in §10.5 reduces to "what semantic invariant am I letting
 the agents silently violate, and what registry + hook would catch it?"
+
+## 11. v4 harness — cost-aware model dispatch (2026-05-18 session)
+
+Added during the Phase-D-2 / frontier-mop-up window, with the harness
+already at v3 (family-aware dispatch + surface-scan; cost-per-program
+~$0.30 from ~$10/program at v1). v4's contribution is **cost-aware
+model selection at dispatch time** plus tighter stuck-escalation. Not
+revolutionary; just additional knobs that compose with v3.
+
+### 11.1 The four new dispatch knobs
+
+All live in `harness/mega_loop.sh`. Each is an env var with a sensible
+default; overrideable per-run.
+
+```
+MODEL_DEFAULT      sonnet           // first attempt for any failing test
+MODEL_ESCALATE     opus             // used when stuck, or for HARD_TESTS
+SKIP_TESTS         <list>           // never dispatched; Phase-E / heavy
+                                    // work where no agent has a path
+HARD_TESTS         <list>           // start on MODEL_ESCALATE directly,
+                                    // skip the Sonnet-first attempt
+```
+
+The dispatch path threads `--model <alias>` into every `claude -p`
+invocation. The stuck-escalation logic (per-test parallel array
+`STUCK_COUNT_VAL`) increments when a test's error signature matches the
+prior round; on first stuck → escalate to MODEL_ESCALATE; on second
+stuck → permanent skip. Reset to 0 if signature changes (= progress).
+
+### 11.2 Why this matters
+
+The v3 family-aware dispatch dropped cost-per-program by ~30× by
+amortizing one agent across siblings. v4's contribution is smaller in
+magnitude (~2-3× on bounded tests, comparable on hard tests) but is
+the difference between "dispatch tracks the work" and "dispatch wastes
+half its budget on Sonnet attempts at problems Sonnet can't crack."
+
+Concretely on the current frontier:
+- `strings.lua` (printf edges): Sonnet, $0.74, 4:37, 2 real bugs fixed.
+- `gc.lua` (ephemerons): Opus directly. Sonnet would have produced a
+  superficial patch that broke the v/kv blocks; Opus does the design
+  work to extend the post-mark hook into a fixed-point iteration.
+- `calls.lua`, `nextvar.lua` (coroutines): `SKIP_TESTS`. No agent has
+  a realistic path to Phase E in one round.
+
+### 11.3 What v4 made obvious about v3
+
+A few problems were latent in v3 but only became visible once
+dispatch was cost-aware:
+
+1. **Parallel auto-commit cross-contamination.** Each agent has a Stop
+   hook chain that commits if gating passes. When 3 agents run in
+   parallel, agent A's Stop commits both A's and B's in-progress
+   edits. Build hasn't broken in practice (the gating hooks reject
+   inconsistent states), but commit attribution is lost — and that
+   makes the §10.4 "rollback story" worse: a `git revert <commit>`
+   undoes more than one agent's work.
+
+2. **Same-file race.** Two agents both editing `crates/lua-vm/src/debug.rs`
+   isn't blocked, just rate-limited by `PARALLEL_AGENTS`. With v4's
+   tighter model assignment we route differently-shaped agents at the
+   same file more often (debug-tagging fix from Sonnet + error-message
+   threading from Opus). Same-file work needs an explicit per-file
+   lock; `commit_agent_changes` already has an mkdir-lock for the
+   commit step, but the *edit* phase is unprotected.
+
+3. **Per-test budget is missing.** `PER_AGENT_BUDGET` caps any one
+   invocation; `SESSION_BUDGET` caps the whole run. Nothing tracks
+   cumulative-spend-per-test. A test that takes 4 Opus rounds at $5
+   each before stuck-detect notices burns $20 silently. Want
+   `MAX_PER_TEST_SPEND` as a third axis.
+
+4. **Stuck signal is coarse.** Error-signature normalization strips
+   line numbers and chunk-id wrappers — good for "still failing the
+   same way" — but lumps "tried fix A, broke the same assertion in
+   a different place" with "tried fix A, didn't change anything." A
+   *progress* signal should include diff-volume per round: if agent
+   X edited 200 lines and the error signature is the same, that's
+   real but failed work, not stuck. Currently both look identical.
+
+5. **Oscillation undetected.** Pass count cycling 71 → 73 → 71 → 73
+   across rounds isn't caught — `PREV_PASS_COUNT` only compares
+   round N vs N-1, regression-aborts on strict decrease, ignores
+   2-round windows. Real signal: stable rolling-window average.
+
+### 11.4 The four knobs as primitives for v5
+
+If the harness becomes an open-source tool (per §5 / §8), the v4 knobs
+generalize as **per-test, per-cost-axis policy lookup**:
+
+```
+policy[test] = {
+    model_first:     sonnet | opus
+    model_escalate:  sonnet | opus | none
+    budget_total:    $X      // cumulative across rounds
+    budget_per_call: $Y
+    max_attempts:    N
+    skip_after:      <stuck-condition>
+}
+```
+
+Today's `SKIP_TESTS` / `HARD_TESTS` / `MODEL_DEFAULT` / `MODEL_ESCALATE`
+are coarse shortcuts that collapse this into 2-of-the-axes. v5's
+clean form is a TSV (`harness/dispatch-policy.tsv`) read at start of
+each outer round, joining test-name → policy fields. Same pattern as
+the v3 type-vocabulary registry.
+
+### 11.5 Concrete additions for v5 (priority-ordered)
+
+| Item | Lines | Impact |
+|---|---|---|
+| Per-file edit-lock in `dispatch_debug` (mkdir-lock on `crates/<crate>/<path>`) | ~20 | Eliminates same-file races; doubles safe `PARALLEL_AGENTS`. |
+| Per-test cumulative budget tracker (parallel array, increment from `cost` jq) | ~25 | Catches the "$20 silent burn" failure mode. |
+| Diff-volume in stuck signal: `git diff HEAD~1 -- crates/*.rs | wc -l` per round | ~10 | Distinguishes "tried but failed" from "didn't try." |
+| Rolling-window pass-count comparison (window=3) | ~15 | Catches oscillation. |
+| `dispatch-policy.tsv` loader → replaces the 4 env knobs with one table | ~40 | One-line "this test needs Opus + $10 cap + no escalation" entries. |
+| Per-agent worktree isolation in `claude -p` (not just `Agent` tool) | ~30 | Real cross-agent independence; no commit cross-contamination. |
+
+Total: ~140 lines on top of the existing 700-line `mega_loop.sh`. The
+worktree-isolation item is the heaviest because it requires teaching
+the commit machinery to merge from per-agent branches; everything else
+is local additions to the existing dispatch loop.
+
+### 11.6 Generalization potential (revisited from §5)
+
+§5.1 (generic harness skeleton) called out scanner / dispatcher / merger
+as the three pillars. v4 sharpens the dispatcher into:
+
+```
+dispatcher = {
+    select-failing-tests(scan-output) -> Vec<test>
+    classify(test) -> policy             // §11.4
+    dispatch(test, policy) -> agent-handle
+    monitor(handle) -> { result, cost, diff-volume }
+    update-stuck-state(test, signature, diff-volume)
+}
+```
+
+Each function is replaceable per project; the policy file is the
+project-specific configuration. This is closer to the "Tier 1: generic
+harness skeleton" §5 sketched, and the gap from today's mega_loop to
+that abstraction is the §11.5 list.
+

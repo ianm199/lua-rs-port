@@ -4,4 +4,4 @@
 [4/4] Executing chunk...
 testing strings and string library
 testing 'format %a %A'
-lua: pcall_k failed: Runtime: [string "_soft = true..."]:358: assertion failed!
+lua: pcall_k failed: Runtime: [string "_soft = true..."]:23: assertion failed!

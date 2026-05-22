@@ -1,15 +1,15 @@
 warning: unused import: `std::rc::Rc`
-   --> crates/lua-types/src/value.rs:316:9
+   --> crates/lua-types/src/value.rs:342:9
     |
-316 |     use std::rc::Rc;
+342 |     use std::rc::Rc;
     |         ^^^^^^^^^^^
     |
     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 warning: function `same_rc` is never used
-   --> crates/lua-types/src/value.rs:315:4
+   --> crates/lua-types/src/value.rs:341:4
     |
-315 | fn same_rc(a: &LuaValue, b: &LuaValue) -> bool {
+341 | fn same_rc(a: &LuaValue, b: &LuaValue) -> bool {
     |    ^^^^^^^
     |
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
@@ -157,9 +157,9 @@ warning: unused variable: `line`
     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_line`
 
 warning: unused variable: `state`
-    --> crates/lua-vm/src/do_.rs:1587:5
+    --> crates/lua-vm/src/do_.rs:1595:5
      |
-1587 |     state: &mut LuaState,
+1595 |     state: &mut LuaState,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
@@ -185,9 +185,9 @@ warning: variable does not need to be mutable
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> crates/lua-vm/src/state.rs:2921:9
+    --> crates/lua-vm/src/state.rs:2971:9
      |
-2921 |     let mut status = if status == LuaStatus::Yield as i32 {
+2971 |     let mut status = if status == LuaStatus::Yield as i32 {
      |         ----^^^^^^
      |         |
      |         help: remove this `mut`
@@ -560,21 +560,21 @@ warning: constant `LUA_EXTRASPACE` is never used
     |       ^^^^^^^^^^^^^^
 
 warning: function `inc_c_stack` is never used
-    --> crates/lua-vm/src/state.rs:2510:15
+    --> crates/lua-vm/src/state.rs:2560:15
      |
-2510 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
+2560 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^^^
 
 warning: function `free_thread` is never used
-    --> crates/lua-vm/src/state.rs:2861:15
+    --> crates/lua-vm/src/state.rs:2911:15
      |
-2861 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
+2911 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
      |               ^^^^^^^^^^^
 
 warning: function `warn_error` is never used
-    --> crates/lua-vm/src/state.rs:3258:15
+    --> crates/lua-vm/src/state.rs:3310:15
      |
-3258 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
+3310 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
      |               ^^^^^^^^^^
 
 warning: type alias `LocalGcRef` is never used
@@ -690,9 +690,9 @@ help: refactor your code, or use `std::ptr::fn_addr_eq` to suppress the lint
      |
 
 warning: structure field `nCcalls` should have a snake case name
-    --> crates/lua-vm/src/state.rs:1049:9
+    --> crates/lua-vm/src/state.rs:1079:9
      |
-1049 |     pub nCcalls: u32,
+1079 |     pub nCcalls: u32,
      |         ^^^^^^^ help: convert the identifier to snake case: `n_ccalls`
      |
      = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
@@ -1647,28 +1647,28 @@ warning: unused imports: `CompareOp`, `LuaDebug`, `lua_CFunction`, and `upvalue_
   |                                                         ^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^
 
 warning: unreachable statement
-   --> crates/lua-stdlib/src/io_lib.rs:680:5
+   --> crates/lua-stdlib/src/io_lib.rs:683:5
     |
-679 |       let p: &mut LStream = todo!("TODO(port): extract LStream from registry userdata");
+682 |       let p: &mut LStream = todo!("TODO(port): extract LStream from registry userdata");
     |                             ----------------------------------------------------------- any code following this expression is unreachable
-680 | /     if p.is_closed() {
-681 | |         return Err(LuaError::runtime(format_args!(
-682 | |             "default {} file is closed",
-683 | |             label.escape_ascii()
-684 | |         )));
-685 | |     }
+683 | /     if p.is_closed() {
+684 | |         return Err(LuaError::runtime(format_args!(
+685 | |             "default {} file is closed",
+686 | |             label.escape_ascii()
+687 | |         )));
+688 | |     }
     | |_____^ unreachable statement
     |
     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: unreachable statement
-    --> crates/lua-stdlib/src/io_lib.rs:1283:5
+    --> crates/lua-stdlib/src/io_lib.rs:1313:5
      |
-1282 |       let is_closed: bool = todo!("TODO(port): check LStream::is_closed() from upvalue 1");
+1312 |       let is_closed: bool = todo!("TODO(port): check LStream::is_closed() from upvalue 1");
      |                             -------------------------------------------------------------- any code following this expression is unreachable
-1283 | /     if is_closed {
-1284 | |         return Err(LuaError::runtime(format_args!("file is already closed")));
-1285 | |     }
+1313 | /     if is_closed {
+1314 | |         return Err(LuaError::runtime(format_args!("file is already closed")));
+1315 | |     }
      | |_____^ unreachable statement
 
 warning: variable does not need to be mutable
@@ -1698,84 +1698,78 @@ warning: variable does not need to be mutable
      |         help: remove this `mut`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/string_lib.rs:2207:14
+    --> crates/lua-stdlib/src/string_lib.rs:2220:14
      |
-2207 | fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_signed: bool) -> Result<i64, LuaError> {
+2220 | fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_signed: bool) -> Result<i64, LuaError> {
      |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
-warning: unused variable: `mode`
-   --> crates/lua-stdlib/src/io_lib.rs:454:50
-    |
-454 | fn opencheck(state: &mut LuaState, fname: &[u8], mode: &[u8]) -> Result<(), LuaError> {
-    |                                                  ^^^^ help: if this is intentional, prefix it with an underscore: `_mode`
-
 warning: unused variable: `label`
-   --> crates/lua-stdlib/src/io_lib.rs:678:9
+   --> crates/lua-stdlib/src/io_lib.rs:681:9
     |
-678 |     let label = &key[IO_PREFIX_LEN..]; // strip "_IO_" for the error message
+681 |     let label = &key[IO_PREFIX_LEN..]; // strip "_IO_" for the error message
     |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
 
 warning: unused variable: `p`
-   --> crates/lua-stdlib/src/io_lib.rs:679:9
+   --> crates/lua-stdlib/src/io_lib.rs:682:9
     |
-679 |     let p: &mut LStream = todo!("TODO(port): extract LStream from registry userdata");
+682 |     let p: &mut LStream = todo!("TODO(port): extract LStream from registry userdata");
     |         ^ help: if this is intentional, prefix it with an underscore: `_p`
 
 warning: value assigned to `c` is never read
-   --> crates/lua-stdlib/src/io_lib.rs:814:22
+   --> crates/lua-stdlib/src/io_lib.rs:817:22
     |
-814 |     let mut c: i32 = EOF_SENTINEL;
+817 |     let mut c: i32 = EOF_SENTINEL;
     |                      ^^^^^^^^^^^^
     |
     = help: maybe it is overwritten before being read?
     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `start`
-   --> crates/lua-stdlib/src/io_lib.rs:852:13
+   --> crates/lua-stdlib/src/io_lib.rs:855:13
     |
-852 |         let start = buf.len();
+855 |         let start = buf.len();
     |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_start`
 
 warning: unused variable: `state`
-   --> crates/lua-stdlib/src/io_lib.rs:981:16
+   --> crates/lua-stdlib/src/io_lib.rs:984:16
     |
-981 | pub fn io_read(state: &mut LuaState) -> Result<usize, LuaError> {
+984 | pub fn io_read(state: &mut LuaState) -> Result<usize, LuaError> {
     |                ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-   --> crates/lua-stdlib/src/io_lib.rs:991:15
+   --> crates/lua-stdlib/src/io_lib.rs:994:15
     |
-991 | pub fn f_read(state: &mut LuaState) -> Result<usize, LuaError> {
+994 | pub fn f_read(state: &mut LuaState) -> Result<usize, LuaError> {
     |               ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/io_lib.rs:1100:16
+    --> crates/lua-stdlib/src/io_lib.rs:1130:16
      |
-1100 | pub fn f_write(state: &mut LuaState) -> Result<usize, LuaError> {
+1130 | pub fn f_write(state: &mut LuaState) -> Result<usize, LuaError> {
      |                ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/io_lib.rs:1168:17
+    --> crates/lua-stdlib/src/io_lib.rs:1198:17
      |
-1168 | pub fn io_flush(state: &mut LuaState) -> Result<usize, LuaError> {
+1198 | pub fn io_flush(state: &mut LuaState) -> Result<usize, LuaError> {
      |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/io_lib.rs:1178:16
+    --> crates/lua-stdlib/src/io_lib.rs:1208:16
      |
-1178 | pub fn f_flush(state: &mut LuaState) -> Result<usize, LuaError> {
+1208 | pub fn f_flush(state: &mut LuaState) -> Result<usize, LuaError> {
      |                ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `n`
-    --> crates/lua-stdlib/src/io_lib.rs:1275:9
+    --> crates/lua-stdlib/src/io_lib.rs:1305:9
      |
-1275 |     let n = match state.value_at(crate::state_stub::upvalue_index(2)) {
+1305 |     let n = match state.value_at(crate::state_stub::upvalue_index(2)) {
      |         ^ help: if this is intentional, prefix it with an underscore: `_n`
 
 warning: unused variable: `is_closed`
-    --> crates/lua-stdlib/src/io_lib.rs:1282:9
+    --> crates/lua-stdlib/src/io_lib.rs:1312:9
      |
-1282 |     let is_closed: bool = todo!("TODO(port): check LStream::is_closed() from upvalue 1");
+1312 |     let is_closed: bool = todo!("TODO(port): check LStream::is_closed() from upvalue 1");
      |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_closed`
 
 warning: unused variable: `state`
@@ -1785,21 +1779,21 @@ warning: unused variable: `state`
     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `buf`
-   --> crates/lua-stdlib/src/auxlib.rs:849:17
+   --> crates/lua-stdlib/src/auxlib.rs:867:17
     |
-849 | pub fn add_size(buf: &mut LuaBuffer, sz: usize) {
+867 | pub fn add_size(buf: &mut LuaBuffer, sz: usize) {
     |                 ^^^ help: if this is intentional, prefix it with an underscore: `_buf`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/auxlib.rs:1033:5
+    --> crates/lua-stdlib/src/auxlib.rs:1051:5
      |
-1033 |     state: &mut LuaState,
+1051 |     state: &mut LuaState,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-stdlib/src/auxlib.rs:1351:14
+    --> crates/lua-stdlib/src/auxlib.rs:1369:14
      |
-1351 | fn warn_cont(state: &mut LuaState, message: &[u8], tocont: bool) -> Result<(), LuaError> {
+1369 | fn warn_cont(state: &mut LuaState, message: &[u8], tocont: bool) -> Result<(), LuaError> {
      |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: variant `CountB` is never constructed
@@ -1869,97 +1863,97 @@ warning: constant `L_MAX_LEN_NUM` is never used
    |       ^^^^^^^^^^^^^
 
 warning: field `kind` is never read
-   --> crates/lua-stdlib/src/io_lib.rs:176:5
+   --> crates/lua-stdlib/src/io_lib.rs:152:5
     |
-175 | struct StdStreamHandle {
+151 | struct StdStreamHandle {
     |        --------------- field in this struct
-176 |     kind: StdFileKind,
+152 |     kind: StdFileKind,
     |     ^^^^
 
 warning: struct `ReadNumState` is never constructed
-   --> crates/lua-stdlib/src/io_lib.rs:206:8
+   --> crates/lua-stdlib/src/io_lib.rs:185:8
     |
-206 | struct ReadNumState {
+185 | struct ReadNumState {
     |        ^^^^^^^^^^^^
 
 warning: associated items `new`, `advance`, `try2`, `read_digits`, and `as_bytes` are never used
-   --> crates/lua-stdlib/src/io_lib.rs:216:8
+   --> crates/lua-stdlib/src/io_lib.rs:195:8
     |
-215 | impl ReadNumState {
+194 | impl ReadNumState {
     | ----------------- associated items in this implementation
-216 |     fn new(first_byte: i32) -> Self {
+195 |     fn new(first_byte: i32) -> Self {
     |        ^^^
 ...
-226 |     fn advance(&mut self, file: &mut dyn LuaFileOps) -> bool {
+205 |     fn advance(&mut self, file: &mut dyn LuaFileHandle) -> bool {
     |        ^^^^^^^
 ...
-239 |     fn try2(&mut self, file: &mut dyn LuaFileOps, set: [u8; 2]) -> bool {
+218 |     fn try2(&mut self, file: &mut dyn LuaFileHandle, set: [u8; 2]) -> bool {
     |        ^^^^
 ...
-249 |     fn read_digits(&mut self, file: &mut dyn LuaFileOps, hex: bool) -> usize {
+228 |     fn read_digits(&mut self, file: &mut dyn LuaFileHandle, hex: bool) -> usize {
     |        ^^^^^^^^^^^
 ...
-270 |     fn as_bytes(&self) -> &[u8] {
+249 |     fn as_bytes(&self) -> &[u8] {
     |        ^^^^^^^^
 
 warning: function `exec_result` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:380:4
+   --> crates/lua-stdlib/src/io_lib.rs:359:4
     |
-380 | fn exec_result(state: &mut LuaState, stat: i32) -> Result<usize, LuaError> {
+359 | fn exec_result(state: &mut LuaState, stat: i32) -> Result<usize, LuaError> {
     |    ^^^^^^^^^^^
 
 warning: function `io_pclose` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:493:4
+   --> crates/lua-stdlib/src/io_lib.rs:478:4
     |
-493 | fn io_pclose(state: &mut LuaState) -> Result<usize, LuaError> {
+478 | fn io_pclose(state: &mut LuaState) -> Result<usize, LuaError> {
     |    ^^^^^^^^^
 
 warning: function `get_io_file` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:669:4
+   --> crates/lua-stdlib/src/io_lib.rs:672:4
     |
-669 | fn get_io_file<'a>(
+672 | fn get_io_file<'a>(
     |    ^^^^^^^^^^^
 
 warning: function `read_number` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:725:4
+   --> crates/lua-stdlib/src/io_lib.rs:728:4
     |
-725 | fn read_number(
+728 | fn read_number(
     |    ^^^^^^^^^^^
 
 warning: function `test_eof` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:790:4
+   --> crates/lua-stdlib/src/io_lib.rs:793:4
     |
-790 | fn test_eof(
+793 | fn test_eof(
     |    ^^^^^^^^
 
 warning: function `read_line` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:808:4
+   --> crates/lua-stdlib/src/io_lib.rs:811:4
     |
-808 | fn read_line(
+811 | fn read_line(
     |    ^^^^^^^^^
 
 warning: function `read_all` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:848:4
+   --> crates/lua-stdlib/src/io_lib.rs:851:4
     |
-848 | fn read_all(state: &mut LuaState, file: &mut dyn LuaFileOps) -> Result<(), LuaError> {
+851 | fn read_all(state: &mut LuaState, file: &mut dyn LuaFileHandle) -> Result<(), LuaError> {
     |    ^^^^^^^^
 
 warning: function `read_chars` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:872:4
+   --> crates/lua-stdlib/src/io_lib.rs:875:4
     |
-872 | fn read_chars(
+875 | fn read_chars(
     |    ^^^^^^^^^^
 
 warning: function `g_read` is never used
-   --> crates/lua-stdlib/src/io_lib.rs:896:4
+   --> crates/lua-stdlib/src/io_lib.rs:899:4
     |
-896 | fn g_read(
+899 | fn g_read(
     |    ^^^^^^
 
 warning: function `g_write` is never used
-    --> crates/lua-stdlib/src/io_lib.rs:1004:4
+    --> crates/lua-stdlib/src/io_lib.rs:1007:4
      |
-1004 | fn g_write(
+1007 | fn g_write(
      |    ^^^^^^^
 
 warning: constant `HOOKNAMES` is never used
@@ -1987,9 +1981,9 @@ warning: constant `LUA_MINSTACK` is never used
    |       ^^^^^^^^^^^^
 
 warning: function `get_f_reader` is never used
-    --> crates/lua-stdlib/src/auxlib.rs:1015:4
+    --> crates/lua-stdlib/src/auxlib.rs:1033:4
      |
-1015 | fn get_f_reader() -> impl FnMut() -> Option<Vec<u8>> {
+1033 | fn get_f_reader() -> impl FnMut() -> Option<Vec<u8>> {
      |    ^^^^^^^^^^^^
 
 warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
@@ -2154,243 +2148,243 @@ help: use `let _ = ...` to ignore the resulting value
     |             +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:361:13
+   --> crates/lua-stdlib/src/io_lib.rs:340:13
     |
-361 |             state.push_string(&s);
+340 |             state.push_string(&s);
     |             ^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-361 |             let _ = state.push_string(&s);
+340 |             let _ = state.push_string(&s);
     |             +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:364:13
+   --> crates/lua-stdlib/src/io_lib.rs:343:13
     |
-364 |             state.push_string(msg.as_bytes());
+343 |             state.push_string(msg.as_bytes());
     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-364 |             let _ = state.push_string(msg.as_bytes());
+343 |             let _ = state.push_string(msg.as_bytes());
     |             +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:387:9
+   --> crates/lua-stdlib/src/io_lib.rs:366:9
     |
-387 |         state.push_string(b"exit");
+366 |         state.push_string(b"exit");
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-387 |         let _ = state.push_string(b"exit");
+366 |         let _ = state.push_string(b"exit");
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:508:5
+   --> crates/lua-stdlib/src/io_lib.rs:493:5
     |
-508 |     state.push_string(b"cannot close standard file");
+493 |     state.push_string(b"cannot close standard file");
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-508 |     let _ = state.push_string(b"cannot close standard file");
+493 |     let _ = state.push_string(b"cannot close standard file");
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:543:17
+   --> crates/lua-stdlib/src/io_lib.rs:528:17
     |
-543 |                 state.push_string(b"closed file");
+528 |                 state.push_string(b"closed file");
     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-543 |                 let _ = state.push_string(b"closed file");
+528 |                 let _ = state.push_string(b"closed file");
     |                 +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:545:17
+   --> crates/lua-stdlib/src/io_lib.rs:530:17
     |
-545 |                 state.push_string(b"file");
+530 |                 state.push_string(b"file");
     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-545 |                 let _ = state.push_string(b"file");
+530 |                 let _ = state.push_string(b"file");
     |                 +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:561:9
+   --> crates/lua-stdlib/src/io_lib.rs:546:9
     |
-561 |         state.push_string(b"file (closed)");
+546 |         state.push_string(b"file (closed)");
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-561 |         let _ = state.push_string(b"file (closed)");
+546 |         let _ = state.push_string(b"file (closed)");
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:565:9
+   --> crates/lua-stdlib/src/io_lib.rs:550:9
     |
-565 |         state.push_string(b"file (0x?)");
+550 |         state.push_string(b"file (0x?)");
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-565 |         let _ = state.push_string(b"file (0x?)");
+550 |         let _ = state.push_string(b"file (0x?)");
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:585:9
+   --> crates/lua-stdlib/src/io_lib.rs:570:9
     |
-585 |         state.replace(1);
+570 |         state.replace(1);
     |         ^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-585 |         let _ = state.replace(1);
+570 |         let _ = state.replace(1);
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:701:13
+   --> crates/lua-stdlib/src/io_lib.rs:704:13
     |
-701 |             state.push_value_at(1);
+704 |             state.push_value_at(1);
     |             ^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-701 |             let _ = state.push_value_at(1);
+704 |             let _ = state.push_value_at(1);
     |             +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:799:5
+   --> crates/lua-stdlib/src/io_lib.rs:802:5
     |
-799 |     state.push_string(b"");
+802 |     state.push_string(b"");
     |     ^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-799 |     let _ = state.push_string(b"");
+802 |     let _ = state.push_string(b"");
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:839:5
+   --> crates/lua-stdlib/src/io_lib.rs:842:5
     |
-839 |     state.push_string(&buf);
+842 |     state.push_string(&buf);
     |     ^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-839 |     let _ = state.push_string(&buf);
+842 |     let _ = state.push_string(&buf);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:866:5
+   --> crates/lua-stdlib/src/io_lib.rs:869:5
     |
-866 |     state.push_string(&buf);
+869 |     state.push_string(&buf);
     |     ^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-866 |     let _ = state.push_string(&buf);
+869 |     let _ = state.push_string(&buf);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/io_lib.rs:887:5
+   --> crates/lua-stdlib/src/io_lib.rs:890:5
     |
-887 |     state.push_string(&buf);
+890 |     state.push_string(&buf);
     |     ^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-887 |     let _ = state.push_string(&buf);
+890 |     let _ = state.push_string(&buf);
     |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1208:5
+    --> crates/lua-stdlib/src/io_lib.rs:1238:5
      |
-1208 |     state.push_value_at(1);
+1238 |     state.push_value_at(1);
      |     ^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1208 |     let _ = state.push_value_at(1);
+1238 |     let _ = state.push_value_at(1);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1214:5
+    --> crates/lua-stdlib/src/io_lib.rs:1244:5
      |
-1214 |     state.rotate(2, 3);
+1244 |     state.rotate(2, 3);
      |     ^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1214 |     let _ = state.rotate(2, 3);
+1244 |     let _ = state.rotate(2, 3);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1238:9
+    --> crates/lua-stdlib/src/io_lib.rs:1268:9
      |
-1238 |         state.replace(1);
+1268 |         state.replace(1);
      |         ^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1238 |         let _ = state.replace(1);
+1268 |         let _ = state.replace(1);
      |         +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1257:9
+    --> crates/lua-stdlib/src/io_lib.rs:1287:9
      |
-1257 |         state.push_value_at(1);    // file as to-be-closed variable (4th result)
+1287 |         state.push_value_at(1);    // file as to-be-closed variable (4th result)
      |         ^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1257 |         let _ = state.push_value_at(1);    // file as to-be-closed variable (4th result)
+1287 |         let _ = state.push_value_at(1);    // file as to-be-closed variable (4th result)
      |         +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1330:9
+    --> crates/lua-stdlib/src/io_lib.rs:1360:9
      |
-1330 |         state.push_upvalue(1);
+1360 |         state.push_upvalue(1);
      |         ^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1330 |         let _ = state.push_upvalue(1);
+1360 |         let _ = state.push_upvalue(1);
      |         +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/io_lib.rs:1372:9
+    --> crates/lua-stdlib/src/io_lib.rs:1402:9
      |
-1372 |         state.push_value_at(-1);
+1402 |         state.push_value_at(-1);
      |         ^^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1372 |         let _ = state.push_value_at(-1);
+1402 |         let _ = state.push_value_at(-1);
      |         +++++++
 
 warning: unused `Result` that must be used
@@ -2514,219 +2508,219 @@ help: use `let _ = ...` to ignore the resulting value
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:204:5
+   --> crates/lua-stdlib/src/loadlib.rs:206:5
     |
-204 |     state.get_field_registry(b"LUA_NOENV");
+206 |     state.get_field_registry(b"LUA_NOENV");
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-204 |     let _ = state.get_field_registry(b"LUA_NOENV");
-    |     +++++++
-
-warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:309:5
-    |
-309 |     state.get_field_registry(CLIBS);
-    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-    = note: this `Result` may be an `Err` variant, which should be handled
-help: use `let _ = ...` to ignore the resulting value
-    |
-309 |     let _ = state.get_field_registry(CLIBS);
+206 |     let _ = state.get_field_registry(b"LUA_NOENV");
     |     +++++++
 
 warning: unused `Result` that must be used
    --> crates/lua-stdlib/src/loadlib.rs:311:5
     |
-311 |     state.get_field(-1, path);
-    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-    = note: this `Result` may be an `Err` variant, which should be handled
-help: use `let _ = ...` to ignore the resulting value
-    |
-311 |     let _ = state.get_field(-1, path);
-    |     +++++++
-
-warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:327:5
-    |
-327 |     state.get_field_registry(CLIBS);
+311 |     state.get_field_registry(CLIBS);
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-327 |     let _ = state.get_field_registry(CLIBS);
+311 |     let _ = state.get_field_registry(CLIBS);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:333:5
+   --> crates/lua-stdlib/src/loadlib.rs:313:5
     |
-333 |     state.push_value(-1);
+313 |     state.get_field(-1, path);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+313 |     let _ = state.get_field(-1, path);
+    |     +++++++
+
+warning: unused `Result` that must be used
+   --> crates/lua-stdlib/src/loadlib.rs:329:5
+    |
+329 |     state.get_field_registry(CLIBS);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+329 |     let _ = state.get_field_registry(CLIBS);
+    |     +++++++
+
+warning: unused `Result` that must be used
+   --> crates/lua-stdlib/src/loadlib.rs:335:5
+    |
+335 |     state.push_value(-1);
     |     ^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-333 |     let _ = state.push_value(-1);
+335 |     let _ = state.push_value(-1);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:435:5
+   --> crates/lua-stdlib/src/loadlib.rs:437:5
     |
-435 |     state.insert(-2);
+437 |     state.insert(-2);
     |     ^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-435 |     let _ = state.insert(-2);
+437 |     let _ = state.insert(-2);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:601:5
+   --> crates/lua-stdlib/src/loadlib.rs:603:5
     |
-601 |     state.insert(-2);
+603 |     state.insert(-2);
     |     ^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-601 |     let _ = state.insert(-2);
+603 |     let _ = state.insert(-2);
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:848:5
+   --> crates/lua-stdlib/src/loadlib.rs:850:5
     |
-848 |     state.get_field_registry(b"_PRELOAD");
+850 |     state.get_field_registry(b"_PRELOAD");
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-848 |     let _ = state.get_field_registry(b"_PRELOAD");
+850 |     let _ = state.get_field_registry(b"_PRELOAD");
     |     +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/loadlib.rs:999:5
-    |
-999 |     state.rotate(-2, 1);
-    |     ^^^^^^^^^^^^^^^^^^^
-    |
-    = note: this `Result` may be an `Err` variant, which should be handled
-help: use `let _ = ...` to ignore the resulting value
-    |
-999 |     let _ = state.rotate(-2, 1);
-    |     +++++++
-
-warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1002:5
+    --> crates/lua-stdlib/src/loadlib.rs:1001:5
      |
-1002 |     state.push_value(1);
+1001 |     state.rotate(-2, 1);
      |     ^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1002 |     let _ = state.push_value(1);
+1001 |     let _ = state.rotate(-2, 1);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1007:5
+    --> crates/lua-stdlib/src/loadlib.rs:1004:5
      |
-1007 |     state.push_value(-3);
+1004 |     state.push_value(1);
+     |     ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1004 |     let _ = state.push_value(1);
+     |     +++++++
+
+warning: unused `Result` that must be used
+    --> crates/lua-stdlib/src/loadlib.rs:1009:5
+     |
+1009 |     state.push_value(-3);
      |     ^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1007 |     let _ = state.push_value(-3);
+1009 |     let _ = state.push_value(-3);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1025:9
+    --> crates/lua-stdlib/src/loadlib.rs:1027:9
      |
-1025 |         state.copy_value(-1, -2);
+1027 |         state.copy_value(-1, -2);
      |         ^^^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1025 |         let _ = state.copy_value(-1, -2);
+1027 |         let _ = state.copy_value(-1, -2);
      |         +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1030:5
+    --> crates/lua-stdlib/src/loadlib.rs:1032:5
      |
-1030 |     state.rotate(-2, 1);
+1032 |     state.rotate(-2, 1);
      |     ^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1030 |     let _ = state.rotate(-2, 1);
+1032 |     let _ = state.rotate(-2, 1);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1053:5
+    --> crates/lua-stdlib/src/loadlib.rs:1055:5
      |
-1053 |     state.create_table(searchers.len() as i32, 0);
+1055 |     state.create_table(searchers.len() as i32, 0);
      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1053 |     let _ = state.create_table(searchers.len() as i32, 0);
+1055 |     let _ = state.create_table(searchers.len() as i32, 0);
      |     +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1058:9
+    --> crates/lua-stdlib/src/loadlib.rs:1060:9
      |
-1058 |         state.push_value(-2);
+1060 |         state.push_value(-2);
      |         ^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1058 |         let _ = state.push_value(-2);
+1060 |         let _ = state.push_value(-2);
      |         +++++++
 
 warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1081:5
+    --> crates/lua-stdlib/src/loadlib.rs:1083:5
      |
-1081 |     state.create_table(0, 1);
+1083 |     state.create_table(0, 1);
      |     ^^^^^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1081 |     let _ = state.create_table(0, 1);
-     |     +++++++
-
-warning: unused `Result` that must be used
-    --> crates/lua-stdlib/src/loadlib.rs:1148:5
-     |
-1148 |     state.push_globals();
-     |     ^^^^^^^^^^^^^^^^^^^^
-     |
-     = note: this `Result` may be an `Err` variant, which should be handled
-help: use `let _ = ...` to ignore the resulting value
-     |
-1148 |     let _ = state.push_globals();
+1083 |     let _ = state.create_table(0, 1);
      |     +++++++
 
 warning: unused `Result` that must be used
     --> crates/lua-stdlib/src/loadlib.rs:1150:5
      |
-1150 |     state.push_value(-2);
+1150 |     state.push_globals();
      |     ^^^^^^^^^^^^^^^^^^^^
      |
      = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
      |
-1150 |     let _ = state.push_value(-2);
+1150 |     let _ = state.push_globals();
+     |     +++++++
+
+warning: unused `Result` that must be used
+    --> crates/lua-stdlib/src/loadlib.rs:1152:5
+     |
+1152 |     state.push_value(-2);
+     |     ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1152 |     let _ = state.push_value(-2);
      |     +++++++
 
 warning: unused `Result` that must be used
@@ -2803,64 +2797,28 @@ warning: unused variable: `state`
 2941 | fn open_func(ls: &mut LexState, state: &mut LuaState, mut new_fs: FuncState) -> Result<(), LuaError> {
      |                                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
-warning: variable does not need to be mutable
-    --> crates/lua-parse/src/lib.rs:3659:9
-     |
-3659 |     let mut conflict = false;
-     |         ----^^^^^^^^
-     |         |
-     |         help: remove this `mut`
-     |
-     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
-
-warning: variable does not need to be mutable
-    --> crates/lua-parse/src/lib.rs:3661:9
-     |
-3661 |     let mut current = Some(lh as *mut LhsAssign);
-     |         ----^^^^^^^
-     |         |
-     |         help: remove this `mut`
-
-warning: unused variable: `state`
-    --> crates/lua-parse/src/lib.rs:3654:5
-     |
-3654 |     state: &mut LuaState,
-     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
-
-warning: unused variable: `extra`
-    --> crates/lua-parse/src/lib.rs:3658:9
-     |
-3658 |     let extra = ls.fs.as_ref().unwrap().freereg as i32;
-     |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_extra`
-
-warning: unused variable: `current`
-    --> crates/lua-parse/src/lib.rs:3661:9
-     |
-3661 |     let mut current = Some(lh as *mut LhsAssign);
-     |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current`
-
 warning: unused variable: `fvar`
-    --> crates/lua-parse/src/lib.rs:4102:9
+    --> crates/lua-parse/src/lib.rs:4145:9
      |
-4102 |     let fvar = ls.fs.as_ref().unwrap().nactvar as i32;
+4145 |     let fvar = ls.fs.as_ref().unwrap().nactvar as i32;
      |         ^^^^ help: if this is intentional, prefix it with an underscore: `_fvar`
 
 warning: unused variable: `pc`
-    --> crates/lua-parse/src/lib.rs:4109:9
+    --> crates/lua-parse/src/lib.rs:4152:9
      |
-4109 |     let pc = ls.fs.as_ref().unwrap().pc;
+4152 |     let pc = ls.fs.as_ref().unwrap().pc;
      |         ^^ help: if this is intentional, prefix it with an underscore: `_pc`
 
 warning: unused variable: `state`
-    --> crates/lua-parse/src/lib.rs:4136:36
+    --> crates/lua-parse/src/lib.rs:4179:36
      |
-4136 | fn checktoclose(ls: &mut LexState, state: &mut LuaState, level: i32) -> Result<(), LuaError> {
+4179 | fn checktoclose(ls: &mut LexState, state: &mut LuaState, level: i32) -> Result<(), LuaError> {
      |                                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: value assigned to `vidx` is never read
-    --> crates/lua-parse/src/lib.rs:4158:20
+    --> crates/lua-parse/src/lib.rs:4201:20
      |
-4158 |     let mut vidx = 0i32;
+4201 |     let mut vidx = 0i32;
      |                    ^^^^
      |
      = help: maybe it is overwritten before being read?

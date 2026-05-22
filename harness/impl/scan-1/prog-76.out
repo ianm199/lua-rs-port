@@ -8,4 +8,5 @@ testing 'require' message
 +
 testing assignments, logical operators, and constructors
 +
-lua: pcall_k failed: Runtime: [string "_soft = true..."]:494: attempt to index a number value (local 'a')
+OK
+[ok] execution completed, status=Ok
