@@ -581,6 +581,7 @@ pub(crate) fn finish_get(
 ) -> Result<(), LuaError> {
     // C: for (loop = 0; loop < MAXTAGLOOP; loop++)
     let mut t = t_val;
+    eprintln!("[finish_get] start key={:?} slot_empty={}", &key, slot_empty);
     for _loop in 0..MAX_TAG_LOOP {
         let tm: LuaValue;
         if slot_empty && !matches!(t, LuaValue::Table(_)) {

@@ -4,4 +4,5 @@
 [4/4] Executing chunk...
 testing local variables and environments
 +
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:175: assertion failed!
+testing to-be-closed variables
+[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:271: assertion failed!

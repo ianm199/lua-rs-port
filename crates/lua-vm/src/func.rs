@@ -482,6 +482,13 @@ pub(crate) fn close_upval(state: &mut LuaState, level: StackIdx) {
         if uv_idx.0 < level.0 {
             break;
         }
+        if !((uv_idx.0 as usize) < state.top.0 as usize) {
+            eprintln!(
+                "[close_upval] uv_idx={} top={} level={} openupval.len={}",
+                uv_idx.0, state.top.0, level.0, state.openupval.len()
+            );
+            eprintln!("backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+        }
         debug_assert!(
             (uv_idx.0 as usize) < state.top.0 as usize,
             "open upvalue index must be below stack top"

@@ -5,4 +5,73 @@
 'os.tmpname' file cannot be open; skipping file tests
 +
 testing date/time
-[err] pcall_k failed: Runtime: [string "-- harness preamble: emulate the globals lua-..."]:802: assertion failed!
+[close_upval] uv_idx=5 top=2 level=1 openupval.len=1
+backtrace:
+   0: std::backtrace_rs::backtrace::libunwind::trace
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1: std::backtrace_rs::backtrace::trace_unsynchronized
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2: std::backtrace::Backtrace::create
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/backtrace.rs:331:13
+   3: lua_vm::func::close_upval
+             at ./crates/lua-vm/src/func.rs:490:41
+   4: lua_vm::func::close
+             at ./crates/lua-vm/src/func.rs:547:5
+   5: lua_vm::do_::close_aux
+             at ./crates/lua-vm/src/do_.rs:1460:5
+   6: lua_vm::do_::close_protected::{{closure}}
+             at ./crates/lua-vm/src/do_.rs:1481:61
+   7: lua_vm::do_::raw_run_protected
+             at ./crates/lua-vm/src/do_.rs:212:18
+   8: lua_vm::do_::close_protected
+             at ./crates/lua-vm/src/do_.rs:1481:32
+   9: lua_vm::do_::pcall
+             at ./crates/lua-vm/src/do_.rs:1547:18
+  10: lua_vm::state::LuaState::protected_call_raw
+             at ./crates/lua-vm/src/state.rs:1480:22
+  11: lua_vm::api::pcall_k
+             at ./crates/lua-vm/src/api.rs:1645:11
+  12: lua_rs::main::{{closure}}
+             at ./crates/lua-cli/src/main.rs:140:28
+  13: core::ops::function::FnOnce::call_once
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/ops/function.rs:250:5
+  14: <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/panic/unwind_safe.rs:274:9
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
+  16: std::panicking::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
+  17: std::panic::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
+  18: lua_rs::main
+             at ./crates/lua-cli/src/main.rs:117:18
+  19: core::ops::function::FnOnce::call_once
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/ops/function.rs:250:5
+  20: std::sys::backtrace::__rust_begin_short_backtrace
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/sys/backtrace.rs:160:18
+  21: std::rt::lang_start::{{closure}}
+  22: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/ops/function.rs:287:21
+  23: std::panicking::catch_unwind::do_call
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
+  24: std::panicking::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
+  25: std::panic::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
+  26: std::rt::lang_start_internal::{{closure}}
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:175:24
+  27: std::panicking::catch_unwind::do_call
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
+  28: std::panicking::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
+  29: std::panic::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
+  30: std::rt::lang_start_internal
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:171:5
+  31: _main
+
+
+thread 'main' (9929342) panicked at crates/lua-vm/src/func.rs:492:9:
+open upvalue index must be below stack top
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[panic] open upvalue index must be below stack top
