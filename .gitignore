@@ -1,0 +1,19 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# C build artifacts
+reference/lua-5.4.7/src/*.o
+reference/lua-5.4.7/src/lua
+reference/lua-5.4.7/src/luac
+reference/lua-5.4.7/src/liblua.a
+reference/lua-c/
+
+# macOS
+.DS_Store
+
+# Agent output / harness state
+harness/oracle/results/
+*.actual.bytecode
+*.actual.stdout

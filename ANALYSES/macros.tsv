@@ -1,0 +1,34 @@
+# macros.tsv — every public macro in lobject.h/lstate.h/llimits.h → Rust equivalent
+# Columns: macro	source_header	rust_form	notes
+# STATUS: STUB. Real content built before Phase A.
+ttisnil	lobject.h	matches!(o, LuaValue::Nil)	predicate
+ttisnumber	lobject.h	matches!(o, LuaValue::Int(_) | LuaValue::Float(_))	predicate
+ttisinteger	lobject.h	matches!(o, LuaValue::Int(_))	predicate
+ttisfloat	lobject.h	matches!(o, LuaValue::Float(_))	predicate
+ttisstring	lobject.h	matches!(o, LuaValue::Str(_))	predicate
+ttistable	lobject.h	matches!(o, LuaValue::Table(_))	predicate
+ttisfunction	lobject.h	matches!(o, LuaValue::Function(_))	predicate
+ivalue	lobject.h	o.as_int().expect("not int")	accessor; prefer if-let
+fltvalue	lobject.h	o.as_float().expect("not float")	accessor
+tsvalue	lobject.h	o.as_string().expect("not string")	returns &GcRef<LuaString>
+hvalue	lobject.h	o.as_table().expect("not table")	returns &GcRef<LuaTable>
+setnilvalue	lobject.h	*o = LuaValue::Nil	setter
+setivalue	lobject.h	*o = LuaValue::Int(x)	setter
+setbtvalue	lobject.h	*o = LuaValue::Bool(true)	setter
+setbfvalue	lobject.h	*o = LuaValue::Bool(false)	setter
+lmod	lobject.h	((s) & ((size) - 1)) as usize	power-of-two assumed; invariant comment required
+twoto	lobject.h	(1u32 << (x))	power-of-two
+sizenode	lobject.h	(1u32 << t.lsizenode())	hash table size
+G	lstate.h	state.global()	&GlobalState accessor
+gettotalbytes	lstate.h	g.total_bytes()	gc accounting
+cast	llimits.h	(x) as T	cast macro
+cast_byte	llimits.h	(x) as u8	cast macro
+cast_int	llimits.h	(x) as i32	cast macro
+cast_uint	llimits.h	(x) as u32	cast macro
+cast_num	llimits.h	(x) as f64	cast macro
+check_exp	llimits.h	(x)	debug-assert side; drop in release
+api_check	llimits.h	debug_assert!	api precondition
+lua_assert	llimits.h	debug_assert!	internal assertion
+lua_longassert	llimits.h	debug_assert!	expensive assertion
+LUAI_FUNC	llimits.h	pub(crate)	visibility marker (translate at decl site)
+LUA_API	lua.h	pub	visibility marker

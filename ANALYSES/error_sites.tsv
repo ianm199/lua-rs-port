@@ -1,0 +1,16 @@
+# error_sites.tsv — every error-throwing call site → corresponding Err(...)
+# Columns: c_call	rust_equivalent	notes
+# STATUS: STUB. Real content built before Phase B (when error paths matter).
+luaG_runerror(L, fmt, ...)	return Err(LuaError::runtime(format_args!(fmt, ...)))	generic runtime error
+luaG_typeerror(L, o, "op")	return Err(LuaError::type_error(o, "op"))	"attempt to <op> a <type> value"
+luaG_concaterror(L, p1, p2)	return Err(LuaError::concat_error(p1, p2))	"attempt to concatenate"
+luaG_opinterror(L, p1, p2, "msg")	return Err(LuaError::arith_error(p1, p2, "msg"))	"attempt to perform arithmetic"
+luaG_tointerror(L, p1, p2)	return Err(LuaError::int_overflow(p1, p2))	int conversion error
+luaG_ordererror(L, p1, p2)	return Err(LuaError::order_error(p1, p2))	"attempt to compare"
+luaG_errormsg(L)	return Err(LuaError::from_top(state))	throw value already on top
+luaG_traceexec(L, ...)	state.debug_trace_exec(...)	not an error per se
+luaD_throw(L, status)	return Err(LuaError::with_status(status))	low-level throw
+luaO_pushfstring(L, ...)	let s = state.push_fstring(format_args!(...))?;	build error message; usually followed by luaG_runerror
+luaO_pushvfstring(L, ...)	state.push_vfstring(...)?	same, va_list form (rare in Lua source)
+luaM_toobig(L)	return Err(LuaError::Memory)	memory overflow
+luaM_error(L)	return Err(LuaError::Memory)	allocation failure

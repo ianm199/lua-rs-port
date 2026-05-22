@@ -1,0 +1,27 @@
+# types.tsv — every C struct in Lua's headers → Rust struct + field types
+# Columns: c_type	rust_type	source_header	notes
+# STATUS: STUB. Real content built before Phase A.
+TValue	LuaValue	lobject.h	enum, not struct; see PORT_STRATEGY §3.2
+Value	(internal; payload of LuaValue variants)	lobject.h	union — not directly exposed
+StackValue	StackValue	lobject.h	wrapper containing LuaValue + tbc linkage
+StkId	StackIdx	lobject.h	u32 newtype — never a borrow
+StkIdRel	StackIdx	lobject.h	pointer-or-offset union collapses to index
+GCObject	(trait Collectable + GcRef<dyn Collectable>)	lobject.h	common header replaced by trait impl
+TString	LuaString	lobject.h	byte-string + intern info
+Udata	LuaUserData	lobject.h	full userdata
+Udata0	(merged into LuaUserData)	lobject.h	no-user-values variant; merged
+Table	LuaTable	lobject.h	hybrid array+hash
+Node	(internal; Vec<TableNode>)	lobject.h	hash bucket
+Upvaldesc	UpvalDesc	lobject.h	closure capture descriptor
+LocVar	LocalVar	lobject.h	debug info; local variable
+AbsLineInfo	AbsLineInfo	lobject.h	debug info; absolute line mapping
+Proto	LuaProto	lobject.h	function prototype
+UpVal	UpVal	lobject.h	enum Open{thread,idx} | Closed(LuaValue) — §2 #8
+ClosureHeader	(merged into LuaClosure)	lobject.h	common header
+CClosure	(LuaClosure::CClosure variant)	lobject.h	enum variant
+LClosure	(LuaClosure::LClosure variant)	lobject.h	enum variant
+Closure	LuaClosure	lobject.h	enum of CCl/LCl/LightC
+CallInfo	CallInfo	lstate.h	per-call frame info; stored in Vec, addressed by CallInfoIdx
+stringtable	StringPool	lstate.h	interning hash; lives on GlobalState
+global_State	GlobalState	lstate.h	shared state; not exposed at API
+lua_State	LuaState	lstate.h	per-thread state; main type

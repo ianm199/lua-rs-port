@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lua-types",
+    "crates/lua-lex",
+    "crates/lua-parse",
+    "crates/lua-code",
+    "crates/lua-vm",
+    "crates/lua-stdlib",
+    "crates/lua-gc",
+    "crates/lua-coro",
+    "crates/lua-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+authors = ["lua-rs-port contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+lua-types   = { path = "crates/lua-types" }
+lua-lex     = { path = "crates/lua-lex" }
+lua-parse   = { path = "crates/lua-parse" }
+lua-code    = { path = "crates/lua-code" }
+lua-vm      = { path = "crates/lua-vm" }
+lua-stdlib  = { path = "crates/lua-stdlib" }
+lua-gc      = { path = "crates/lua-gc" }
+lua-coro    = { path = "crates/lua-coro" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1

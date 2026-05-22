@@ -1,0 +1,57 @@
+# file_deps.txt — canonical crate assignment for each C file
+# Format: <c-file>  <target-crate>  <target-rust-file>
+# STATUS: STUB. Verified before Phase A.
+
+# --- lua-types: foundation (no C analogue, written from scratch) ---
+
+# --- lua-lex: lexer ---
+llex.c          lua-lex     src/lib.rs
+
+# --- lua-parse: parser ---
+lparser.c       lua-parse   src/lib.rs
+
+# --- lua-code: bytecode emitter + opcodes ---
+lcode.c         lua-code    src/codegen.rs
+lopcodes.c      lua-code    src/opcodes.rs
+
+# --- lua-vm: interpreter core ---
+lvm.c           lua-vm      src/vm.rs
+ldo.c           lua-vm      src/do_.rs
+lstate.c        lua-vm      src/state.rs
+ltm.c           lua-vm      src/tagmethods.rs
+lobject.c       lua-vm      src/object.rs
+lapi.c          lua-vm      src/api.rs
+ldebug.c        lua-vm      src/debug.rs
+ldump.c         lua-vm      src/dump.rs
+lundump.c       lua-vm      src/undump.rs
+lfunc.c         lua-vm      src/func.rs
+ltable.c        lua-vm      src/table.rs
+lstring.c       lua-vm      src/string.rs
+lctype.c        lua-vm      src/ctype.rs
+lzio.c          lua-vm      src/zio.rs
+
+# --- lua-gc: garbage collector (Phase D) ---
+lgc.c           lua-gc      src/gc.rs
+lmem.c          lua-gc      src/mem.rs
+
+# --- lua-stdlib: standard library ---
+lbaselib.c      lua-stdlib  src/base.rs
+lstrlib.c       lua-stdlib  src/string_lib.rs
+ltablib.c       lua-stdlib  src/table_lib.rs
+lmathlib.c      lua-stdlib  src/math_lib.rs
+liolib.c        lua-stdlib  src/io_lib.rs
+loslib.c        lua-stdlib  src/os_lib.rs
+lutf8lib.c      lua-stdlib  src/utf8_lib.rs
+ldblib.c        lua-stdlib  src/debug_lib.rs
+lcorolib.c      lua-stdlib  src/coro_lib.rs
+loadlib.c       lua-stdlib  src/loadlib.rs
+lauxlib.c       lua-stdlib  src/auxlib.rs
+linit.c         lua-stdlib  src/init.rs
+
+# --- lua-cli: standalone interpreter ---
+lua.c           lua-cli     src/main.rs
+
+# --- not translated ---
+luac.c          (none)      # we build a separate lua-rs-luac binary
+ltests.c        (none)      # internal test hooks; not in scope
+ljumptab.h      (none)      # computed-goto; Rust match handles this
