@@ -3,7 +3,7 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 
-thread 'main' (5767132) panicked at crates/lua-vm/src/state.rs:1300:28:
-index out of bounds: the len is 0 but the index is 0
+thread 'main' (6435076) panicked at crates/lua-stdlib/src/state_stub.rs:210:75:
+not yet implemented: phase-b-reconcile: table_set_i
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] index out of bounds: the len is 0 but the index is 0
+[panic] not yet implemented: phase-b-reconcile: table_set_i

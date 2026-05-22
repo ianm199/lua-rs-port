@@ -2,8 +2,10 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-
-thread 'main' (5825603) panicked at crates/lua-vm/src/state.rs:1479:105:
-not yet implemented: phase-b: try_bin_tm
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b: try_bin_tm
+1
+2
+3
+5
+8
+9
+[ok] execution completed, status=Ok

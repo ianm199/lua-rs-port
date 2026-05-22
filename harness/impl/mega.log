@@ -1,0 +1,371 @@
+[2026-05-17T14:23:10Z mega] loaded 25 test programs
+[2026-05-17T14:23:10Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:23:10Z mega] mega-loop start. 25 test programs.
+[2026-05-17T14:23:10Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T14:23:10Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:23:10Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T14:23:30Z mega]   scan: 22/25 programs pass cleanly
+[2026-05-17T14:23:50Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T14:23:50Z mega]   MAX_PER_OUTER (0) reached, deferring rest to next outer round
+[2026-05-17T14:23:50Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:23:50Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T14:23:50Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:24:10Z mega] loaded 25 test programs
+[2026-05-17T14:24:10Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:24:10Z mega] mega-loop start. 25 test programs.
+[2026-05-17T14:24:10Z mega]   MAX_OUTER=5  MAX_PER_OUTER=8  PER_AGENT_BUDGET=$25.00
+[2026-05-17T14:24:10Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:24:10Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T14:24:30Z mega]   scan: 22/25 programs pass cleanly
+[2026-05-17T14:24:50Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T14:24:50Z mega]   [O1.1] dispatch on 'cg_posfix_fold non-foldable binop Or (Local Local)' @ crates/lua-parse/src/lib.rs:744:14 (budget $25.00)
+[2026-05-17T14:31:49Z mega]   [O1.1] agent done. iter cost=$2.8384082500000005  total=$2.8384
+[2026-05-17T14:31:49Z mega] ─── outer round 2 (spent: $2.8384) ───
+[2026-05-17T14:32:09Z mega]   scan: 23/25 programs pass cleanly
+[2026-05-17T14:32:29Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T14:32:29Z mega]   no stub blockers — programs are failing for non-stub reasons (real errors, infinite loops).
+[2026-05-17T14:32:29Z mega]   exiting mega-loop; consider running implement_loop.sh on individual failing programs.
+[2026-05-17T14:32:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:32:29Z mega] mega-loop end. Total cost: $2.8384  Outer rounds: 2
+[2026-05-17T14:32:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:37:06Z mega] loaded 25 test programs
+[2026-05-17T14:37:06Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:37:06Z mega] mega-loop start. 25 test programs.
+[2026-05-17T14:37:06Z mega]   MAX_OUTER=5  MAX_PER_OUTER=8  PER_AGENT_BUDGET=$25.00
+[2026-05-17T14:37:06Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:37:06Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T14:37:27Z mega]   scan: 23/25 programs pass cleanly
+[2026-05-17T14:37:47Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T14:37:47Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T14:37:47Z mega]   [O1.D1] DEBUG dispatch on prog: local o = {x=10}; function o.get() return o.x end; print(o.get())
+[2026-05-17T14:39:41Z mega]   [O1.D1] DEBUG done. iter cost=$0.9010585000000001  total=$0.9011
+[2026-05-17T14:39:41Z mega]   [O1.D2] DEBUG dispatch on prog: local s = ""; for i=1,3 do s = s .. tostring(i) end; print(s)
+[2026-05-17T14:43:40Z mega]   [O1.D2] DEBUG done. iter cost=$1.23640025  total=$2.1375
+[2026-05-17T14:43:40Z mega] ─── outer round 2 (spent: $2.1375) ───
+[2026-05-17T14:44:00Z mega]   scan: 25/25 programs pass cleanly
+[2026-05-17T14:44:00Z mega] ★ all 25 programs pass. Stopping.
+[2026-05-17T14:44:00Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:44:00Z mega] mega-loop end. Total cost: $2.1375  Outer rounds: 2
+[2026-05-17T14:44:00Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:54:47Z mega] loaded 25 test programs (with expected outputs)
+[2026-05-17T14:54:47Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:54:47Z mega] mega-loop start. 25 test programs.
+[2026-05-17T14:54:47Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T14:54:47Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:54:47Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T14:55:07Z mega]   scan: 23/25 programs pass cleanly
+[2026-05-17T14:55:27Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T14:55:27Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T14:55:28Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:55:28Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T14:55:28Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:55:41Z mega] loaded 25 test programs (with expected outputs)
+[2026-05-17T14:55:41Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:55:41Z mega] mega-loop start. 25 test programs.
+[2026-05-17T14:55:41Z mega]   MAX_OUTER=8  MAX_PER_OUTER=4  PER_AGENT_BUDGET=$25.00
+[2026-05-17T14:55:41Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T14:55:41Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T14:56:02Z mega]   scan: 23/25 programs pass cleanly
+[2026-05-17T14:56:22Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T14:56:22Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T14:56:22Z mega]   [O1.D1] DEBUG dispatch on prog: local o = {x=10}; function o.get() return o.x end; print(o.get())
+[2026-05-17T14:58:17Z mega]   [O1.D1] DEBUG done. iter cost=$1.0096224999999999  total=$1.0096
+[2026-05-17T14:58:17Z mega]   [O1.D2] DEBUG dispatch on prog: local s = ""; for i=1,3 do s = s .. tostring(i) end; print(s)
+[2026-05-17T14:59:56Z mega]   [O1.D2] DEBUG done. iter cost=$0.6021345  total=$1.6117
+[2026-05-17T14:59:56Z mega] ─── outer round 2 (spent: $1.6117) ───
+[2026-05-17T15:00:17Z mega]   scan: 25/25 programs pass cleanly
+[2026-05-17T15:00:17Z mega] ★ all 25 programs pass. Stopping.
+[2026-05-17T15:00:17Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:00:17Z mega] mega-loop end. Total cost: $1.6117  Outer rounds: 2
+[2026-05-17T15:00:17Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:12:29Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T15:12:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:12:29Z mega] mega-loop start. 38 test programs.
+[2026-05-17T15:12:29Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T15:12:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:12:29Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T15:12:49Z mega]   scan: 28/38 programs pass cleanly
+[2026-05-17T15:13:09Z mega]   surface scan returned 9 unique stub blockers
+[2026-05-17T15:13:09Z mega]   MAX_PER_OUTER (0) reached, deferring rest to next outer round
+[2026-05-17T15:13:09Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:13:09Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T15:13:09Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:13:24Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T15:13:24Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:13:24Z mega] mega-loop start. 38 test programs.
+[2026-05-17T15:13:24Z mega]   MAX_OUTER=8  MAX_PER_OUTER=12  PER_AGENT_BUDGET=$25.00
+[2026-05-17T15:13:24Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T15:13:24Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T15:13:45Z mega]   scan: 28/38 programs pass cleanly
+[2026-05-17T15:14:05Z mega]   surface scan returned 9 unique stub blockers
+[2026-05-17T15:14:05Z mega]   [O1.1] dispatch on 'arg_to_bool' @ crates/lua-stdlib/src/state_stub.rs:143:51 (budget $25.00)
+[2026-05-17T15:19:38Z mega]   [O1.1] agent done. iter cost=$2.941384750000001  total=$2.9414
+[2026-05-17T15:19:38Z mega]   [O1.2] dispatch on 'check_arg_type' @ crates/lua-stdlib/src/state_stub.rs:137:82 (budget $25.00)
+[2026-05-17T15:25:03Z mega]   [O1.2] agent done. iter cost=$2.245787  total=$5.1872
+[2026-05-17T15:25:03Z mega]   [O1.3] dispatch on 'compare_lt' @ crates/lua-stdlib/src/state_stub.rs:240:80 (budget $25.00)
+[2026-05-17T15:30:04Z mega]   [O1.3] agent done. iter cost=$1.7871664999999999  total=$6.9744
+[2026-05-17T15:30:04Z mega]   [O1.4] dispatch on 'get_metafield' @ crates/lua-stdlib/src/state_stub.rs:154:87 (budget $25.00)
+[2026-05-17T15:31:37Z mega]   [O1.4] agent done. iter cost=$0.6790945  total=$7.6535
+[2026-05-17T15:31:37Z mega]   [O1.5] dispatch on 'new_tbc_upval' @ crates/lua-vm/src/state.rs:1297:79 (budget $25.00)
+[2026-05-17T15:35:52Z mega]   [O1.5] agent done. iter cost=$1.8562812499999997  total=$9.5098
+[2026-05-17T15:35:52Z mega]   [O1.6] dispatch on 'opt_arg_string' @ crates/lua-stdlib/src/state_stub.rs:142:87 (budget $25.00)
+[2026-05-17T15:36:57Z mega]   [O1.6] agent done. iter cost=$0.5965117499999999  total=$10.1063
+[2026-05-17T15:36:57Z mega]   [O1.7] dispatch on 'pretailcall' @ crates/lua-vm/src/state.rs:1360:112 (budget $25.00)
+[2026-05-17T15:40:09Z mega]   [O1.7] agent done. iter cost=$1.4384744999999999  total=$11.5448
+[2026-05-17T15:40:09Z mega]   [O1.8] dispatch on 'table_get_i' @ crates/lua-stdlib/src/state_stub.rs:209:80 (budget $25.00)
+[2026-05-17T15:41:28Z mega]   [O1.8] agent done. iter cost=$0.7256970000000001  total=$12.2705
+[2026-05-17T15:41:28Z mega]   [O1.9] dispatch on 'value_at' @ crates/lua-stdlib/src/state_stub.rs:120:52 (budget $25.00)
+[2026-05-17T15:47:21Z mega]   [O1.9] agent done. iter cost=$2.9200552499999994  total=$15.1906
+[2026-05-17T15:47:21Z mega] ─── outer round 2 (spent: $15.1906) ───
+[2026-05-17T15:47:42Z mega]   scan: 31/38 programs pass cleanly
+[2026-05-17T15:48:02Z mega]   surface scan returned 2 unique stub blockers
+[2026-05-17T15:48:02Z mega]   [O2.1] dispatch on 'call_at' @ crates/lua-vm/src/state.rs:1381:90 (budget $25.00)
+[2026-05-17T15:52:32Z mega]   [O2.1] agent done. iter cost=$1.6546900000000002  total=$16.8453
+[2026-05-17T15:52:32Z mega]   [O2.2] dispatch on 'less_than' @ crates/lua-vm/src/state.rs:1436:91 (budget $25.00)
+[2026-05-17T15:56:40Z mega]   [O2.2] agent done. iter cost=$1.7531129999999997  total=$18.5984
+[2026-05-17T15:56:40Z mega] ─── outer round 3 (spent: $18.5984) ───
+[2026-05-17T15:57:01Z mega]   scan: 32/38 programs pass cleanly
+[2026-05-17T15:57:21Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T15:57:21Z mega]   [O3.1] dispatch on 'grow_stack' @ crates/lua-vm/src/state.rs:1168:88 (budget $25.00)
+[2026-05-17T16:00:43Z mega]   [O3.1] agent done. iter cost=$1.36782725  total=$19.9662
+[2026-05-17T16:00:43Z mega] ─── outer round 4 (spent: $19.9662) ───
+[2026-05-17T16:01:03Z mega]   scan: 32/38 programs pass cleanly
+[2026-05-17T16:01:24Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T16:01:24Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T16:01:24Z mega]   [O4.D1] DEBUG dispatch on prog: local o = {x=10}; function o:get() return self.x end; print(o:get())
+[2026-05-17T16:05:03Z mega]   [O4.D1] DEBUG done. iter cost=$1.8228302500000007  total=$21.7890
+[2026-05-17T16:05:03Z mega]   [O4.D2] DEBUG dispatch on prog: local function sum(...) local s = 0; for _, v in ipairs({...}) do s = s + v end; return s end; print(sum(1,2,3,4,5))
+[2026-05-17T16:18:14Z mega]   [O4.D2] DEBUG done. iter cost=$6.3178832499999995  total=$28.1069
+[2026-05-17T16:18:14Z mega]   [O4.D3] DEBUG dispatch on prog: local t = {a=1, b=2, c=3}; local total = 0; for k,v in pairs(t) do total = total + v end; print(total)
+[2026-05-17T16:27:34Z mega]   [O4.D3] DEBUG done. iter cost=$4.760130500000001  total=$32.8670
+[2026-05-17T16:27:34Z mega]   [O4.D4] DEBUG dispatch on prog: local mt = {__add = function(a, b) return {v = a.v + b.v} end}; local a = setmetatable({v=10}, mt); local b = setmetatable({v=5}, mt); print((a+b).v)
+[2026-05-17T16:30:40Z mega]   [O4.D4] DEBUG done. iter cost=$1.2663159999999998  total=$34.1333
+[2026-05-17T16:30:40Z mega]   [O4.D5] DEBUG dispatch on prog: print(string.find("hello world", "world"))
+[2026-05-17T16:31:36Z mega]   [O4.D5] DEBUG done. iter cost=$0.4365495  total=$34.5698
+[2026-05-17T16:31:36Z mega]   [O4.D6] DEBUG dispatch on prog: local t = {3, 1, 4, 1, 5, 9, 2, 6}; table.sort(t); for i=1,#t do io.write(t[i]); if i < #t then io.write(",") end end; print()
+[2026-05-17T16:34:35Z mega]   [O4.D6] DEBUG done. iter cost=$1.5642309999999997  total=$36.1340
+[2026-05-17T16:34:35Z mega] ─── outer round 5 (spent: $36.1340) ───
+[2026-05-17T16:34:56Z mega]   scan: 35/38 programs pass cleanly
+[2026-05-17T16:35:16Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T16:35:16Z mega]   [O5.1] dispatch on 'push_where' @ crates/lua-stdlib/src/state_stub.rs:100:68 (budget $25.00)
+[2026-05-17T16:39:40Z mega]   [O5.1] agent done. iter cost=$1.81991675  total=$37.9539
+[2026-05-17T16:39:40Z mega] ─── outer round 6 (spent: $37.9539) ───
+[2026-05-17T16:40:00Z mega]   scan: 36/38 programs pass cleanly
+[2026-05-17T16:40:20Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T16:40:20Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T16:40:21Z mega]   [O6.D1] DEBUG dispatch on prog: local mt = {__add = function(a, b) return {v = a.v + b.v} end}; local a = setmetatable({v=10}, mt); local b = setmetatable({v=5}, mt); print((a+b).v)
+[2026-05-17T16:42:36Z mega]   [O6.D1] DEBUG done. iter cost=$0.9611584999999998  total=$38.9151
+[2026-05-17T16:42:36Z mega]   [O6.D2] DEBUG dispatch on prog: local t = {3, 1, 4, 1, 5, 9, 2, 6}; table.sort(t); for i=1,#t do io.write(t[i]); if i < #t then io.write(",") end end; print()
+[2026-05-17T16:48:14Z mega]   [O6.D2] DEBUG done. iter cost=$3.271603000000001  total=$42.1867
+[2026-05-17T16:48:14Z mega] ─── outer round 7 (spent: $42.1867) ───
+[2026-05-17T16:48:35Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T16:48:55Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T16:48:55Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T16:48:55Z mega]   [O7.D1] DEBUG dispatch on prog: local t = {3, 1, 4, 1, 5, 9, 2, 6}; table.sort(t); for i=1,#t do io.write(t[i]); if i < #t then io.write(",") end end; print()
+[2026-05-17T16:52:47Z mega]   [O7.D1] DEBUG done. iter cost=$1.69264925  total=$43.8793
+[2026-05-17T16:52:47Z mega] ─── outer round 8 (spent: $43.8793) ───
+[2026-05-17T16:53:08Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T16:53:28Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T16:53:28Z mega]   [O8.1] dispatch on 'registry_get' @ crates/lua-stdlib/src/state_stub.rs:246:75 (budget $25.00)
+[2026-05-17T16:56:00Z mega]   [O8.1] agent done. iter cost=$1.3024755000000001  total=$45.1818
+[2026-05-17T16:56:00Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T16:56:00Z mega] mega-loop end. Total cost: $45.1818  Outer rounds: 8
+[2026-05-17T16:56:00Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:04:21Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:04:21Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:04:21Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:04:21Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:04:21Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:04:21Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:04:42Z mega]   scan: /38 programs pass cleanly
+[2026-05-17T17:05:02Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:05:02Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:05:02Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:05:02Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:05:02Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:05:48Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:05:48Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:05:48Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:05:48Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:05:48Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:05:48Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:06:09Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T17:06:29Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:06:29Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:06:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:06:29Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:06:29Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:06:58Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:06:58Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:06:58Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:06:59Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:06:59Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:06:59Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:07:19Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T17:07:39Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:07:39Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:07:40Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:07:40Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:07:40Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:07:53Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:07:53Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:07:53Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:07:53Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:07:53Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:07:53Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:08:21Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T17:08:49Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:08:49Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:08:49Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:08:49Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:08:49Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:08:49Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:08:49Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:08:49Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:08:49Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:08:49Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:08:49Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:09:10Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T17:09:30Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:09:30Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:09:30Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:09:30Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:09:30Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:11:17Z mega] loaded 38 test programs (with expected outputs)
+[2026-05-17T17:11:17Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:11:17Z mega] mega-loop start. 38 test programs.
+[2026-05-17T17:11:17Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:11:17Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:11:17Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:11:18Z mega]   scan: 37/38 programs pass cleanly
+[2026-05-17T17:11:18Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:11:18Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:11:18Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:11:18Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:11:18Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:12:01Z mega] loaded 48 test programs (with expected outputs)
+[2026-05-17T17:12:01Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:12:01Z mega] mega-loop start. 48 test programs.
+[2026-05-17T17:12:01Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:12:01Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:12:01Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:12:21Z mega]   scan: 39/48 programs pass cleanly
+[2026-05-17T17:12:22Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T17:12:22Z mega]   grouped into 1 disjoint-file agents (parallel cap 3)
+[2026-05-17T17:12:22Z mega]   [O1.1] dispatch on 'cg_prefix Not — port codenot from lcode.c' @ crates/lua-parse/src/lib.rs:973:25 (budget $20.00) [parallel]
+[2026-05-17T17:15:03Z mega] loaded 48 test programs (with expected outputs)
+[2026-05-17T17:15:03Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:15:03Z mega] mega-loop start. 48 test programs.
+[2026-05-17T17:15:03Z mega]   MAX_OUTER=10  MAX_PER_OUTER=8  PER_AGENT_BUDGET=$25.00
+[2026-05-17T17:15:03Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:15:03Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:15:25Z mega]   scan: 44/48 programs pass cleanly
+[2026-05-17T17:15:25Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:15:25Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:15:25Z mega]   [O1.D1] DEBUG dispatch on prog: local t = {3, 1, 4, 1, 5, 9, 2, 6}; table.sort(t); for i=1,#t do io.write(t[i]); if i < #t then io.write(",") end end; print()
+[2026-05-17T17:17:48Z mega]   [O1.D1] DEBUG done. iter cost=$1.5701694999999998  total=$1.5702
+[2026-05-17T17:17:48Z mega]   [O1.D2] DEBUG dispatch on prog: local r = (1==1 and 2==2 and 3==3); print(r)
+[2026-05-17T17:22:49Z mega]   [O1.D2] DEBUG done. iter cost=$2.3311982499999995  total=$3.9014
+[2026-05-17T17:22:49Z mega]   [O1.D3] DEBUG dispatch on prog: local r = (1==1 and 2==3 and 4==4); print(r)
+[2026-05-17T17:24:08Z mega]   [O1.D3] DEBUG done. iter cost=$0.71638775  total=$4.6178
+[2026-05-17T17:24:08Z mega]   [O1.D4] DEBUG dispatch on prog: do local i = 0; repeat i = i + 1; print(i) until i >= 3 end
+[2026-05-17T17:29:42Z mega]   [O1.D4] DEBUG done. iter cost=$1.514419  total=$6.1322
+[2026-05-17T17:29:42Z mega] ─── outer round 2 (spent: $6.1322) ───
+[2026-05-17T17:29:42Z mega]   scan: 48/48 programs pass cleanly
+[2026-05-17T17:29:42Z mega] ★ all 48 programs pass. Stopping.
+[2026-05-17T17:29:42Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:29:42Z mega] mega-loop end. Total cost: $6.1322  Outer rounds: 2
+[2026-05-17T17:29:42Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:34:54Z mega] loaded 48 test programs (with expected outputs)
+[2026-05-17T17:34:54Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:34:54Z mega] mega-loop start. 48 test programs.
+[2026-05-17T17:34:54Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:34:54Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:34:54Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:34:54Z mega]   scan: 48/48 programs pass cleanly
+[2026-05-17T17:34:54Z mega] ★ all 48 programs pass. Stopping.
+[2026-05-17T17:34:54Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:34:54Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:34:54Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:39:27Z mega] loaded 54 test programs (with expected outputs)
+[2026-05-17T17:39:27Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:39:27Z mega] mega-loop start. 54 test programs.
+[2026-05-17T17:39:27Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:39:27Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:39:27Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:39:28Z mega]   scan: 51/54 programs pass cleanly
+[2026-05-17T17:39:28Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:39:28Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:39:28Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:39:28Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T17:39:28Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:40:47Z mega] loaded 54 test programs (with expected outputs)
+[2026-05-17T17:40:47Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:40:47Z mega] mega-loop start. 54 test programs.
+[2026-05-17T17:40:47Z mega]   MAX_OUTER=4  MAX_PER_OUTER=3  PER_AGENT_BUDGET=$20.00
+[2026-05-17T17:40:47Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T17:40:47Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T17:40:48Z mega]   scan: 51/54 programs pass cleanly
+[2026-05-17T17:40:48Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T17:40:48Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T17:40:48Z mega]   [O1.D1] DEBUG dispatch on file: reference/lua-c/testes/bwcoercion.lua [parallel]
+[2026-05-17T17:40:48Z mega]   [O1.D2] DEBUG dispatch on file: reference/lua-c/testes/vararg.lua [parallel]
+[2026-05-17T17:40:48Z mega]   [O1.D3] DEBUG dispatch on file: reference/lua-c/testes/heavy.lua [parallel]
+[2026-05-17T17:49:13Z mega]   [O1.D3] DEBUG done. iter cost=$0.8133300000000002  total=$0.8133
+[2026-05-17T17:49:13Z mega]   [O1.D2] DEBUG done. iter cost=$1.8943690000000002  total=$2.7077
+[2026-05-17T17:49:13Z mega]   [O1.D1] DEBUG done. iter cost=$3.9630784999999995  total=$6.6708
+[2026-05-17T17:49:13Z mega] ─── outer round 2 (spent: $6.6708) ───
+[2026-05-17T17:49:13Z mega]   scan: 52/54 programs pass cleanly
+[2026-05-17T17:49:13Z mega]   surface scan returned 2 unique stub blockers
+[2026-05-17T17:49:13Z mega]   grouped into 1 disjoint-file agents (parallel cap 3)
+[2026-05-17T17:49:13Z mega]   [O2.1] dispatch on 'check_stack_growth' @ crates/lua-stdlib/src/state_stub.rs:204:56 (budget $20.00) [parallel]
+[2026-05-17T18:03:52Z mega]   [O2.1] agent done. iter cost=$2.1077884999999994  total=$8.7786
+[2026-05-17T18:03:52Z mega] ─── outer round 3 (spent: $8.7786) ───
+[2026-05-17T18:03:53Z mega]   scan: 53/54 programs pass cleanly
+[2026-05-17T18:03:53Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T18:03:53Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T18:03:53Z mega]   [O3.D1] DEBUG dispatch on file: reference/lua-c/testes/vararg.lua [parallel]
+[2026-05-17T18:11:02Z mega]   [O3.D1] DEBUG done. iter cost=$2.8760915  total=$11.6547
+[2026-05-17T18:11:02Z mega] ─── outer round 4 (spent: $11.6547) ───
+[2026-05-17T18:11:03Z mega]   scan: 53/54 programs pass cleanly
+[2026-05-17T18:11:03Z mega]   surface scan returned 0 unique stub blockers
+[2026-05-17T18:11:03Z mega]   no stub blockers — falling back to DEBUG agents on failing programs
+[2026-05-17T18:11:03Z mega]   [O4.D1] DEBUG dispatch on file: reference/lua-c/testes/vararg.lua [parallel]
+[2026-05-17T18:24:06Z mega]   [O4.D1] DEBUG done. iter cost=$5.15128775  total=$16.8060
+[2026-05-17T18:24:06Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:24:06Z mega] mega-loop end. Total cost: $16.8060  Outer rounds: 4
+[2026-05-17T18:24:06Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:24:18Z mega] loaded 57 test programs (with expected outputs)
+[2026-05-17T18:24:18Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:24:18Z mega] mega-loop start. 57 test programs.
+[2026-05-17T18:24:18Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00
+[2026-05-17T18:24:18Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:24:18Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T18:24:39Z mega]   scan: 53/57 programs pass cleanly
+[2026-05-17T18:24:39Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T18:24:39Z mega]   grouped into 0 disjoint-file agents (parallel cap 3)
+[2026-05-17T18:24:39Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:24:39Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T18:24:39Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:48:40Z mega] loaded 75 test programs (with expected outputs)
+[2026-05-17T18:48:40Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:48:40Z mega] mega-loop start. 75 test programs.
+[2026-05-17T18:48:40Z mega]   MAX_OUTER=1  MAX_PER_OUTER=0  PER_AGENT_BUDGET=$20.00  SESSION_BUDGET=$0.01
+[2026-05-17T18:48:40Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:48:40Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T18:49:01Z mega]   scan: 54/75 programs pass cleanly
+[2026-05-17T18:49:01Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T18:49:01Z mega]   grouped into 0 disjoint-file agents (parallel cap 3)
+[2026-05-17T18:49:01Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:49:01Z mega] mega-loop end. Total cost: $0  Outer rounds: 1
+[2026-05-17T18:49:01Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:50:44Z mega] loaded 75 test programs (with expected outputs)
+[2026-05-17T18:50:44Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:50:44Z mega] mega-loop start. 75 test programs.
+[2026-05-17T18:50:44Z mega]   MAX_OUTER=25  MAX_PER_OUTER=8  PER_AGENT_BUDGET=$15  SESSION_BUDGET=$400
+[2026-05-17T18:50:44Z mega] ═════════════════════════════════════════════════════════════════
+[2026-05-17T18:50:44Z mega] ─── outer round 1 (spent: $0) ───
+[2026-05-17T18:51:15Z mega]   scan: 54/75 programs pass cleanly
+[2026-05-17T18:51:16Z mega]   surface scan returned 1 unique stub blockers
+[2026-05-17T18:51:16Z mega]   grouped into 1 disjoint-file agents (parallel cap 4)
+[2026-05-17T18:51:16Z mega]   [O1.1] dispatch on 'load_buffer_ex' @ crates/lua-stdlib/src/state_stub.rs:176:108 (budget $15) [parallel]

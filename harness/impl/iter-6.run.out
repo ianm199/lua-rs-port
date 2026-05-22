@@ -3,7 +3,7 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 
-thread 'main' (5708963) panicked at crates/lua-vm/src/state.rs:1398:95:
-not yet implemented: phase-b: fast_get_int
+thread 'main' (6340754) panicked at crates/lua-stdlib/src/state_stub.rs:117:50:
+not yet implemented: phase-b-reconcile: type_at
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b: fast_get_int
+[panic] not yet implemented: phase-b-reconcile: type_at

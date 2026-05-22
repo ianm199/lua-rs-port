@@ -941,6 +941,24 @@ impl LuaStateStubExt for LuaState {
         lua_vm::api::load(self, reader, Some(name), mode)
     }
 
+    fn load_buffer_ex<M: ?Sized>(&mut self, buf: &[u8], name: &[u8], mode: &M) -> Result<bool, LuaError> {
+        let _ = mode;
+        let mut remaining = Some(buf.to_vec());
+        let reader: Box<dyn FnMut() -> Option<Vec<u8>>> = Box::new(move || remaining.take());
+        let status = lua_vm::api::load(self, reader, Some(name), None)?;
+        Ok(status == LuaStatus::Ok)
+    }
+
+    fn dump_function(&mut self, strip: bool) -> Result<Vec<u8>, LuaError> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut writer = |chunk: &[u8]| -> Result<(), LuaError> {
+            out.extend_from_slice(chunk);
+            Ok(())
+        };
+        lua_vm::api::dump(self, &mut writer, strip)?;
+        Ok(out)
+    }
+
     fn warning(&mut self, msg: &[u8], to_cont: bool) -> Result<(), LuaError> {
         lua_vm::api::warning(self, msg, to_cont);
         Ok(())
