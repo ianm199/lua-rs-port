@@ -219,14 +219,12 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 /// All arguments are passed back as results of the corresponding `resume`.
 ///
 /// C: `static int luaB_yield(lua_State *L)`
+/// → `return lua_yield(L, lua_gettop(L));`
+/// → `lua_yield(L,n)` is `lua_yieldk(L, n, 0, NULL)` (lua.h:316)
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
-    // Phase A–D stub: real `lua_yield` needs corosensei stackful coroutines
-    // (PORTING.md §2 #6 — Phase E).  Raise a Lua error so callers can pcall
-    // gracefully rather than crashing the host with a Rust panic.
-    let _nargs = state.get_top();
-    Err(LuaError::runtime(format_args!(
-        "not yet implemented: coroutine.yield (Phase E)"
-    )))
+    let n = state.get_top();
+    let r = lua_vm::do_::lua_yieldk(state, n, 0, None)?;
+    Ok(r as usize)
 }
 
 /// `coroutine.status(co)` — return a string describing `co`'s current status.
