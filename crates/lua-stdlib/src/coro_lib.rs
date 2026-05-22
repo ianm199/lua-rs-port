@@ -238,8 +238,8 @@ pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
     // TODO(port): coroutine stub — state.yield_(n) suspends the coroutine and
     // transfers n values back to the caller of resume; Phase E needed.
     let _nargs = state.get_top();
-    panic!(
-        "coroutine.yield is not yet implemented (Phase A–D stub; see PORTING.md §2 #6)"
+    todo!(
+        "phase-e: coroutine_yield — stackful coroutines need corosensei (PORTING.md §2 #6)"
     );
 }
 

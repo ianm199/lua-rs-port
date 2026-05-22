@@ -1,0 +1,1 @@
+2 1.6208262500000001 reference/lua-c/testes/strings.lua

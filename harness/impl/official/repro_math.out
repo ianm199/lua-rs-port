@@ -4,8 +4,15 @@
 [4/4] Executing chunk...
 testing numbers and math lib
 64-bit integers, 53-bit (mantissa) floats
+checkpoint A: before testing order block
 testing order (floats cannot represent all integers)
-fmax=	9.007199254741e+15
-ifmax=	9007199254740992
-ok
+checkpoint B: after testing order block
+checkpoint C: after NaN tests
+checkpoint D: before checkcompt calls
+checkpoint E: after divide by zero
+checkpoint F: after 2.3>>0
+checkpoint G: after 2.0^N & 1
+checkpoint H: after math.huge << 1
+checkpoint I: after 1|2.0^N
+checkpoint J: after 2.3~0.0
 [ok] execution completed, status=Ok

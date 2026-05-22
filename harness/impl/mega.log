@@ -574,3 +574,4 @@
 [2026-05-17T21:07:33Z mega]   [O14.D3] DEBUG dispatch on file: reference/lua-c/testes/math.lua [parallel]
 [2026-05-17T21:07:33Z mega]   [O14.D4] DEBUG dispatch on file: reference/lua-c/testes/literals.lua [parallel]
 [2026-05-17T21:07:33Z mega]   skip stuck prog (sig: [err] pcall_k failed: Runtime: module 'tracegc' not found:): reference/lua-c/testes/locals.lua
+[2026-05-17T21:12:15Z mega]   [O14.D5] DEBUG dispatch on file: reference/lua-c/testes/calls.lua [parallel]

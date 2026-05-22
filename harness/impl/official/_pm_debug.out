@@ -2,15 +2,20 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-testing pattern matching debug
-A: gsub with global f
-B: load+dostring test 1
-B1: try simple load
-B1: load returned type =	function
-B1: fn() =	42
-B2: try load with a=x
-B2: load returned type =	function
-B2: fn2() =	nil	after a=	x
-C: gsub with dostring
-done
+testing pattern matching
++ MARK1
++ MARK2
++ MARK3
++ MARK4
+M4a: about to do empty matches block
+M4b: passed gsub
+M4c: gmatch result =	-a-b-c-d-
+M5
+M6
+M7
+M7a: about to gsub with global f
+M8
+M8a: about to gsub with dostring
+M9
+M10
 [ok] execution completed, status=Ok
