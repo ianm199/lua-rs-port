@@ -127,3 +127,6 @@
 {"ts":"2026-05-16T17:30:21Z","action":"dispatch_done","detail":"type=debug err=load_string status=1: unexpected symbol cost=3.1359052499999995","total_cost":0.00}
 {"ts":"2026-05-16T17:30:22Z","action":"panic_detected","detail":"func=lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1) iter=4","total_cost":0.00}
 {"ts":"2026-05-16T17:30:22Z","action":"dispatch_start","detail":"type=implement func=lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1) iter=4","total_cost":0.00}
+{"ts":"2026-05-16T17:41:46Z","action":"dispatch_done","detail":"type=implement func=lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1) cost=5.312432750000002","total_cost":0.00}
+{"ts":"2026-05-16T17:41:47Z","action":"panic_detected","detail":"func=protected_call_raw iter=5","total_cost":0.00}
+{"ts":"2026-05-16T17:41:47Z","action":"dispatch_start","detail":"type=implement func=protected_call_raw iter=5","total_cost":0.00}

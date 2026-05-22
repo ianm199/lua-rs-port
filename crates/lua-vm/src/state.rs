@@ -1257,7 +1257,32 @@ impl LuaState {
     pub fn upvalue_get<F, N>(&mut self, _funcindex: F, _n: N) -> LuaValue { todo!("phase-b: upvalue_get") }
     pub fn upvalue_set<F, N>(&mut self, _funcindex: F, _n: N, _val: LuaValue) -> Result<(), LuaError> { todo!("phase-b: upvalue_set") }
 
-    pub fn protected_call_raw(&mut self, _func: StackIdx, _nresults: i32, _errfunc: StackIdx) -> Result<(), LuaError> { todo!("phase-b: protected_call_raw") }
+    pub fn protected_call_raw(&mut self, func: StackIdx, nresults: i32, errfunc: StackIdx) -> Result<(), LuaError> {
+        let ef = errfunc.0 as isize;
+        let status = crate::do_::pcall(
+            self,
+            |s| s.call_no_yield(func, nresults),
+            func,
+            ef,
+        );
+        match status {
+            LuaStatus::Ok => Ok(()),
+            LuaStatus::ErrRun => {
+                let err_val = self.get_at(func);
+                self.set_top(func);
+                Err(LuaError::Runtime(err_val))
+            }
+            LuaStatus::ErrSyntax => {
+                let err_val = self.get_at(func);
+                self.set_top(func);
+                Err(LuaError::Syntax(err_val))
+            }
+            _ => {
+                self.set_top(func);
+                Err(LuaError::with_status(status))
+            }
+        }
+    }
     pub fn protected_parser(&mut self, z: crate::zio::ZIO, name: &[u8], mode: Option<&[u8]>) -> LuaStatus {
         crate::do_::protected_parser(self, z, name, mode)
     }

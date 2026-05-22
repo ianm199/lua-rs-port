@@ -1,1 +1,1 @@
-lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile) (load_string status=1)
+protected_call_raw
