@@ -581,7 +581,8 @@ pub(crate) fn finish_get(
 ) -> Result<(), LuaError> {
     // C: for (loop = 0; loop < MAXTAGLOOP; loop++)
     let mut t = t_val;
-    eprintln!("[finish_get] start key={:?} slot_empty={}", &key, slot_empty);
+    let dbg = matches!(&key, LuaValue::Int(_));
+    if dbg { eprintln!("[finish_get] start key={:?} slot_empty={}", &key, slot_empty); }
     for _loop in 0..MAX_TAG_LOOP {
         let tm: LuaValue;
         if slot_empty && !matches!(t, LuaValue::Table(_)) {
@@ -603,13 +604,18 @@ pub(crate) fn finish_get(
         }
         // C: if (ttisfunction(tm)) { luaT_callTMres(...); return; }
         if matches!(tm, LuaValue::Function(_)) {
+            if dbg { eprintln!("[finish_get] calling __index function for key={:?}", &key); }
             state.call_tm_res(tm, &t, &key, result_idx)?;
+            let r = state.get_at(result_idx);
+            if dbg { eprintln!("[finish_get] __index function result={:?}", &r); }
             return Ok(());
         }
         // C: t = tm; try t[key] again
+        if dbg { eprintln!("[finish_get] tm is non-fn, recursing into table"); }
         t = tm.clone();
         // C: if (luaV_fastget(L, t, key, slot, luaH_get))
         if let Some(v) = state.fast_get(&t, &key)? {
+            if dbg { eprintln!("[finish_get] fast_get hit on new t, v={:?}", &v); }
             state.set_at(result_idx, v);
             return Ok(());
         }

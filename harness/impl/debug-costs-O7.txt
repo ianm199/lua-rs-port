@@ -1,0 +1,1 @@
+2 1.3946629999999998 reference/lua-c/testes/nextvar.lua
