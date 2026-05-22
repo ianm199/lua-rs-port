@@ -18,14 +18,13 @@
 // TODO(port): LuaState, GcRef<LuaState>, LuaStatus, and related types live in
 // lua-vm / lua-types; all unresolved imports will be fixed in Phase B.
 use lua_types::{
-    closure::LuaClosure,
     error::LuaError,
     value::LuaValue,
     LuaType,
     LuaStatus,
     gc::GcRef,
 };
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index};
 
 // ── Coroutine status codes ────────────────────────────────────────────────────
 
@@ -100,15 +99,17 @@ fn get_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>, Lu
 /// C: `static int auxstatus(lua_State *L, lua_State *co)`
 fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> i32 {
     let co_id = co.id;
-    let g = state.global();
-    if co_id == g.current_thread_id {
-        return COS_RUN;
-    }
-    let entry = match g.threads.get(&co_id) {
-        Some(e) => e,
-        None => return COS_DEAD,
+    let entry_rc = {
+        let g = state.global();
+        if co_id == g.current_thread_id {
+            return COS_RUN;
+        }
+        match g.threads.get(&co_id) {
+            Some(e) => e.state.clone(),
+            None => return COS_DEAD,
+        }
     };
-    let co_state: &lua_vm::state::LuaState = &entry.state;
+    let co_state = entry_rc.borrow();
     let raw_status = co_state.status;
     if raw_status == LuaStatus::Yield as u8 {
         return COS_YIELD;
@@ -138,65 +139,90 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 ///
 /// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
 fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
-    // Look up the body function from the child thread's stack.
-    // new_thread() pushes the body at stack[1] (stack[0] is the base CI nil).
-    // Phase E will replace this with a real cross-thread resume via corosensei.
-    let body_func: Option<LuaValue> = {
+    let co_id = co.id;
+    let entry_rc = {
         let g = state.global();
-        g.threads.get(&co.id).and_then(|entry| {
-            let child: &lua_vm::state::LuaState = &entry.state;
-            if child.top.0 > 1 {
-                let val = child.stack[1].val.clone();
-                if !matches!(val, LuaValue::Nil) { Some(val) } else { None }
-            } else {
-                None
+        match g.threads.get(&co_id) {
+            Some(e) => e.state.clone(),
+            None => {
+                drop(g);
+                push_lit_or_nil(state, b"cannot resume dead coroutine");
+                return -1;
             }
-        })
-    };
-
-    let Some(func) = body_func else {
-        let msg_bytes: &[u8] = b"cannot resume dead coroutine";
-        match state.intern_str(msg_bytes) {
-            Ok(s) => state.push(LuaValue::Str(s)),
-            Err(_) => state.push(LuaValue::Nil),
         }
+    };
+    let parent_thread_id = state.global().current_thread_id;
+    let top_before = state.get_top();
+    if top_before < narg {
+        push_lit_or_nil(state, b"not enough arguments to resume");
         return -1;
+    }
+    let first_arg_idx = top_before - narg + 1;
+    let args: Vec<LuaValue> = (first_arg_idx..=top_before)
+        .map(|i| state.value_at(i))
+        .collect();
+    lua_vm::api::set_top(state, (top_before - narg) as i32).ok();
+
+    let (status, results_or_err): (LuaStatus, Vec<LuaValue>) = {
+        let mut co_state = entry_rc.borrow_mut();
+        if co_state.check_stack(narg + 1).is_err() {
+            drop(co_state);
+            push_lit_or_nil(state, b"too many arguments to resume");
+            return -1;
+        }
+        for v in args {
+            co_state.push(v);
+        }
+        co_state.global_mut().current_thread_id = co_id;
+        let mut nres: i32 = 0;
+        let status = lua_vm::do_::lua_resume(&mut *co_state, None, narg, &mut nres);
+        co_state.global_mut().current_thread_id = parent_thread_id;
+        let co_top = co_state.top_idx().0 as i32;
+        let ci_func = co_state.current_call_info().func.0 as i32;
+        let count = if status == LuaStatus::Ok || status == LuaStatus::Yield {
+            nres
+        } else {
+            1
+        };
+        let start = co_top - count;
+        let vals: Vec<LuaValue> = (start..co_top)
+            .map(|i| co_state.get_at(lua_vm::state::StackIdx(i as u32)))
+            .collect();
+        let new_co_top = if status == LuaStatus::Ok || status == LuaStatus::Yield {
+            (co_top - count).max(ci_func + 1)
+        } else {
+            ci_func + 1
+        };
+        co_state.set_top(lua_vm::state::StackIdx(new_co_top.max(0) as u32));
+        (status, vals)
     };
 
-    // Collect the extra resume arguments (positions 2..=narg+1 in co_resume's frame).
-    let args: Vec<LuaValue> = (2..=narg + 1).map(|i| state.value_at(i)).collect();
-    // Clear extra args from the stack so we can rebuild with func first.
-    if narg > 0 {
-        let _ = lua_vm::api::set_top(state, 1);
-    }
-    // Push func then args: [co_thread, func, arg1, ..., argN].
-    state.push(func);
-    for arg in args {
-        state.push(arg);
-    }
-    // Call the body. Each recursive call increments nCcalls, so deep
-    // coroutine nesting eventually triggers "C stack overflow".
-    match state.call(narg, -1) {
-        Ok(()) => {
-            // Stack is now [co_thread, result1, ..., resultM].
-            // get_top() = M + 1; return M.
-            state.get_top() - 1
+    match status {
+        LuaStatus::Ok | LuaStatus::Yield => {
+            if state.check_stack(results_or_err.len() as i32 + 1).is_err() {
+                push_lit_or_nil(state, b"too many results to resume");
+                return -1;
+            }
+            let n = results_or_err.len();
+            for v in results_or_err {
+                state.push(v);
+            }
+            n as i32
         }
-        Err(e) => {
-            let err_val = match e {
-                LuaError::Runtime(v) | LuaError::Syntax(v) => v,
-                LuaError::Memory => match state.intern_str(b"not enough memory") {
-                    Ok(s) => LuaValue::Str(s),
-                    Err(_) => LuaValue::Nil,
-                },
-                _ => match state.intern_str(b"coroutine error") {
-                    Ok(s) => LuaValue::Str(s),
-                    Err(_) => LuaValue::Nil,
-                },
-            };
-            state.push(err_val);
+        _ => {
+            for v in results_or_err {
+                state.push(v);
+            }
             -1
         }
+    }
+}
+
+/// Helper: push a string literal or fall back to Nil on intern failure.
+fn push_lit_or_nil(state: &mut LuaState, bytes: &[u8]) {
+    match state.intern_str(bytes) {
+        Ok(s) => state.push(LuaValue::Str(s)),
+        Err(_) => state.push(LuaValue::Nil),
     }
 }
 
@@ -229,134 +255,33 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 }
 
-/// Closure body installed by `coroutine.wrap`. The wrapped function is
-/// stored in upvalue slot 1.
+/// Closure body installed by `coroutine.wrap`. The wrapped coroutine
+/// thread is stored in upvalue slot 1 as a `LuaValue::Thread`.
+///
+/// On call: forwards all args to `aux_resume` on the captured thread. On
+/// success returns the yielded/returned values; on coroutine error raises
+/// the error (matching `select(2, assert(resume(co, ...)))` semantics).
 ///
 /// C: `static int luaB_auxwrap(lua_State *L)`
-///
-/// Phase A–D emulation: on the first call, runs the entire wrapped function
-/// with a yield buffer installed, collects all yield batches (one per
-/// `coroutine.yield(...)` call) and the function's final return values as
-/// the last batch, stores them in `GlobalState::wrap_iter_state` keyed by
-/// this closure's identity, and returns the first batch. Subsequent calls
-/// dispense one batch per call (matching real coroutine semantics) until the
-/// final-return batch is returned, at which point the entry is removed.
-/// Phase E replaces this with the full cross-thread `auxresume` sequence
-/// once stackful coroutines land.
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
-    let ci_func = state.current_call_info().func;
-    let func_val = state.get_at(ci_func);
-    let cache_key = match &func_val {
-        LuaValue::Function(LuaClosure::C(ccl)) => ccl.identity(),
+    let up = state.value_at(upvalue_index(1));
+    let co = match up {
+        LuaValue::Thread(t) => t,
         _ => {
             return Err(LuaError::runtime(format_args!(
-                "coroutine.wrap: aux_wrap called on non-C-closure"
+                "coroutine.wrap: upvalue is not a thread"
             )))
         }
     };
-    drop(func_val);
-
-    enum Dispense {
-        Batch(Vec<LuaValue>),
-        Drain(Option<LuaError>),
+    let narg = state.get_top();
+    let r = aux_resume(state, co, narg);
+    if r < 0 {
+        let top = state.get_top();
+        let err_val = state.value_at(top);
+        Err(LuaError::from_value(err_val))
+    } else {
+        Ok(r as usize)
     }
-
-    let maybe_next: Option<Dispense> = {
-        let mut g = state.global_mut();
-        g.wrap_iter_state.get_mut(&cache_key).map(|(batches, idx, pending_err)| {
-            if *idx < batches.len() {
-                let batch = batches[*idx].clone();
-                *idx += 1;
-                Dispense::Batch(batch)
-            } else {
-                Dispense::Drain(pending_err.take())
-            }
-        })
-    };
-
-    match maybe_next {
-        Some(Dispense::Batch(batch)) => {
-            let n = batch.len();
-            for v in batch {
-                state.push(v);
-            }
-            return Ok(n);
-        }
-        Some(Dispense::Drain(pending_err)) => {
-            state.global_mut().wrap_iter_state.remove(&cache_key);
-            if let Some(err) = pending_err {
-                return Err(err);
-            }
-            return Ok(0);
-        }
-        None => {}
-    }
-
-    // First call: run the wrapped function with a yield buffer active.
-    //
-    // PORT NOTE: We must use a protected call here, not a plain call. When the
-    // wrapped function raises an error, an unprotected call leaves state.ci
-    // pointing at the inner function's CallInfo instead of aux_wrap's. Every
-    // subsequent stack operation in aux_wrap then uses the wrong stack base,
-    // corrupting results and causing spurious "attempt to call a nil value"
-    // panics downstream. A protected call mirrors what real Lua does:
-    // coroutine.wrap / lua_resume use lua_pcall internally so errors trigger
-    // TBC cleanup and CI restoration before returning to the caller.
-    let nargs = state.get_top();
-    let func = state.value_at(upvalue_index(1));
-    state.push(func);
-    if nargs > 0 {
-        state.insert(1)?;
-    }
-    state.push_yield_buffer();
-    // Use LUA_MULTRET (-1) so the function's final return values reach the stack.
-    let call_result = state.protected_call(nargs, -1, 0);
-
-    // If the call succeeded, capture its final return values as the closing
-    // batch.  On error we discard whatever residue is on the stack and defer
-    // the error to fire after all already-buffered yield batches have been
-    // dispensed (matches C-Lua: yields happen before the error surfaces).
-    let (mut batches, pending_err) = match call_result {
-        Ok(_) => {
-            let nret = state.get_top() as i32;
-            let final_batch: Vec<LuaValue> =
-                (1..=nret).map(|i| state.value_at(i)).collect();
-            let mut batches = state.pop_yield_buffer();
-            batches.push(final_batch);
-            (batches, None)
-        }
-        Err(e) => {
-            let batches = state.pop_yield_buffer();
-            (batches, Some(e))
-        }
-    };
-
-    // Clear residual stack values; we'll push the first batch instead.
-    lua_vm::api::set_top(state, 0)?;
-
-    if batches.is_empty() {
-        if let Some(err) = pending_err {
-            return Err(err);
-        }
-        return Ok(0);
-    }
-
-    // Remove and return the first batch; save the rest plus any pending
-    // error for subsequent calls.
-    let first = batches.remove(0);
-    let first_n = first.len();
-
-    if !batches.is_empty() || pending_err.is_some() {
-        state
-            .global_mut()
-            .wrap_iter_state
-            .insert(cache_key, (batches, 0, pending_err));
-    }
-
-    for v in first {
-        state.push(v);
-    }
-    Ok(first_n)
 }
 
 /// `coroutine.create(f)` — create a new coroutine that will run function `f`.
@@ -386,13 +311,9 @@ pub fn co_create(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int luaB_cowrap(lua_State *L)`
 ///
-/// Phase A–D emulation: captures `f` as upvalue 1 of `aux_wrap`. Each
-/// call to the returned function forwards directly to `f` with the same
-/// args. Phase E will replace this with the real `luaB_cocreate` +
-/// `auxresume` sequence once stackful coroutines land.
+/// Captures the new coroutine thread as upvalue 1 of `aux_wrap`.
 pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
-    state.check_arg_type(1, LuaType::Function)?;
-    state.push_value_at(1)?;
+    co_create(state)?;
     state.push_cclosure(aux_wrap, 1)?;
     Ok(1)
 }
@@ -404,22 +325,7 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 /// C: `static int luaB_yield(lua_State *L)`
 /// → `return lua_yield(L, lua_gettop(L));`
 /// → `lua_yield(L,n)` is `lua_yieldk(L, n, 0, NULL)` (lua.h:316)
-///
-/// Phase A–D buffering-emulation hook: if `aux_wrap` has installed a yield
-/// buffer on the LuaState (signalling that a `coroutine.wrap` body is
-/// running synchronously on the main thread), append the arguments into
-/// that buffer and return 0 values without suspending. The wrapped
-/// function continues to run; `aux_wrap` dispenses the buffered values one
-/// per call. If no buffer is active we fall through to the faithful
-/// `lua_yieldk` translation, which on the main thread surfaces the C-Lua
-/// "attempt to yield from outside a coroutine" error.
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
-    if state.has_yield_buffer() {
-        let n = state.get_top();
-        let batch: Vec<LuaValue> = (1..=n).map(|i| state.value_at(i)).collect();
-        state.yield_buffer_push_batch(batch);
-        return Ok(0);
-    }
     let n = state.get_top();
     let r = lua_vm::do_::lua_yieldk(state, n, 0, None)?;
     Ok(r as usize)
@@ -451,15 +357,22 @@ pub fn co_isyieldable(state: &mut LuaState) -> Result<usize, LuaError> {
     } else {
         let co = get_co(state)?;
         let co_id = co.id;
-        let g = state.global();
-        if co_id == g.main_thread_id {
-            false
-        } else {
-            let entry = g
-                .threads
-                .get(&co_id)
-                .expect("thread value carries an id that must resolve in GlobalState::threads");
-            entry.state.is_yieldable()
+        let entry_rc = {
+            let g = state.global();
+            if co_id == g.main_thread_id {
+                None
+            } else {
+                Some(g
+                    .threads
+                    .get(&co_id)
+                    .expect("thread value carries an id that must resolve in GlobalState::threads")
+                    .state
+                    .clone())
+            }
+        };
+        match entry_rc {
+            None => false,
+            Some(rc) => rc.borrow().is_yieldable(),
         }
     };
     state.push(LuaValue::Bool(is_yieldable));

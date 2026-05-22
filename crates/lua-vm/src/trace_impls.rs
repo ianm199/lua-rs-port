@@ -103,7 +103,7 @@ impl Trace for GlobalState {
         self.main_thread_value.trace(m);
 
         for entry in self.threads.values() {
-            entry.state.trace(m);
+            entry.state.borrow().trace(m);
             entry.value.trace(m);
         }
 

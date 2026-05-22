@@ -699,11 +699,11 @@ pub type DynLibUnloadHook = fn(handle: DynLibId);
 /// extends it with interior-mutability bookkeeping when `resume`/`yield`
 /// need to mutate the child thread while the parent holds a borrow.
 pub struct ThreadRegistryEntry {
-    /// The owned coroutine `LuaState`. The Phase E-1 slice only ever
-    /// reads through this handle (for `coroutine.status`); slice 02b
-    /// wraps it in interior mutability when resume / yield need to
-    /// mutate the child while the parent is borrowed.
-    pub state: GcRef<LuaState>,
+    /// The owned coroutine `LuaState`. Wrapped in `Rc<RefCell<...>>` so
+    /// that `coroutine.resume` can borrow the child mutably while the
+    /// parent is still in scope. Single-threaded — borrows never overlap
+    /// in practice because only one resume path is live at a time.
+    pub state: Rc<RefCell<LuaState>>,
     /// Canonical thread-value handle. Reused on every push so
     /// `GcRef::ptr_eq` is true across pushes.
     pub value: GcRef<lua_types::value::LuaThread>,
@@ -984,14 +984,6 @@ pub struct GlobalState {
     /// state initialization, at which point `step` runs during VM dispatch.
     pub heap: lua_gc::Heap,
 
-    /// Phase A–D coroutine.wrap iterator emulation.
-    ///
-    /// Maps a C closure's identity (GcRef::identity()) to the buffered yield
-    /// values and current dispense index. `aux_wrap` runs the wrapped function
-    /// once (with a yield buffer installed), collects all yielded values here,
-    /// then dispenses them one per iterator call. Cleared when the iterator is
-    /// exhausted. Phase E replaces this with real stackful coroutines.
-    pub wrap_iter_state: std::collections::HashMap<usize, (Vec<Vec<LuaValue>>, usize, Option<lua_types::error::LuaError>)>,
 }
 
 impl GlobalState {
@@ -1263,15 +1255,6 @@ pub struct LuaState {
     // types.tsv: GCObject.marked → u8
     pub marked: u8,
 
-    /// Stack of yield-batch buffers used by the Phase A–D buffering coroutine
-    /// emulation. Each `coroutine.wrap` invocation pushes an empty entry
-    /// before running the wrapped function, and pops it when the function
-    /// returns. While an entry is on top, `coroutine.yield(v...)` appends a
-    /// new batch (all current args) instead of suspending. The outer Vec is a
-    /// stack for nested wraps; the inner `Vec<Vec<LuaValue>>` is the list of
-    /// yield batches accumulated for one wrap invocation. Phase E replaces
-    /// this with the real stackful coroutine runtime (corosensei).
-    pub yield_buffers: Vec<Vec<Vec<LuaValue>>>,
 }
 
 impl LuaState {
@@ -1332,39 +1315,6 @@ impl LuaState {
     /// macros.tsv: `yieldable → state.is_yieldable()`
     pub fn is_yieldable(&self) -> bool {
         (self.nCcalls & 0xffff0000) == 0
-    }
-
-    /// Push an empty yield buffer onto the buffer stack. Subsequent
-    /// `coroutine.yield(v...)` calls will append into this buffer instead
-    /// of suspending. Part of the Phase A–D buffering coroutine emulation;
-    /// Phase E replaces this with real corosensei coroutines.
-    pub fn push_yield_buffer(&mut self) {
-        self.yield_buffers.push(Vec::new());
-    }
-
-    /// Pop the top yield buffer, returning its accumulated batches.
-    /// Each batch is the slice of values from one `coroutine.yield(...)` call.
-    /// Caller must ensure the buffer stack is non-empty (i.e. a matching
-    /// `push_yield_buffer` was issued earlier).
-    pub fn pop_yield_buffer(&mut self) -> Vec<Vec<LuaValue>> {
-        self.yield_buffers
-            .pop()
-            .expect("pop_yield_buffer with empty buffer stack")
-    }
-
-    /// Returns `true` if a yield buffer is currently active (a wrap'd
-    /// coroutine body is running).
-    pub fn has_yield_buffer(&self) -> bool {
-        !self.yield_buffers.is_empty()
-    }
-
-    /// Append one yield batch to the top yield buffer. Each call to
-    /// `coroutine.yield(v...)` maps to one batch; `v...` are the batch values.
-    /// Caller must ensure the buffer stack is non-empty (guarded by
-    /// `has_yield_buffer`).
-    pub fn yield_buffer_push_batch(&mut self, batch: Vec<LuaValue>) {
-        let n = self.yield_buffers.len();
-        self.yield_buffers[n - 1].push(batch);
     }
 
     /// Reset the hook countdown to the baseline.
@@ -3286,7 +3236,6 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
         nCcalls: 0,
         oldpc: 0,
         marked: 0,
-        yield_buffers: Vec::new(),
     };
 
     // C: preinit_thread(L1, g);
@@ -3316,7 +3265,7 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
         new_thread.push(body);
     }
 
-    let thread_ref: GcRef<LuaState> = GcRef::new(new_thread);
+    let thread_ref: Rc<RefCell<LuaState>> = Rc::new(RefCell::new(new_thread));
 
     let value = {
         let mut g = state.global_mut();
@@ -3617,7 +3566,6 @@ pub fn new_state() -> Option<LuaState> {
         warnf: None,
         c_functions: Vec::new(),
         heap: lua_gc::Heap::new(),
-        wrap_iter_state: std::collections::HashMap::new(),
     };
 
     let global_rc = Rc::new(RefCell::new(global));
@@ -3647,7 +3595,6 @@ pub fn new_state() -> Option<LuaState> {
         nCcalls: 0,
         oldpc: 0,
         marked: initial_marked,
-        yield_buffers: Vec::new(),
     };
 
     // C: preinit_thread(L, g);
