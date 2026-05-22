@@ -635,3 +635,4 @@
 [2026-05-18T01:42:15Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: attempt to call a boolean value): reference/lua-c/testes/pm.lua
 [2026-05-18T01:42:15Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: 202: assertion failed!): reference/lua-c/testes/strings.lua
 [2026-05-18T01:42:15Z mega]   [O3.D4] DEBUG dispatch on file: reference/lua-c/testes/bitwise.lua [parallel]
+[2026-05-18T01:44:29Z mega]   [O3.D5] DEBUG dispatch on file: reference/lua-c/testes/math.lua [parallel]

@@ -4060,13 +4060,17 @@ fn getlocalattribute(ls: &mut LexState, state: &mut LuaState) -> Result<VarKind,
     if test_next(ls, state, b'<' as TokenKind)? {
         let attr_name = str_check_name(ls, state)?;
         check_next(ls, state, b'>' as TokenKind)?;
-        // C: if (strcmp(attr, "const") == 0) return RDKCONST
-        //    else if (strcmp(attr, "close") == 0) return RDKTOCLOSE
-        //    else luaK_semerror(ls, ...)
-        // TODO(port): compare attr_name.as_bytes() with b"const" and b"close"
-        // For Phase A, return Reg as placeholder and mark TODO
-        // TODO(port): compare attribute name bytes
-        return Ok(VarKind::Reg); // placeholder
+        let bytes = attr_name.as_bytes();
+        if bytes == b"const" {
+            return Ok(VarKind::Const);
+        } else if bytes == b"close" {
+            return Ok(VarKind::ToBeClosed);
+        } else {
+            let name_str = String::from_utf8_lossy(bytes);
+            return Err(LuaError::syntax(format_args!(
+                "unknown attribute '{}'", name_str
+            )));
+        }
     }
     Ok(VarKind::Reg)
 }
@@ -4077,7 +4081,15 @@ fn checktoclose(ls: &mut LexState, state: &mut LuaState, level: i32) -> Result<(
         marktobeclosed(ls.fs.as_mut().unwrap());
         // C: luaK_codeABC(fs, OP_TBC, reglevel(fs, level), 0, 0)
         let rl = reg_level(ls, ls.fs.as_ref().unwrap(), level);
-        // TODO(port): lua_code::code_abc(ls.fs.as_mut().unwrap(), OpCode::Tbc, rl, 0, 0)?;
+        let line = ls.linenumber;
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Tbc,
+            rl as u32,
+            0,
+            0,
+            0,
+        );
+        emit_inst(ls.fs.as_mut().unwrap(), line, inst);
     }
     Ok(())
 }

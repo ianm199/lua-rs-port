@@ -2,12 +2,13 @@
 [2/4] Opening standard library...
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
-a
-b
-created
-dummy()=	function: 0x6000004ff5e0	a[1]=	function: 0x6000004ff5e0
-d ok
-1 ok
-3 ok
-end:	table: 0x600001ff88d0
+testing closures
+calling f(10)
+f(10) returned
+set x
+set meta
+loop too long, count=	5001
+after gc loop, count=	5001	A=	5001
+a1 ok
+a1b ok
 [ok] execution completed, status=Ok
