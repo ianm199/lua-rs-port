@@ -395,7 +395,6 @@ fn prep_call_close_mth(
 ///
 /// C: `void luaF_newtbcupval(lua_State *L, StkId level)`
 pub(crate) fn new_tbc_upval(state: &mut LuaState, level: StackIdx) -> Result<(), LuaError> {
-    eprintln!("DEBUG new_tbc_upval level={}", level.0);
     // C: lua_assert(level > L->tbclist.p);
     // In Rust: tbclist is Vec<StackIdx>, "current head" = last element.
     debug_assert!(
@@ -406,7 +405,6 @@ pub(crate) fn new_tbc_upval(state: &mut LuaState, level: StackIdx) -> Result<(),
     // macros.tsv: l_isfalse → matches!(o, LuaValue::Nil | LuaValue::Bool(false))
     // Clone before borrow to avoid aliasing with later mutable calls.
     let val = state.get_stack_value(level).clone();
-    eprintln!("DEBUG new_tbc_upval val={:?}", val);
     if matches!(val, LuaValue::Nil | LuaValue::Bool(false)) {
         return Ok(());
     }
@@ -752,35 +750,31 @@ impl LuaState {
     /// Calls a Lua or C function (yieldable).
     ///
     /// C: `luaD_call(L, top, nresults)`.
-    /// TODO(port): real implementation in do_.rs.
-    pub(crate) fn lua_call(&mut self, _top: StackIdx, _nresults: i32) -> Result<(), LuaError> {
-        // TODO(port): implement in do_.rs
-        Ok(())
+    pub(crate) fn lua_call(&mut self, top: StackIdx, nresults: i32) -> Result<(), LuaError> {
+        crate::do_::call(self, top, nresults)
     }
 
     /// Calls a Lua or C function (non-yieldable).
     ///
     /// C: `luaD_callnoyield(L, top, nresults)`.
-    /// TODO(port): real implementation in do_.rs.
     pub(crate) fn lua_callnoyield(
         &mut self,
-        _top: StackIdx,
-        _nresults: i32,
+        top: StackIdx,
+        nresults: i32,
     ) -> Result<(), LuaError> {
-        // TODO(port): implement in do_.rs
-        Ok(())
+        crate::do_::callnoyield(self, top, nresults)
     }
 
     /// Sets the error object at a given stack index for a given status code.
     ///
     /// C: `luaD_seterrorobj(L, status, level)`.
-    /// TODO(port): real implementation in do_.rs.
     pub(crate) fn set_error_obj(
         &mut self,
-        _status: i32,
-        _idx: StackIdx,
+        status: i32,
+        idx: StackIdx,
     ) -> Result<(), LuaError> {
-        // TODO(port): implement in do_.rs
+        let s = lua_types::status::LuaStatus::from_raw(status);
+        crate::do_::set_error_obj(self, s, idx);
         Ok(())
     }
 
