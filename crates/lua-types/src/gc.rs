@@ -15,6 +15,40 @@ impl<T> GcRef<T> {
 impl<T: ?Sized> GcRef<T> {
     pub fn ptr_eq(a: &Self, b: &Self) -> bool { Rc::ptr_eq(&a.0, &b.0) }
     pub fn identity(&self) -> usize { Rc::as_ptr(&self.0) as *const () as usize }
+
+    // ── Phase D-1b: encapsulated Rc surface ────────────────────────────────
+    // The backend is `Rc<T>` today. When D-1e flips `GcRef<T> = lua_gc::Gc<T>`,
+    // these wrappers map to the new ops (Gc has its own counts/weak refs by
+    // then). Callers must NOT touch `.0` directly — that's reserved for
+    // the gc.rs internals.
+
+    pub fn strong_count(&self) -> usize { Rc::strong_count(&self.0) }
+    pub fn weak_count(&self) -> usize { Rc::weak_count(&self.0) }
+    pub fn downgrade(&self) -> GcWeak<T> { GcWeak(Rc::downgrade(&self.0)) }
+}
+
+/// A weak handle to a `GcRef<T>`. Phase A/B/C/D-0 wraps `std::rc::Weak`; at
+/// D-2 this becomes a real GC weak reference. The trait surface stays the
+/// same so callers never see the backend change.
+#[derive(Debug)]
+pub struct GcWeak<T: ?Sized>(pub std::rc::Weak<T>);
+
+impl<T: ?Sized> GcWeak<T> {
+    /// Promote back to a strong reference, or `None` if the underlying
+    /// object has been collected.
+    pub fn upgrade(&self) -> Option<GcRef<T>> {
+        self.0.upgrade().map(GcRef)
+    }
+
+    /// Number of strong references to the underlying object. Returns 0
+    /// once the object has been collected.
+    pub fn strong_count(&self) -> usize {
+        std::rc::Weak::strong_count(&self.0)
+    }
+}
+
+impl<T: ?Sized> Clone for GcWeak<T> {
+    fn clone(&self) -> Self { GcWeak(self.0.clone()) }
 }
 
 impl<T: ?Sized + lua_gc::Trace> GcRef<T> {
@@ -51,6 +85,6 @@ impl<T: ?Sized> AsRef<T> for GcRef<T> {
 
 impl<T: PartialEq + ?Sized> PartialEq for GcRef<T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0) || **self == **other
+        GcRef::ptr_eq(&self, &other) || **self == **other
     }
 }

@@ -1555,7 +1555,7 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
             let pending = &state.global().pending_finalizers;
             let mut found: Option<usize> = None;
             for (i, t) in pending.iter().enumerate().rev() {
-                if std::rc::Rc::strong_count(&t.0) == 1 {
+                if t.strong_count() == 1 {
                     found = Some(i);
                     break;
                 }
@@ -1574,7 +1574,7 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
             .global()
             .pending_finalizers
             .iter()
-            .filter(|t| std::rc::Rc::strong_count(&t.0) == 1)
+            .filter(|t| t.strong_count() == 1)
             .cloned()
             .collect();
         let weak_tables_pre: Vec<GcRef<lua_types::value::LuaTable>> = collect_live_weak_tables(state);
@@ -1622,9 +1622,9 @@ fn collect_live_weak_tables(state: &mut LuaState) -> Vec<GcRef<lua_types::value:
         .iter()
         .filter_map(|w| w.upgrade())
         .filter_map(|rc| {
-            let id = std::rc::Rc::as_ptr(&rc) as *const () as usize;
+            let id = rc.identity();
             if seen.insert(id) {
-                Some(GcRef(rc))
+                Some(rc)
             } else {
                 None
             }
@@ -1663,7 +1663,7 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
                 state
                     .global_mut()
                     .weak_tables_registry
-                    .push(std::rc::Rc::downgrade(&tbl.0));
+                    .push(tbl.downgrade());
             }
             // C: luaC_checkfinalizer(L, gcvalue(obj), mt);
             // Phase-B finalizer registration: if the new metatable carries
@@ -1906,9 +1906,9 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                     .iter()
                     .filter_map(|w| w.upgrade())
                     .filter_map(|rc| {
-                        let id = std::rc::Rc::as_ptr(&rc) as *const () as usize;
+                        let id = rc.identity();
                         if seen.insert(id) {
-                            Some(GcRef(rc))
+                            Some(rc)
                         } else {
                             None
                         }

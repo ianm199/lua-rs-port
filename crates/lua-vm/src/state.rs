@@ -721,7 +721,7 @@ pub struct GlobalState {
     /// registry itself does not pin tables that the user has dropped.
     /// Replaced by the proper `weak` / `ephemeron` / `allweak` lists when
     /// Phase D's incremental sweep lands.
-    pub weak_tables_registry: Vec<std::rc::Weak<lua_types::value::LuaTable>>,
+    pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
 
     /// Phase-B long-string allocation tracker.
     ///
@@ -731,7 +731,7 @@ pub struct GlobalState {
     /// dropped, so the Lua-visible memory total tracks live long-string bytes.
     /// Short strings are interned and bounded in size, so they are not tracked
     /// individually. Replaced by Phase D's real allocator accounting.
-    pub gc_tracked_long_strings: Vec<(std::rc::Weak<lua_types::string::LuaString>, usize)>,
+    pub gc_tracked_long_strings: Vec<(lua_types::gc::GcWeak<lua_types::string::LuaString>, usize)>,
 
     /// Phase-B pending-finalizer registry.
     ///
@@ -1278,7 +1278,7 @@ impl LuaState {
             let mut g = self.global_mut();
             g.gc_debt += size as isize;
             g.gc_tracked_long_strings
-                .push((std::rc::Rc::downgrade(&new_ref.0), size));
+                .push((new_ref.downgrade(), size));
             Ok(new_ref)
         }
     }
