@@ -9,7 +9,7 @@ testing metatables
 +
 +
 
-thread 'main' (10927762) panicked at crates/lua-vm/src/api.rs:1642:9:
+thread 'main' (10923108) panicked at crates/lua-vm/src/api.rs:1642:9:
 table expected
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 [panic] table expected

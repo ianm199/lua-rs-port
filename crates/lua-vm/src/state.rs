@@ -723,6 +723,16 @@ pub struct GlobalState {
     /// Phase D's incremental sweep lands.
     pub weak_tables_registry: Vec<std::rc::Weak<lua_types::value::LuaTable>>,
 
+    /// Phase-B long-string allocation tracker.
+    ///
+    /// Each entry pairs a `Weak<LuaString>` with the byte count that was
+    /// added to `gc_debt` at allocation time. `collectgarbage("count")` walks
+    /// the list and reclaims `gc_debt` for entries whose weak target has been
+    /// dropped, so the Lua-visible memory total tracks live long-string bytes.
+    /// Short strings are interned and bounded in size, so they are not tracked
+    /// individually. Replaced by Phase D's real allocator accounting.
+    pub gc_tracked_long_strings: Vec<(std::rc::Weak<lua_types::string::LuaString>, usize)>,
+
     /// Phase-B pending-finalizer registry.
     ///
     /// Each entry is a strong `GcRef<LuaTable>` to a table whose metatable
@@ -1213,7 +1223,25 @@ impl LuaState {
                 .insert(bytes.to_vec().into_boxed_slice(), new_ref.clone());
             Ok(new_ref)
         } else {
-            Ok(GcRef::new(LuaString::from_bytes(bytes.to_vec())))
+            let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
+            // PORT NOTE: Phase-B byte tracking for `collectgarbage("count")`.
+            // C-Lua's `luaC_newobj` calls `luaM_malloc`, which adds
+            // `sizeof(TString) + len + 1` to `g->GCdebt`. Phases A–C bypass
+            // that allocator, so without explicit accounting the Lua-visible
+            // memory total never reflects string payload — gc.lua's
+            // string-keys-in-weak-tables block depends on observing the >8MB
+            // jump after allocating two 4MB strings. Short strings are
+            // interned (bounded in size) so they are not tracked here.
+            // `reclaim_dead_long_strings` later subtracts the size back out
+            // when the underlying `Rc` is dropped.
+            let size = bytes.len()
+                + std::mem::size_of::<LuaString>()
+                + std::mem::size_of::<usize>();
+            let mut g = self.global_mut();
+            g.gc_debt += size as isize;
+            g.gc_tracked_long_strings
+                .push((std::rc::Rc::downgrade(&new_ref.0), size));
+            Ok(new_ref)
         }
     }
 
@@ -1494,11 +1522,7 @@ impl LuaState {
     /// literal — concat must produce a new object even when the literal already
     /// lives in the lexer's constant pool.
     pub fn intern_or_create_str(&mut self, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
-        if bytes.len() <= 40 {
-            self.intern_str(bytes)
-        } else {
-            Ok(GcRef::new(LuaString::from_bytes(bytes.to_vec())))
-        }
+        self.intern_str(bytes)
     }
     pub fn new_userdata(&mut self, _size: usize, _nuvalue: usize) -> Result<GcRef<LuaUserData>, LuaError> { todo!("phase-b: new_userdata") }
     pub fn new_c_closure(&mut self, _f: LuaCFunction, _n: i32) -> Result<LuaClosure, LuaError> { todo!("phase-b: new_c_closure") }
@@ -2108,6 +2132,28 @@ pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
     g.totalbytes = tb - debt;
     // C: g->GCdebt = debt;
     g.gc_debt = debt;
+}
+
+/// Sweep the Phase-B long-string tracker and decrement `gc_debt` by the
+/// recorded byte count of any entry whose underlying `Rc` has been dropped.
+///
+/// PORT NOTE: Phase D will replace this with the real allocator's per-object
+/// accounting through `luaM_realloc`. For now, long-string creation pushes a
+/// `(Weak, size)` pair onto `gc_tracked_long_strings`, and this helper
+/// reclaims the bytes lazily — at every `collectgarbage("count")` query and
+/// at the end of `collectgarbage("collect")` — so the Lua-visible memory
+/// total reflects live string bytes rather than peak allocation.
+pub(crate) fn reclaim_dead_long_strings(g: &mut GlobalState) {
+    let mut freed: isize = 0;
+    g.gc_tracked_long_strings.retain(|(w, sz)| {
+        if w.strong_count() == 0 {
+            freed += *sz as isize;
+            false
+        } else {
+            true
+        }
+    });
+    g.gc_debt -= freed;
 }
 
 /// Deprecated no-op that returns `LUAI_MAXCCALLS`.
@@ -2909,6 +2955,7 @@ pub fn new_state() -> Option<LuaState> {
         ephemeron: Vec::new(),
         allweak: Vec::new(),
         weak_tables_registry: Vec::new(),
+        gc_tracked_long_strings: Vec::new(),
         pending_finalizers: Vec::new(),
         // C: g->twups = NULL;
         twups: Vec::new(),

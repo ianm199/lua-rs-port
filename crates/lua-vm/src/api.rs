@@ -1919,6 +1919,18 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             // sweep so weak entries are cleared first (matches C-Lua, which
             // runs finalizers after the atomic weak-pass).
             run_pending_finalizers(state);
+            // PORT NOTE: Phase-B long-string accounting. Reclaim `gc_debt`
+            // for any tracked long-string Rc whose strong count has dropped
+            // to zero (either because the weak-table sweep above released
+            // the last reference, or because the user dropped it directly).
+            // Without this, `collectgarbage("count")` would report peak
+            // allocation rather than live bytes — gc.lua's weak-string-key
+            // block depends on the post-collect count being lower than the
+            // pre-collect count.
+            {
+                let mut g = state.global_mut();
+                crate::state::reclaim_dead_long_strings(&mut *g);
+            }
             // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
             // so total_bytes() only ever shrinks (each `Step` simulates
             // freed memory). Refill to a baseline here so subsequent Step
@@ -1937,10 +1949,26 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
         }
         // C: case LUA_GCCOUNT: res = cast_int(gettotalbytes(g) >> 10);
         GcArgs::Count => {
-            return (state.global().total_bytes() >> 10) as i32;
+            {
+                let mut g = state.global_mut();
+                crate::state::reclaim_dead_long_strings(&mut *g);
+            }
+            let g = state.global();
+            eprintln!("[DBG count] totalbytes={} gc_debt={} tracked_strings={}", g.totalbytes, g.gc_debt, g.gc_tracked_long_strings.len());
+            for (i, (w, sz)) in g.gc_tracked_long_strings.iter().enumerate() {
+                if let Some(rc) = w.upgrade() {
+                    let preview: Vec<u8> = rc.as_bytes().iter().take(8).copied().collect();
+                    eprintln!("  [{}] size={} strong={} preview={:?}", i, sz, std::rc::Rc::strong_count(&rc), preview);
+                }
+            }
+            return (g.total_bytes() >> 10) as i32;
         }
         // C: case LUA_GCCOUNTB: res = cast_int(gettotalbytes(g) & 0x3ff);
         GcArgs::CountB => {
+            {
+                let mut g = state.global_mut();
+                crate::state::reclaim_dead_long_strings(&mut *g);
+            }
             return (state.global().total_bytes() & 0x3ff) as i32;
         }
         // C: case LUA_GCSTEP: ...

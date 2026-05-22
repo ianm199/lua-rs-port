@@ -994,7 +994,12 @@ impl LuaStateStubExt for LuaState {
             out.extend_from_slice(chunk);
             Ok(())
         };
-        lua_vm::api::dump(self, &mut writer, strip)?;
+        let ok = lua_vm::api::dump(self, &mut writer, strip)?;
+        if !ok {
+            return Err(LuaError::runtime(format_args!(
+                "unable to dump given function"
+            )));
+        }
         Ok(out)
     }
 
