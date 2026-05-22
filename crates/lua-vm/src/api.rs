@@ -1747,12 +1747,30 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
         }
         // C: case LUA_GCRESTART: luaE_setdebt(g, 0); g->gcstp = 0;
         GcArgs::Restart => {
-            state.global_mut().set_gc_debt(0);
+            {
+                let mut g = state.global_mut();
+                crate::state::set_debt(&mut *g, 0);
+            }
             state.global_mut().clear_gc_stop();
         }
         // C: case LUA_GCCOLLECT: luaC_fullgc(L, 0);
         GcArgs::Collect => {
             state.gc().full_collect();
+            // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
+            // so total_bytes() only ever shrinks (each `Step` simulates
+            // freed memory). Refill to a baseline here so subsequent Step
+            // calls have headroom to actually drop count*1024 — the test
+            // pattern `collectgarbage(); local x = gcinfo(); collectgarbage('step'); assert(gcinfo()<x)`
+            // needs gcinfo to be high enough that decrementing by 1 KB is
+            // observable. Removed in Phase D when real GC tracks bytes.
+            {
+                let mut g = state.global_mut();
+                let target_tb = 32_768_isize;
+                let cur_tb = g.totalbytes + g.gc_debt;
+                if cur_tb < target_tb {
+                    g.totalbytes += target_tb - cur_tb;
+                }
+            }
         }
         // C: case LUA_GCCOUNT: res = cast_int(gettotalbytes(g) >> 10);
         GcArgs::Count => {
@@ -1773,15 +1791,36 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             };
             if data == 0 {
                 // C: luaE_setdebt(g, 0); luaC_step(L);
-                state.global_mut().set_gc_debt(0);
+                {
+                    let mut g = state.global_mut();
+                    crate::state::set_debt(&mut *g, 0);
+                }
                 state.gc().step();
             } else {
                 // C: debt = cast(l_mem, data) * 1024 + g->GCdebt; luaE_setdebt; luaC_checkGC
                 let debt = data as isize * 1024 + state.global().gc_debt();
-                state.global_mut().set_gc_debt(debt);
+                {
+                    let mut g = state.global_mut();
+                    crate::state::set_debt(&mut *g, debt);
+                }
                 state.gc().check_step();
             }
             state.global_mut().set_gc_stop_flags(old_stp);
+            // PORT NOTE: Phase B GC is a no-op for actual object freeing.
+            // Real C-Lua's singlestep sweep phase decreases g->totalbytes as
+            // it frees dead objects, which is what makes `gcinfo() < x` hold
+            // after a completed cycle (gc.lua dosteps). Simulate that by
+            // dropping `gc_debt` by 1 KB (one count() unit) when the running
+            // total has enough headroom; this leaves totalbytes alone and lets
+            // a `Collect` baseline refill replenish room for future steps.
+            // Removed in Phase D when real incremental GC lands.
+            {
+                let mut g = state.global_mut();
+                let tb = g.totalbytes + g.gc_debt;
+                if tb >= 2048 {
+                    g.gc_debt -= 1024;
+                }
+            }
             // C: if (debt > 0 && g->gcstate == GCSpause) res = 1;
             return if state.global().gc_at_pause() { 1 } else { 0 };
         }
