@@ -3,4 +3,9 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing i/o
-lua: pcall_k failed: Runtime: TODO(port): borrow split needed for f_seek
++
+
+thread 'main' (14111335) panicked at crates/lua-vm/src/debug.rs:934:9:
+get_info: non-function at ci->func
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[panic] get_info: non-function at ci->func

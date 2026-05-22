@@ -6,8 +6,5 @@ testing local variables and environments
 +
 testing to-be-closed variables
 testing errors in __close
-
-thread 'main' (13739424) panicked at crates/lua-vm/src/state.rs:1583:44:
-not yet implemented: phase-b: set_hook
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b: set_hook
+to-be-closed variables in coroutines
+lua: pcall_k failed: Runtime: attempt to call a nil value
