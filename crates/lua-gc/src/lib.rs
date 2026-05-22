@@ -2,12 +2,15 @@
 //!
 //! Modules:
 //!   heap — Phase-D production mark-sweep (Gc<T>, Trace, Heap)
-//!   gc   — legacy partial port of lgc.c (reference; not used by runtime)
-//!   mem  — legacy partial port of lmem.c (reference; not used by runtime)
+//!
+//! `gc.rs` and `mem.rs` exist on disk as reference-only partial ports of
+//! C-Lua's lgc.c and lmem.c — they are not declared as modules here because
+//! they import `LuaState` from `lua-vm` (which now depends on this crate,
+//! and a cycle is rejected by cargo). Re-introducing them as a build target
+//! requires inverting the dependency: lua-vm exposes a Heap-aware trait
+//! and the legacy ports operate against the trait. Out of scope for D-0.
 
 pub mod heap;
-pub mod gc;
-pub mod mem;
 
 pub use heap::{Color, Gc, GcBox, GcHeader, GcState, Heap, Marker, Trace};
 

@@ -13,4 +13,3 @@ unsafe_code = "allow"
 
 [dependencies]
 lua-types.workspace = true
-lua-vm.workspace = true
