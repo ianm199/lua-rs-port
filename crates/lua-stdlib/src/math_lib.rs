@@ -283,7 +283,10 @@ fn math_toint(state: &mut LuaState) -> Result<usize, LuaError> {
 fn math_floor(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: if (lua_isinteger(L, 1)) lua_settop(L, 1);  /* integer is its own floor */
     if matches!(state.value_at(1), LuaValue::Int(_)) {
-        state.set_top(1); // keep arg 1 on stack, discard rest
+        // Must go through the public C-API set_top (relative to the call
+        // frame); the inherent LuaState::set_top treats its argument as an
+        // absolute StackIdx.
+        lua_vm::api::set_top(state, 1)?;
     } else {
         // C: lua_Number d = floor(luaL_checknumber(L, 1)); pushnumint(L, d);
         let d = state.check_number(1)?.floor();
@@ -298,7 +301,8 @@ fn math_floor(state: &mut LuaState) -> Result<usize, LuaError> {
 fn math_ceil(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: if (lua_isinteger(L, 1)) lua_settop(L, 1);  /* integer is its own ceil */
     if matches!(state.value_at(1), LuaValue::Int(_)) {
-        state.set_top(1);
+        // Public C-API set_top (relative); inherent LuaState::set_top is absolute.
+        lua_vm::api::set_top(state, 1)?;
     } else {
         let d = state.check_number(1)?.ceil();
         push_num_int(state, d);
@@ -342,7 +346,8 @@ fn math_fmod(state: &mut LuaState) -> Result<usize, LuaError> {
 fn math_modf(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: if (lua_isinteger(L, 1)) { lua_settop(L, 1); lua_pushnumber(L, 0); }
     if matches!(state.value_at(1), LuaValue::Int(_)) {
-        state.set_top(1); // integer part is the integer itself
+        // Public C-API set_top (relative); inherent LuaState::set_top is absolute.
+        lua_vm::api::set_top(state, 1)?; // integer part is the integer itself
         state.push(LuaValue::Float(0.0)); // no fractional part
     } else {
         let n = state.check_number(1)?;

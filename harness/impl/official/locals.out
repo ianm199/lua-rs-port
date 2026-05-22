@@ -3,8 +3,4 @@
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing local variables and environments
-
-thread 'main' (7585801) panicked at crates/lua-stdlib/src/state_stub.rs:262:89:
-not yet implemented: phase-b-reconcile: get_upvalue
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b-reconcile: get_upvalue
+[err] pcall_k failed: Runtime: -- harness preamble: emulate the globals lua-c testes/all.l:84: assertion failed!

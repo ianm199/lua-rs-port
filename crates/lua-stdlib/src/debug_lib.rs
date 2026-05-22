@@ -310,7 +310,8 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     // C: lua_newtable(L);  /* table to collect results */
-    state.new_table();
+    let result_tbl = state.new_table();
+    state.push(LuaValue::Table(result_tbl));
 
     // C: if (strchr(options, 'S')) { ... }
     if options.contains(&b'S') {
