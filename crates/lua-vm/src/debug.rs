@@ -70,10 +70,31 @@ const LUA_ENV: &[u8] = b"_ENV";
 /// TODO(phase-b): expose as `LuaError::runtime_bytes` in lua-types once
 /// that crate has a `LuaString::from_bytes` constructor in its public API.
 fn runtime_bytes(msg: Vec<u8>) -> LuaError {
-    // TODO(D-1c-bridge): allocation outside state context (free fn)
     LuaError::Runtime(lua_types::LuaValue::Str(lua_types::GcRef::new(
         lua_types::LuaString::from_bytes(msg),
     )))
+}
+
+/// Prepend `[source]:line:` to `msg` when the current call frame is a Lua
+/// function. Mirrors what `luaG_addinfo` does for messages routed through
+/// `luaG_runerror`; the typed error constructors below build their own
+/// message and skip that path, so we add the same prefix here.
+fn prefixed_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
+    let ci_idx = state.current_ci_idx();
+    let ci = state.get_ci(ci_idx).clone();
+    if !ci.is_lua() {
+        return runtime_bytes(msg);
+    }
+    let proto = ci_lua_proto(&ci, state);
+    let src = proto.source_string();
+    let line = get_current_line(&ci, state);
+    let prefixed = add_info(
+        None,
+        &msg,
+        src.map(|s| &**s),
+        line,
+    );
+    runtime_bytes(prefixed)
 }
 
 /// Build a `LuaError::Runtime` from the top of the Lua stack.
@@ -1538,8 +1559,13 @@ pub(crate) fn order_error(state: &LuaState, p1: &LuaValue, p2: &LuaValue) -> Lua
 /// returns the formatted string.
 ///
 /// C: `const char *luaG_addinfo(lua_State *L, const char *msg, TString *src, int line)` (LUAI_FUNC)
+///
+/// The C signature takes `lua_State *L` because the result is pushed onto the
+/// Lua stack via `luaO_pushfstring`. Our port returns `Vec<u8>` instead, so
+/// the state parameter is unused — keep an optional reference for callers
+/// that still pass one, but the function works without it.
 pub(crate) fn add_info(
-    state: &mut LuaState,
+    _state: Option<&mut LuaState>,
     msg: &[u8],
     src: Option<&LuaString>,
     line: i32,

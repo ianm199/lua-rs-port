@@ -705,7 +705,7 @@ pub(crate) fn call_order_tm(
     // PORT NOTE: LUA_COMPAT_LT_LE block skipped (see above).
 
     // C: luaG_ordererror(L, p1, p2);  /* no metamethod found */
-    Err(LuaError::order_error(p1, p2))
+    Err(crate::debug::order_error(state, p1, p2))
 }
 
 // ── luaT_callorderiTM ────────────────────────────────────────────────────────
