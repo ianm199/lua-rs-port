@@ -1487,7 +1487,7 @@ fn addliteral(state: &mut LuaState, buf: &mut Vec<u8>, arg: i32) -> Result<(), L
 /// Rust formatting. Edge cases involving locale-dependent behavior (e.g.
 /// `lua_getlocaledecpoint`) are approximated.
 pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
-    let top = state.top_idx().get() as i32;
+    let top = state.get_top();
     let mut arg = 1i32;
     let fmt_bytes = state.check_arg_string(1)?.to_vec();
     let mut buf: Vec<u8> = Vec::new();

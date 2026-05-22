@@ -972,18 +972,18 @@ fn findloader(state: &mut LuaState, name: &[u8]) -> Result<(), LuaError> {
 pub fn ll_require(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: const char *name = luaL_checkstring(L, 1);
     let name = state.check_arg_string(1)?.to_vec();
-    eprintln!("DBG ll_require name={:?} top_pre={}", std::str::from_utf8(&name).unwrap_or("?"), state.top());
 
     // C: lua_settop(L, 1);  -- LOADED table will be at index 2
-    state.set_top(1);
+    // PORT NOTE: must use the public-API `set_top` (relative to the current
+    // C-frame's `func`), not `LuaState::set_top` which is an inherent that
+    // sets an absolute stack index and would truncate the entire stack.
+    lua_vm::api::set_top(state, 1)?;
 
     // C: lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
-    let lt = state.get_field_registry(b"_LOADED");
-    eprintln!("DBG ll_require after get_field_registry _LOADED top={} type@-1={:?} type@2={:?} result={:?}", state.top(), state.type_at(-1), state.type_at(2), lt);
+    state.get_field_registry(b"_LOADED")?;
 
     // C: lua_getfield(L, 2, name);  -- LOADED[name]
-    let r2 = state.get_field(2, &name);
-    eprintln!("DBG ll_require LOADED[{:?}] top={} type@-1={:?} bool@-1={} result={:?}", std::str::from_utf8(&name).unwrap_or("?"), state.top(), state.type_at(-1), state.to_boolean(-1), r2);
+    state.get_field(2, &name)?;
 
     // C: if (lua_toboolean(L, -1)) return 1;  -- package is already loaded
     if state.to_boolean(-1) {

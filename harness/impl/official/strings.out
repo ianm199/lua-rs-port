@@ -1,6 +1,91 @@
 [1/4] Creating LuaState...
 [2/4] Opening standard library...
+DBG requiref BEGIN modname="_G" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."_G" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["_G"]=mod top=2
+DBG requiref END modname="_G" top_post=1
+DBG requiref BEGIN modname="package" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."package" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["package"]=mod top=2
+DBG requiref END modname="package" top_post=1
+DBG requiref BEGIN modname="coroutine" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."coroutine" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["coroutine"]=mod top=2
+DBG requiref END modname="coroutine" top_post=1
+DBG requiref BEGIN modname="table" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."table" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["table"]=mod top=2
+DBG requiref END modname="table" top_post=1
+DBG requiref BEGIN modname="io" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."io" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["io"]=mod top=2
+DBG requiref END modname="io" top_post=1
+DBG requiref BEGIN modname="os" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."os" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["os"]=mod top=2
+DBG requiref END modname="os" top_post=1
+DBG requiref BEGIN modname="string" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."string" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["string"]=mod top=2
+DBG requiref END modname="string" top_post=1
+DBG requiref BEGIN modname="math" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."math" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["math"]=mod top=2
+DBG requiref END modname="math" top_post=1
+DBG requiref BEGIN modname="utf8" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."utf8" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["utf8"]=mod top=2
+DBG requiref END modname="utf8" top_post=1
+DBG requiref BEGIN modname="debug" top_pre=0
+DBG requiref after get_subtable LOADED top=1 type@-1=Table
+DBG requiref after get_field LOADED."debug" type@-1=Nil bool@-1=false
+DBG requiref after openf call top=2 type@-1=Table
+DBG requiref after set_field LOADED["debug"]=mod top=2
+DBG requiref END modname="debug" top_post=1
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing strings and string library
-[err] pcall_k failed: Runtime: attempt to index a string value
+DBG vm pc=440 raw=0x2040344 op=Call A=6 B=4 C=2 sBx=-64503 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=441 raw=0x60333 op=Not A=6 B=6 C=0 sBx=-65523 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=442 raw=0x10202c4 op=Call A=5 B=2 C=1 sBx=-65019 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=443 raw=0xd00028b op=GetTabUp A=5 B=0 C=13 sBx=-58879 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=444 raw=0x2100030b op=GetTabUp A=6 B=0 C=33 sBx=-48639 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=445 raw=0x2c06030e op=GetField A=6 B=6 C=44 sBx=-42995 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=446 raw=0x170383 op=LoadK A=7 B=23 C=0 sBx=-65489 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=447 raw=0x180403 op=LoadK A=8 B=24 C=0 sBx=-65487 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=448 raw=0x80040481 op=LoadI A=9 B=4 C=128 sBx=9 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=449 raw=0x904b1 op=Unm A=9 B=9 C=0 sBx=-65517 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=450 raw=0x2040344 op=Call A=6 B=4 C=2 sBx=-64503 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=451 raw=0x8c833d op=EqI A=6 B=140 C=0 sBx=-65254 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=454 raw=0x307 op=LoadTrue A=6 B=0 C=0 sBx=-65535 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=455 raw=0x10202c4 op=Call A=5 B=2 C=1 sBx=-65019 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=456 raw=0xd00028b op=GetTabUp A=5 B=0 C=13 sBx=-58879 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=457 raw=0x2100030b op=GetTabUp A=6 B=0 C=33 sBx=-48639 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=458 raw=0x2c06030e op=GetField A=6 B=6 C=44 sBx=-42995 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=459 raw=0x188383 op=LoadK A=7 B=24 C=0 sBx=-65486 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG vm pc=460 raw=0xb8403 op=LoadK A=8 B=11 C=0 sBx=-65512 code.len=3508 maxstack=32 numparams=0 sizeupvalues=1
+DBG TestSet ra=269 base=14 arg_a=255 arg_b=5 pc=8 raw=0x57fc3 maxstack=8
+DBG set_at OOB: idx=269 stack.len=85 stack_last=80 top=18 ci=CallInfoIdx(2)
+
+thread 'main' (7568700) panicked at crates/lua-vm/src/state.rs:1149:19:
+index out of bounds: the len is 85 but the index is 269
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[panic] index out of bounds: the len is 85 but the index is 269

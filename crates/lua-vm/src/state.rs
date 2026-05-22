@@ -1801,10 +1801,6 @@ impl LuaState {
     }
 
     pub fn proto_code(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
-        let len = cl.proto.code.len();
-        if (pc as usize) >= len {
-            eprintln!("DBG proto_code OOB: pc={} code.len={}", pc, len);
-        }
         cl.proto.code[pc as usize]
     }
     pub fn proto_const(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {

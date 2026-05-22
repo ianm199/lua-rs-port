@@ -1331,8 +1331,11 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
 
                 debug_assert!(base == state.ci_base(ci));
 
-                if cl.proto.maxstacksize < 60 && _dbg_pc_orig >= 440 && _dbg_pc_orig <= 460 {
-                    eprintln!("DBG vm pc={} raw=0x{:x} op={:?} A={} B={} C={} sBx={} code.len={} maxstack={} numparams={} sizeupvalues={}", _dbg_pc_orig, i.raw(), i.opcode(), i.arg_a(), i.arg_b(), i.arg_c(), i.arg_s_bx(), cl.proto.code.len(), cl.proto.maxstacksize, cl.proto.numparams, cl.proto.upvalues.len());
+                if cl.proto.maxstacksize < 60 && _dbg_pc_orig == 440 {
+                    for dbg_pc in 430..460u32 {
+                        let dbg_i: Instruction = cl.proto.code[dbg_pc as usize];
+                        eprintln!("DBG_DUMP pc={} raw=0x{:08x} op={:?} A={} B={} C={} sBx={} k={}", dbg_pc, dbg_i.raw(), dbg_i.opcode(), dbg_i.arg_a(), dbg_i.arg_b(), dbg_i.arg_c(), dbg_i.arg_s_bx(), dbg_i.arg_k());
+                    }
                 }
 
                 // C: vmdispatch(GET_OPCODE(i))
