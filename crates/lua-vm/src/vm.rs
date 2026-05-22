@@ -173,7 +173,7 @@ impl InstructionExt for Instruction {
     fn arg_bx(&self) -> i32 { (self.raw() >> 15) as i32 }
     fn arg_s_b(&self) -> i32 { self.arg_b() - 0x7F }
     fn arg_s_c(&self) -> i32 { self.arg_c() - 0x7F }
-    fn arg_s_j(&self) -> i32 { self.arg_ax() - 0x1FFFF }
+    fn arg_s_j(&self) -> i32 { self.arg_ax() - 0xFFFFFF }
     fn arg_s_bx(&self) -> i32 { self.arg_bx() - 0xFFFF }
     fn test_k(&self) -> bool { (self.raw() & (1 << 15)) != 0 }
     fn test_a_mode(&self) -> bool { todo!("phase-b: test_a_mode") }

@@ -2602,3 +2602,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T21:40:30Z] ─── iter 1  (spent: $0.00) ───
 [2026-05-16T21:40:30Z]   stub blocker: cg_posfix_fold non-foldable binop Lt (KInt KInt)
 [2026-05-16T21:40:30Z]   dispatching IMPLEMENT agent for cg_posfix_fold non-foldable binop Lt (KInt KInt) at crates/lua-parse/src/lib.rs:723:14 (budget $10)
+[2026-05-16T21:45:21Z]   agent done. iter cost=$1.7122499999999996  total=$0.00
+[2026-05-16T21:45:21Z] ─── iter 2  (spent: $0.00) ───
+[2026-05-16T21:45:21Z]   real-error blocker at step 4/4 Executing chunk: crates/lua-vm/src/state.rs:1426:22:
+[2026-05-16T21:45:21Z]   dispatching DEBUG agent for real-error (budget $15)

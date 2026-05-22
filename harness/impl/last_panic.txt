@@ -1,1 +1,1 @@
-cg_posfix_fold non-foldable binop Lt (KInt KInt)
+crates/lua-vm/src/state.rs:1426:22:
