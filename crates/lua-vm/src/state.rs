@@ -2123,6 +2123,7 @@ impl<'a> GcHandle<'a> {
     /// works for both modes — the heap short-circuits when force=false and
     /// the threshold isn't met.
     fn collect_via_heap(&self, force: bool) {
+        use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
 
         // Snapshot weak tables BEFORE the collect. `identity()` reads only
@@ -2146,12 +2147,40 @@ impl<'a> GcHandle<'a> {
             let global = state_ref.global.borrow();
             global.heap.unpause();
             let roots = CollectRoots { global: &*global, thread: state_ref };
-            let hook = |is_reachable: &dyn Fn(usize) -> bool| {
+            let hook = |marker: &mut lua_gc::Marker| {
                 collect_ran.set(true);
+                eprintln!("[GC] start hook, weak_tables_count={}, visited_count={}", weak_tables_snapshot.len(), marker.visited_count());
+                for t in &weak_tables_snapshot {
+                    eprintln!("[GC]   wk_t id={} visited={} mode={} len={}", t.identity(), marker.is_visited(t.identity()), t.weak_mode(), t.len());
+                }
+                loop {
+                    let visited_before = marker.visited_count();
+                    for t in &weak_tables_snapshot {
+                        let t_id = t.identity();
+                        if !marker.is_visited(t_id) {
+                            continue;
+                        }
+                        let to_mark = t.ephemeron_values_to_mark(
+                            &|id| marker.is_visited(id),
+                        );
+                        for v in &to_mark {
+                            v.trace(marker);
+                        }
+                    }
+                    marker.drain_gray_queue();
+                    if marker.visited_count() == visited_before {
+                        break;
+                    }
+                }
                 for t in &weak_tables_snapshot {
                     let id = t.identity();
-                    if is_reachable(id) {
-                        t.prune_weak_dead(is_reachable);
+                    if marker.is_visited(id) {
+                        let before = t.len();
+                        t.prune_weak_dead(&|id| marker.is_visited(id));
+                        let after = t.len();
+                        if before != after {
+                            eprintln!("[GC]   pruned id={} {}→{}", id, before, after);
+                        }
                         alive_ids.borrow_mut().insert(id);
                     }
                 }

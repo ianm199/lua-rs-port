@@ -266,6 +266,32 @@ impl LuaTable {
             true
         });
     }
+
+    /// Ephemeron-convergence helper. For a pure `__mode = "k"` table
+    /// (weak keys but NOT weak values), returns the list of values whose
+    /// key is currently reachable per `is_reachable`. The caller marks
+    /// each returned value via the GC marker — propagating reachability
+    /// that depends on the key's reachability, which is the defining
+    /// property of ephemerons. Returns an empty Vec for tables that are
+    /// not pure weak-key: `"v"` and `"kv"` modes treat values as weak
+    /// regardless of key reachability, so they get no convergence boost.
+    pub fn ephemeron_values_to_mark(&self, is_reachable: &dyn Fn(usize) -> bool) -> Vec<LuaValue> {
+        let mode = self.weak_mode.get();
+        if (mode & WEAK_KEYS) == 0 || (mode & WEAK_VALUES) != 0 {
+            return Vec::new();
+        }
+        let entries = self.entries.borrow();
+        let mut out = Vec::new();
+        for (k, v) in entries.iter() {
+            if matches!(v, LuaValue::Nil) {
+                continue;
+            }
+            if value_is_reachable(k, is_reachable) {
+                out.push(v.clone());
+            }
+        }
+        out
+    }
 }
 
 /// Reachability check for a `LuaValue` used by [`LuaTable::prune_weak_dead`].

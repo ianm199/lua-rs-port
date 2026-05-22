@@ -394,6 +394,31 @@ impl Marker {
     pub fn is_visited(&self, id: usize) -> bool {
         self.visited.contains(&id)
     }
+
+    /// Number of objects marked so far. Used by the post-mark hook's
+    /// ephemeron-convergence fixed-point loop to detect when an iteration
+    /// added no new reachable objects and the loop can terminate.
+    pub fn visited_count(&self) -> usize {
+        self.visited.len()
+    }
+
+    /// Drain the gray queue, transitively marking children. Each gray box
+    /// becomes black; its `Trace::trace` is called so the children it points
+    /// at get pushed onto the queue. Repeats until the queue is empty.
+    ///
+    /// Exposed for the post-mark hook so it can run ephemeron convergence:
+    /// after marking new values via [`Marker::mark`] (or `value.trace(self)`),
+    /// the hook calls `drain_gray_queue` to propagate the new reachability,
+    /// then re-checks for fixed-point.
+    pub fn drain_gray_queue(&mut self) {
+        while let Some(gray_ptr) = self.gray_queue.pop() {
+            unsafe {
+                let bx = gray_ptr.as_ref();
+                bx.header.color.set(Color::Black);
+                bx.value.trace(self);
+            }
+        }
+    }
 }
 
 /// Phases of the collection cycle. Currently only Idle and StopTheWorld are
@@ -523,14 +548,14 @@ impl Heap {
     /// Caller passes the root set (the runtime — typically `GlobalState`
     /// implementing `Trace`).
     pub fn step(&self, roots: &dyn Trace) {
-        self.step_with_post_mark(roots, |_| {});
+        self.step_with_post_mark(roots, |_: &mut Marker| {});
     }
 
     /// Like [`step`] but invokes a `post_mark` hook when a collection
     /// actually fires (threshold reached). Hook is a no-op on the
     /// short-circuit path. The runtime uses this to bridge weak-table
     /// pruning into implicit GC steps fired from inside the VM loop.
-    pub fn step_with_post_mark<F: FnOnce(&dyn Fn(usize) -> bool)>(
+    pub fn step_with_post_mark<F: FnOnce(&mut Marker)>(
         &self,
         roots: &dyn Trace,
         post_mark: F,
@@ -547,23 +572,24 @@ impl Heap {
     /// Stop-the-world full collect. Marks every reachable object from
     /// `roots`, then sweeps white (unreachable) boxes from the allgc chain.
     pub fn full_collect(&self, roots: &dyn Trace) {
-        self.full_collect_with_post_mark(roots, |_| {});
+        self.full_collect_with_post_mark(roots, |_: &mut Marker| {});
     }
 
     /// Stop-the-world full collect with a post-mark hook.
     ///
     /// Runs in three phases: (1) mark from roots and drain the gray queue,
-    /// (2) invoke `post_mark` with a read-only reachability query, (3) sweep
-    /// white boxes from the allgc chain. The hook receives `&dyn Fn(usize) ->
-    /// bool` so weak-table sweepers in higher crates can decide which entries
-    /// reference objects that have no other strong path. Clearing those
-    /// entries before sweep prevents weak handlers from observing dangling
-    /// `Gc<T>` pointers when the sweep frees the referent.
+    /// (2) invoke `post_mark` with `&mut Marker` so it can both query
+    /// reachability and add new strong edges (ephemeron convergence for
+    /// weak-key tables), (3) drain the gray queue again to absorb any new
+    /// marks, then sweep white boxes from the allgc chain.
     ///
-    /// The hook must NOT allocate (we hold heap-internal state during the
-    /// collect) and must NOT mutate the GC graph beyond clearing weak
-    /// entries; new strong edges introduced here would not be marked.
-    pub fn full_collect_with_post_mark<F: FnOnce(&dyn Fn(usize) -> bool)>(
+    /// Giving the hook write access to `Marker` is what enables proper
+    /// ephemeron semantics: a weak-key table's values are not marked during
+    /// the initial trace; the hook then walks each weak-key table's entries
+    /// and, for every entry whose KEY is already reachable, marks the value
+    /// — iterating to fixed point. After that, the hook clears entries whose
+    /// keys remained unreachable.
+    pub fn full_collect_with_post_mark<F: FnOnce(&mut Marker)>(
         &self,
         roots: &dyn Trace,
         post_mark: F,
@@ -588,22 +614,16 @@ impl Heap {
         // Trace from roots.
         roots.trace(&mut marker);
 
-        // Drain the gray queue.
-        while let Some(gray_ptr) = marker.gray_queue.pop() {
-            // SAFETY: gray_queue only ever contains pointers added via
-            // Marker::mark, which read them from valid Gc<T> handles.
-            unsafe {
-                let bx = gray_ptr.as_ref();
-                bx.header.color.set(Color::Black);
-                bx.value.trace(&mut marker);
-            }
-        }
+        // Drain the gray queue (initial mark).
+        marker.drain_gray_queue();
 
         // ── Post-mark hook ──────────────────────────────────────────────
-        // Hand the hook a closure that queries the visited set. The hook
-        // typically iterates weak-table entries and clears those whose weak
-        // target was not reached during mark.
-        post_mark(&|id: usize| marker.is_visited(id));
+        // Hook gets `&mut Marker` so it can run ephemeron convergence: walk
+        // weak-key tables and mark values of entries whose keys are already
+        // visited, draining between iterations until no new marks happen.
+        post_mark(&mut marker);
+        // Final safety drain in case the hook left anything queued.
+        marker.drain_gray_queue();
 
         // ── Sweep phase ─────────────────────────────────────────────────
         // Walk allgc; drop white boxes, keep black. Reset black→white for

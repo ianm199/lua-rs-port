@@ -1478,9 +1478,9 @@ pub(crate) fn close_protected(
         // C: pcl.level = restorestack(L, level) — StackIdx already stable
         let mut pcl = CloseP { level, status };
         // C: status = luaD_rawrunprotected(L, &closepaux, &pcl)
-        let run_status = match raw_run_protected(state, |s| close_aux(s, &mut pcl)) {
-            Ok(()) => LuaStatus::Ok,
-            Err(e) => e.to_status(),
+        let (run_status, err_value) = match raw_run_protected(state, |s| close_aux(s, &mut pcl)) {
+            Ok(()) => (LuaStatus::Ok, None),
+            Err(e) => (e.to_status(), Some(e.into_value())),
         };
         if run_status == LuaStatus::Ok {
             // C: return pcl.status
@@ -1489,6 +1489,14 @@ pub(crate) fn close_protected(
         // C: L->ci = old_ci; L->allowhook = old_allowhooks;
         state.ci = old_ci;
         state.allowhook = old_allowhook;
+        // In C, luaD_throw pushed the error value onto the stack at top before
+        // long-jumping, which leaves it at `top - 1` for the next iteration's
+        // luaD_seterrorobj to copy. In Rust the value rides inside the
+        // LuaError; push it explicitly so the next iteration (and the outer
+        // pcall's seterrorobj) can read it at `top - 1`.
+        if let Some(v) = err_value {
+            state.push(v);
+        }
         status = run_status;
     }
 }
