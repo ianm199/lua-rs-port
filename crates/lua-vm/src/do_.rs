@@ -575,28 +575,7 @@ fn try_func_tm(state: &mut LuaState, func_idx: StackIdx) -> Result<StackIdx, Lua
     // C: if (l_unlikely(ttisnil(tm))) luaG_callerror(L, s2v(func))
     if matches!(tm, LuaValue::Nil) {
         let offender = state.get_at(func_idx).clone();
-        let cur_ci = state.current_ci_idx();
-        if let Some(cl) = state.ci_lua_closure(cur_ci) {
-            let pc = state.ci_savedpc(cur_ci) as i32 - 1;
-            let line = crate::debug::get_func_line(&cl.proto, pc);
-            let dec = |i: u32| -> (u32, u32, u32, u32, u32) {
-                (i & 0x7f, (i >> 7) & 0xff, (i >> 16) & 0xff, (i >> 24) & 0xff, i >> 15)
-            };
-            let lo = (pc as i32 - 5).max(0) as usize;
-            let hi = ((pc as i32 + 1) as usize).min(cl.proto.code.len());
-            for p in lo..hi {
-                let raw = cl.proto.code[p].0;
-                let (op, a, b, c, bx) = dec(raw);
-                let kbx = cl.proto.k.get(bx as usize).cloned();
-                let kc = cl.proto.k.get(c as usize).cloned();
-                eprintln!("DBG  pc={} op={} A={} B={} C={} Bx={} k[Bx]={:?} k[C]={:?}",
-                    p, op, a, b, c, bx, kbx, kc);
-            }
-            eprintln!("DBG call_error: line={} func_idx={:?} top={:?}", line, func_idx, state.top_idx());
-        } else {
-            eprintln!("DBG call_error: non-lua ci, func_idx={:?}", func_idx);
-        }
-        return Err(LuaError::call_error(&offender));
+        return Err(crate::debug::call_error(state, &offender, func_idx));
     }
 
     // Open a slot: shift everything from top down to func_idx up by one.

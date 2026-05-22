@@ -560,13 +560,23 @@ pub(crate) fn try_bin_tm(
                     // produced the bad operand.
                     return Err(crate::debug::to_int_error(state, p1, p1_idx, p2, p2_idx));
                 } else {
-                    // C: luaG_opinterror(L, p1, p2, "perform bitwise operation on")
-                    return Err(LuaError::arith_error(p1, p2, "perform bitwise operation on"));
+                    // C: luaG_opinterror(L, p1, p2, "perform bitwise operation on") —
+                    // varinfo on the non-number operand.
+                    let p1_idx = p1_idx.unwrap_or(StackIdx(0));
+                    let p2_idx = p2_idx.unwrap_or(StackIdx(0));
+                    return Err(crate::debug::op_int_error(
+                        state, p1, p1_idx, p2, p2_idx, b"perform bitwise operation on",
+                    ));
                 }
             }
             _ => {
-                // C: luaG_opinterror(L, p1, p2, "perform arithmetic on")
-                return Err(LuaError::arith_error(p1, p2, "perform arithmetic on"));
+                // C: luaG_opinterror(L, p1, p2, "perform arithmetic on") —
+                // varinfo enriches with "(global 'aaa')" etc.
+                let p1_idx = p1_idx.unwrap_or(StackIdx(0));
+                let p2_idx = p2_idx.unwrap_or(StackIdx(0));
+                return Err(crate::debug::op_int_error(
+                    state, p1, p1_idx, p2, p2_idx, b"perform arithmetic on",
+                ));
             }
         }
     }

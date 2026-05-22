@@ -2498,7 +2498,7 @@ fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc)
         ))),
     };
     t.u.ind_t = t_reg;
-    if k.k == ExprKind::K {
+    if k.k == ExprKind::K && k_is_kstr {
         t.u.ind_idx = k.u.info as i16;
         t.k = ExprKind::IndexStr;
     } else if k.k == ExprKind::KInt && cg_fits_int_key(k.u.ival) {

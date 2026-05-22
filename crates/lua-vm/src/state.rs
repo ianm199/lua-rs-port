@@ -1851,7 +1851,9 @@ impl LuaState {
     pub fn is_main_thread(&mut self) -> bool {
         self.global().mainthread.is_none()
     }
-    pub fn obj_type_name(&self, _v: &LuaValue) -> &'static [u8] { todo!("phase-b: obj_type_name") }
+    pub fn obj_type_name(&self, v: &LuaValue) -> &'static [u8] {
+        crate::tagmethods::type_name(v.base_type())
+    }
     pub fn emit_warning(&mut self, _msg: &[u8], _to_cont: bool) { warning(self, _msg, _to_cont) }
 }
 
