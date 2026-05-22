@@ -347,9 +347,9 @@ pub fn str_byte(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// C: `static int str_char(lua_State *L)`
 pub fn str_char(state: &mut LuaState) -> Result<usize, LuaError> {
-    let n = state.top_idx().as_usize();
-    let mut buf = Vec::with_capacity(n);
-    for i in 1..=(n as i32) {
+    let n = state.get_top();
+    let mut buf = Vec::with_capacity(n as usize);
+    for i in 1..=n {
         let c = state.check_arg_integer(i)? as u64;
         if c > u8::MAX as u64 {
             return Err(LuaError::arg_error(i, "value out of range"));
@@ -1825,14 +1825,7 @@ fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_sig
     if size < SZINT {
         if is_signed {
             let mask: u64 = 1u64 << (size * NB as usize - 1);
-            res = res.wrapping_add((!res & (mask - 1)).wrapping_add(1) & mask.wrapping_neg())
-                .wrapping_sub(mask)
-                .wrapping_add(mask);
-            // Simpler: two's-complement sign extension
-            let mask2: u64 = 1u64 << (size * 8 - 1);
-            if res & mask2 != 0 {
-                res |= !((mask2 << 1) - 1);
-            }
+            res = (res ^ mask).wrapping_sub(mask);
         }
     } else if size > SZINT {
         let mask = if !is_signed || (res as i64) >= 0 { 0u8 } else { MC };

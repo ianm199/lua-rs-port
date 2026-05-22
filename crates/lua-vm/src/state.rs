@@ -1140,6 +1140,12 @@ impl LuaState {
     }
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
+        if (i.0 as usize) >= self.stack.len() {
+            eprintln!(
+                "DBG set_at OOB: idx={} stack.len={} stack_last={} top={} ci={:?}",
+                i.0, self.stack.len(), self.stack_last.0, self.top.0, self.ci
+            );
+        }
         self.stack[i.0 as usize].val = v;
     }
     /// Set `top` to an absolute stack index. Grows the backing stack vector
@@ -1795,6 +1801,10 @@ impl LuaState {
     }
 
     pub fn proto_code(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
+        let len = cl.proto.code.len();
+        if (pc as usize) >= len {
+            eprintln!("DBG proto_code OOB: pc={} code.len={}", pc, len);
+        }
         cl.proto.code[pc as usize]
     }
     pub fn proto_const(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {

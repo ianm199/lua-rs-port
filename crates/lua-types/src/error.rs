@@ -63,14 +63,14 @@ impl LuaError {
     pub fn order_error(p1: &LuaValue, p2: &LuaValue) -> Self {
         LuaError::runtime(format_args!("attempt to compare {} with {}", p1.type_name(), p2.type_name()))
     }
-    pub fn for_error(_v: &LuaValue, what: &str) -> Self {
-        LuaError::runtime(format_args!("bad 'for' {} (number expected, got <type>)", what))
+    pub fn for_error(v: &LuaValue, what: &str) -> Self {
+        LuaError::runtime(format_args!("bad 'for' {} (number expected, got {})", what, v.type_name()))
     }
     pub fn arg_error(narg: i32, msg: &str) -> Self {
         LuaError::runtime(format_args!("bad argument #{} ({})", narg, msg))
     }
-    pub fn type_arg_error(narg: i32, expected: &str, _got: &LuaValue) -> Self {
-        LuaError::runtime(format_args!("bad argument #{} ({} expected, got <type>)", narg, expected))
+    pub fn type_arg_error(narg: i32, expected: &str, got: &LuaValue) -> Self {
+        LuaError::runtime(format_args!("bad argument #{} ({} expected, got {})", narg, expected, got.type_name()))
     }
 
     // ── Pass-through constructors ────────────────────────────────────────

@@ -1268,15 +1268,20 @@ pub fn requiref(
     openf: fn(&mut LuaState) -> Result<usize, LuaError>,
     glb: bool,
 ) -> Result<(), LuaError> {
+    eprintln!("DBG requiref BEGIN modname={:?} top_pre={}", std::str::from_utf8(modname).unwrap_or("?"), state.top());
     get_subtable(state, LUA_REGISTRYINDEX, LUA_LOADED_TABLE)?;
+    eprintln!("DBG requiref after get_subtable LOADED top={} type@-1={:?}", state.top(), state.type_at(-1));
     state.get_field(-1, modname)?;
+    eprintln!("DBG requiref after get_field LOADED.{:?} type@-1={:?} bool@-1={}", std::str::from_utf8(modname).unwrap_or("?"), state.type_at(-1), state.to_boolean(-1));
     if !state.to_boolean(-1) {
         state.pop_n(1);
         state.push_c_function(openf)?;
         state.push_bytes(modname)?;
         state.call(1, 1)?;
+        eprintln!("DBG requiref after openf call top={} type@-1={:?}", state.top(), state.type_at(-1));
         state.push_value(-1)?;
         state.set_field(-3, modname)?;
+        eprintln!("DBG requiref after set_field LOADED[{:?}]=mod top={}", std::str::from_utf8(modname).unwrap_or("?"), state.top());
     }
     state.remove(-2)?;
     if glb {
@@ -1284,6 +1289,7 @@ pub fn requiref(
         state.push_value(-1)?;
         state.set_global(modname)?;
     }
+    eprintln!("DBG requiref END modname={:?} top_post={}", std::str::from_utf8(modname).unwrap_or("?"), state.top());
     Ok(())
 }
 
