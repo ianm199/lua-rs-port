@@ -1376,7 +1376,18 @@ impl LuaState {
     pub fn equal_obj_with_tm(&mut self, _l: &LuaValue, _r: &LuaValue) -> Result<bool, LuaError> { todo!("phase-b: equal_obj_with_tm") }
     pub fn obj_len(&mut self, _v: &LuaValue) -> Result<LuaValue, LuaError> { todo!("phase-b: obj_len") }
     pub fn obj_to_string(&mut self, _idx_or_val: i32) -> Result<GcRef<LuaString>, LuaError> { todo!("phase-b: obj_to_string") }
-    pub fn coerce_to_string(&mut self, _idx: StackIdx) -> Result<GcRef<LuaString>, LuaError> { todo!("phase-b: coerce_to_string") }
+    pub fn coerce_to_string(&mut self, idx: StackIdx) -> Result<GcRef<LuaString>, LuaError> {
+        let val = self.get_at(idx);
+        match val {
+            LuaValue::Str(s) => Ok(s),
+            LuaValue::Int(_) | LuaValue::Float(_) => {
+                let s = crate::object::num_to_string(self, &val)?;
+                self.set_at(idx, LuaValue::Str(s.clone()));
+                Ok(s)
+            }
+            _ => Err(LuaError::type_error(&val, "convert to string")),
+        }
+    }
     pub fn str_to_num(&mut self, _s: &[u8]) -> Option<(LuaValue, usize)> { todo!("phase-b: str_to_num") }
 
     pub fn fast_get(&mut self, t: &LuaValue, k: &LuaValue) -> Result<Option<LuaValue>, LuaError> {

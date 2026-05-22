@@ -4010,3 +4010,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T23:37:24Z] ─── iter 1  (spent: $0.00) ───
 [2026-05-16T23:37:24Z]   stub blocker: cg_posfix_fold non-foldable binop Concat (KStr KStr)
 [2026-05-16T23:37:24Z]   dispatching IMPLEMENT agent for cg_posfix_fold non-foldable binop Concat (KStr KStr) at crates/lua-parse/src/lib.rs:739:14 (budget $10)
+[2026-05-16T23:42:24Z]   agent done. iter cost=$1.5454215  total=$0.00
+[2026-05-16T23:42:24Z] ─── iter 2  (spent: $0.00) ───
+[2026-05-16T23:42:24Z]   stub blocker: coerce_to_string
+[2026-05-16T23:42:24Z]   dispatching IMPLEMENT agent for coerce_to_string at crates/lua-vm/src/state.rs:1379:96 (budget $10)

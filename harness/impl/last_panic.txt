@@ -1,1 +1,1 @@
-cg_posfix_fold non-foldable binop Concat (KStr KStr)
+coerce_to_string
