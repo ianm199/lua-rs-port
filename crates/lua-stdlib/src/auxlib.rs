@@ -31,7 +31,7 @@ use lua_types::{
     LuaStatus,
     arith::ArithOp,
 };
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -141,7 +141,7 @@ fn find_field(
         return Ok(false);
     }
     // C: lua_pushnil(L);  /* start 'next' loop */
-    state.push(LuaValue::Nil)?;
+    state.push(LuaValue::Nil);
     // C: while (lua_next(L, -2))
     while state.table_next(-2)? {
         // C: if (lua_type(L, -2) == LUA_TSTRING)
@@ -454,11 +454,11 @@ pub fn file_result(
 ) -> Result<usize, LuaError> {
     if stat {
         // C: lua_pushboolean(L, 1);
-        state.push(LuaValue::Bool(true))?;
+        state.push(LuaValue::Bool(true));
         Ok(1)
     } else {
         // C: luaL_pushfail(L); = lua_pushnil
-        state.push(LuaValue::Nil)?;
+        state.push(LuaValue::Nil);
         // TODO(port): use std::io::Error::last_os_error() for errno-style message.
         let errmsg = b"(errno unavailable in Rust port)".to_vec();
         if let Some(name) = fname {
@@ -469,7 +469,7 @@ pub fn file_result(
         }
         // C: lua_pushinteger(L, en);
         // TODO(port): push actual errno integer once os-error helpers are available.
-        state.push(LuaValue::Int(0))?;
+        state.push(LuaValue::Int(0));
         Ok(3)
     }
 }
@@ -486,9 +486,9 @@ pub fn exec_result(state: &mut LuaState, stat: i32) -> Result<usize, LuaError> {
     // C: const char *what = "exit";
     let what = b"exit".as_slice();
     // C: if (*what == 'e' && stat == 0) lua_pushboolean(L, 1);
-    state.push(LuaValue::Bool(true))?;
+    state.push(LuaValue::Bool(true));
     state.push_bytes(what)?;
-    state.push(LuaValue::Int(stat as i64))?;
+    state.push(LuaValue::Int(stat as i64));
     Ok(3)
 }
 
@@ -960,7 +960,7 @@ pub fn lua_ref(state: &mut LuaState, t: i32) -> Result<i32, LuaError> {
     if state.raw_get_i(t, FREELIST_REF)? == LuaType::Nil {
         ref_val = 0; // list is empty
         // C: lua_pushinteger(L, 0); lua_rawseti(L, t, freelist);
-        state.push(LuaValue::Int(0))?;
+        state.push(LuaValue::Int(0));
         state.raw_set_i(t, FREELIST_REF)?;
     } else {
         // C: lua_assert(lua_isinteger(L, -1)); ref = (int)lua_tointeger(L, -1);
@@ -995,7 +995,7 @@ pub fn lua_unref(state: &mut LuaState, t: i32, r: i32) -> Result<(), LuaError> {
         // C: lua_rawseti(L, t, ref);  /* t[ref] = t[freelist] */
         state.raw_set_i(t, r as i64)?;
         // C: lua_pushinteger(L, ref); lua_rawseti(L, t, freelist);
-        state.push(LuaValue::Int(r as i64))?;
+        state.push(LuaValue::Int(r as i64));
         state.raw_set_i(t, FREELIST_REF)?;
     }
     Ok(())
@@ -1217,7 +1217,7 @@ pub fn set_funcs(
         match reg.func {
             None => {
                 // C: lua_pushboolean(L, 0);
-                state.push(LuaValue::Bool(false))?;
+                state.push(LuaValue::Bool(false));
             }
             Some(f) => {
                 // C: for (i = 0; i < nup; i++) lua_pushvalue(L, -nup);

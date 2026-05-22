@@ -199,26 +199,13 @@ pub struct ActvarEntry {
     pub k: LuaValue,
 }
 
-/// PHASE B: real definition lives in lua-vm; placeholder shape inferred from
-/// codegen usage (only `equal_obj` and `raw_arith` are called here).
-pub struct LuaState {
-    _private: (),
-}
-
-impl LuaState {
-    pub fn equal_obj(&self, _mt: Option<()>, _a: &LuaValue, _b: &LuaValue) -> bool {
-        todo!("PHASE B: LuaState::equal_obj — lives in lua-vm")
-    }
-
-    pub fn raw_arith(
-        &mut self,
-        _op: i32,
-        _a: &LuaValue,
-        _b: &LuaValue,
-    ) -> Result<LuaValue, LuaError> {
-        todo!("PHASE B: LuaState::raw_arith — lives in lua-vm")
-    }
-}
+// TODO_ARCH(phase-b-reconcile): swapped to canonical lua_vm::state::LuaState.
+// The local impl block (equal_obj / raw_arith) was removed; equal_obj exists
+// on the canonical type (with `Option<&LuaValue>` ctx), and raw_arith lives
+// as a free function `lua_vm::object::raw_arith` with a different signature
+// (ArithOp + out-param + bool). Call sites that depended on the old shape are
+// stubbed with todo!("phase-b-reconcile: ...") below.
+pub use lua_vm::state::LuaState;
 
 /// PHASE B: the runtime table type lives in lua-vm; the existing
 /// `lua_types::value::LuaTable` is a forward-decl with no methods.  We re-use
@@ -1772,8 +1759,12 @@ fn constfolding(
         return Ok(false);
     }
     // C: luaO_rawarith(fs->ls->L, op, &v1, &v2, &res);
-    // TODO(port): state.raw_arith(op, v1, v2)
-    let res = state.raw_arith(op, &v1, &v2)?;
+    // TODO_ARCH(phase-b-reconcile): canonical lua_vm::object::raw_arith uses
+    // ArithOp + out-param + Result<bool, _>, not (i32, &, &) -> Result<LuaValue, _>.
+    // Reconciling requires either adopting ArithOp here or adding a LuaState
+    // method — both out of scope for this swap.
+    let _ = (state, op, &v1, &v2);
+    let res: LuaValue = todo!("phase-b-reconcile: raw_arith free-fn signature mismatch");
     match res {
         LuaValue::Int(i) => {
             e1.k = ExprKind::VKInt;
@@ -2409,7 +2400,7 @@ pub(crate) fn finish(
 //   source:        src/lcode.c  (1875 lines, ~60 functions)
 //   target_crate:  lua-code
 //   confidence:    medium
-//   todos:         15
+//   todos:         13
 //   port_notes:    8
 //   unsafe_blocks: 0
 //   notes:         All ~60 C functions translated.  FuncState.f needs

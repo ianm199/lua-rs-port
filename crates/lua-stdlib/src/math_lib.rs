@@ -13,7 +13,7 @@
 // PORT NOTE: All imports below will be unresolved until Phase B lands the
 // lua-types crate. Expected Phase-A errors: E0432, E0412, E0433, E0425.
 use lua_types::{LuaError, LuaType, LuaValue};
-use crate::state_stub::{LuaState, lua_CFunction as LuaCFn, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction as LuaCFn, upvalue_index, CompareOp, LuaDebug};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -721,7 +721,7 @@ pub fn luaopen_math(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: luaL_newlib(L, mathlib);
     // Creates a new table and registers all non-None entries from MATHLIB.
     // TODO(phase-b): MATHLIB uses local LibReg; convert to &[(&[u8], lua_CFunction)] for state.new_lib.
-    state.new_table()?;
+    state.new_table();
 
     // C: lua_pushnumber(L, PI); lua_setfield(L, -2, "pi");
     state.push(LuaValue::Float(PI));

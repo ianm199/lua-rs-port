@@ -23,7 +23,7 @@
 use std::io::{self, SeekFrom};
 
 use lua_types::{LuaError, LuaType, LuaValue};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -712,7 +712,7 @@ fn read_number(
     if pushed != 0 {
         Ok(true)
     } else {
-        state.push(LuaValue::Nil)?;
+        state.push(LuaValue::Nil);
         Ok(false)
     }
 }
@@ -1185,14 +1185,14 @@ fn io_readline(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     // C: lua_settop(L, 1);
-    state.set_top(1)?;
+    state.set_top(1);
     // C: luaL_checkstack(L, n, "too many arguments");
     state.ensure_stack(n as i32, "too many arguments")?;
 
     // C: for (i = 1; i <= n; i++) lua_pushvalue(L, lua_upvalueindex(3 + i));
     for i in 1..=n {
         let uv = state.value_at(crate::state_stub::upvalue_index(3 + i as i32));
-        state.push(uv)?;
+        state.push(uv);
     }
 
     // C: n = g_read(L, p->f, 2);

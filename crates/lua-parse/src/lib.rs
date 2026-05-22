@@ -449,30 +449,8 @@ const PRIORITY: [(u8, u8); 21] = [
     (2, 2), (1, 1),           // And, Or
 ];
 
-// ── OpCode stub ─────────────────────────────────────────────────────────────
-// TODO(port): OpCode should come from lua-code / lua_types when those land.
-
-/// Opcodes used directly by the parser. Subset of the full VM opcode set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpCode {
-    Move,
-    GetUpval,
-    NewTable,
-    SetList,
-    Close,
-    Tbc,          // OP_TBC
-    Call,
-    TailCall,
-    Return,
-    ForPrep,
-    TForPrep,
-    ForLoop,
-    TForLoop,
-    TForCall,
-    Closure,
-    Vararg,
-    VarArgPrep,
-}
+// TODO_ARCH(phase-b-reconcile): re-exporting canonical OpCode from lua-code.
+pub use lua_code::opcodes::OpCode;
 
 // ── Minimal LexState stub ───────────────────────────────────────────────────
 // PORT NOTE: In C, LexState is defined in llex.h (→ lua-lex crate).
@@ -525,11 +503,8 @@ pub struct LexState {
     pub envn: Option<GcRef<LuaString>>,
 }
 
-// ── Minimal LuaState stub ───────────────────────────────────────────────────
-// PORT NOTE: LuaState is defined in lua-vm. Referenced here as a placeholder.
-//   Phase B will add `lua-vm` as a dep and remove this stub.
-// TODO(port): remove LuaState stub when lua-vm dep lands.
-pub struct LuaState;
+// TODO_ARCH(phase-b-reconcile): re-exporting canonical LuaState from lua-vm.
+pub use lua_vm::state::LuaState;
 
 // ── Free functions ──────────────────────────────────────────────────────────
 

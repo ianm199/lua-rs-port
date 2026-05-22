@@ -15,7 +15,7 @@
 
 // C: #include "lua.h" / "lauxlib.h" / "lualib.h"
 use lua_types::{LuaError, LuaType, LuaValue};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 

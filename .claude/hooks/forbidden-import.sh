@@ -31,15 +31,24 @@ if [ "${#FILES[@]}" = "0" ]; then
 fi
 
 for f in "${FILES[@]}"; do
-    # tokio / async / futures / rayon
-    if grep -nE '\b(use tokio|async fn |use futures|use rayon)' "$f" > /dev/null; then
+    # Strip line and block comments so we don't false-positive on mentions
+    # in docstrings or TODO notes. Cheap heuristic but catches the common
+    # `// std::process::Command — stubbed` pattern that produced false
+    # positives during the type-vocabulary reconcile.
+    code=$(grep -v -E '^\s*(//|\*|/\*)' "$f" 2>/dev/null || true)
+
+    # tokio / async / futures / rayon — actual code use only
+    if echo "$code" | grep -qE '\b(use tokio|async fn |use futures|use rayon)'; then
         report "banned crate import in $f"
-        grep -nE '\b(use tokio|async fn |use futures|use rayon)' "$f" >&2 || true
+        echo "$code" | grep -nE '\b(use tokio|async fn |use futures|use rayon)' >&2 || true
     fi
 
-    # std::process::Command outside lua-cli
+    # std::process::Command outside lua-cli — must be a real use, not a mention.
+    # Match: `use std::process::Command`, `std::process::Command::new`,
+    #         `std::process::Command{...}`, or `let _: std::process::Command`
+    # Avoid:  `// std::process::Command — stubbed` and similar prose.
     if [[ "$f" != crates/lua-cli/* ]]; then
-        if grep -nE 'std::process::Command' "$f" > /dev/null; then
+        if echo "$code" | grep -qE '(use std::process::Command|std::process::Command::|std::process::Command\s*\{|:\s*std::process::Command\b)'; then
             report "std::process::Command outside lua-cli in $f"
         fi
     fi

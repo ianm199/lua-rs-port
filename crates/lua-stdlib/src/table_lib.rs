@@ -6,7 +6,7 @@
 //! C source: `reference/lua-5.4.7/src/ltablib.c` (430 lines, 14 functions)
 
 use lua_types::{LuaError, LuaType, LuaValue};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ─── Operation flags ──────────────────────────────────────────────────────────
 // C: #define TAB_R 1  /* read */

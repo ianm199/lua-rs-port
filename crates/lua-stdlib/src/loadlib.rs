@@ -23,7 +23,7 @@ use lua_types::{
     GcRef, LuaClosure, LuaError, LuaString, LuaType, LuaValue, StackIdx, LuaStatus,
 };
 use lua_types::value::LuaTable;
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ fn lsys_unloadlib(_lib: LibHandle) {
 /// lua-stdlib. Phase B: delegate to a DynLib capability or raise unsafe budget.
 fn lsys_load(state: &mut LuaState, _path: &[u8], _see_glb: bool) -> Option<LibHandle> {
     // C: lua_pushliteral(L, DLMSG);
-    let s = state.intern_str(DLMSG);
+    let s = state.intern_str(DLMSG)?;
     state.push(LuaValue::Str(s));
     None
 }
@@ -189,7 +189,7 @@ fn lsys_sym(
     _sym: &[u8],
 ) -> Option<fn(&mut LuaState) -> Result<usize, LuaError>> {
     // C: lua_pushliteral(L, DLMSG);
-    let s = state.intern_str(DLMSG);
+    let s = state.intern_str(DLMSG)?;
     state.push(LuaValue::Str(s));
     None
 }

@@ -19,17 +19,9 @@
 //! - The `goto read_save / only_save / no_save` pattern in `read_string` is
 //!   translated via the local `EscapeResult` enum.
 
-// TODO(port): resolve all import paths in Phase B once the crate graph is settled.
-// Expected crate layout:
-//   lua_types::{LuaError, LuaValue, GcRef}
-//   lua_vm::state::LuaState
-//   lua_vm::zio::{ZIO, LexBuffer, EOZ}
-//   lua_vm::string::LuaString
-//   lua_vm::table::LuaTable
-//   lua_vm::object::{str2num, hex_value, utf8_esc_encode}
-//   lua_vm::debug::add_info   (luaG_addinfo)
-//   lua_vm::table::{get_str, finish_set}   (luaH_getstr, luaH_finishset)
-// For Phase A all cross-crate references are declared but unresolved.
+// TODO(port): resolve remaining cross-crate calls (intern_str, table anchor,
+// number parsing, utf8 encoding) in Phase B.  Canonical cross-crate type
+// imports are now in place per harness/type-vocabulary.tsv (see below).
 
 use std::rc::Rc;
 use std::io::Write as IoWrite;
@@ -38,39 +30,12 @@ use std::io::Write as IoWrite;
 // TODO(port): move GcRef to lua-types once the GC crate is defined (Phase D).
 type GcRef<T> = Rc<T>;
 
-// TODO(port): import LuaState from lua_vm::state in Phase B.
-// Placeholder so function signatures compile symbolically.
-use lua_types::LuaError;
-
-// ── Forward declarations for types defined in other crates (Phase B stubs) ──────
-
-/// Placeholder for `LuaState` from `lua_vm::state`.
-/// TODO(port): replace with `use lua_vm::state::LuaState` in Phase B.
-pub struct LuaState;
-
-/// Placeholder for `LuaString` from `lua_vm::string`.
-/// TODO(port): replace with `use lua_vm::string::LuaString` in Phase B.
-pub struct LuaString {
-    bytes: Rc<[u8]>,
-    extra: std::cell::Cell<u8>,
-}
-
-impl LuaString {
-    /// C: `getstr(ts)` — returns the string's raw bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// C: `isreserved(s)` — true if this short string is a reserved word.
-    /// macros.tsv: isreserved → ts.is_reserved_word()
-    pub fn is_reserved_word(&self) -> bool {
-        self.extra.get() > 0
-    }
-}
-
-/// Placeholder for `LuaTable` from `lua_vm::table`.
-/// TODO(port): replace with `use lua_vm::table::LuaTable` in Phase B.
-pub struct LuaTable;
+// Canonical cross-crate types: imported from owner crates per
+// harness/type-vocabulary.tsv.  See PORTING.md §7.
+pub use lua_types::LuaError;
+pub use lua_types::LuaString;
+pub use lua_vm::state::LuaState;
+pub use lua_vm::table::LuaTable;
 
 /// Placeholder for `LexBuffer` from `lua_vm::zio`.
 /// TODO(port): replace with `use lua_vm::zio::LexBuffer` in Phase B.
@@ -598,7 +563,7 @@ fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
     // error_sites.tsv: → LuaError::syntax(...)
     // TODO(port): LuaError::syntax(format_args!(...)) once LuaError is wired;
     // for Phase A return a placeholder via the stub LuaError type.
-    LuaError::syntax_raw(full_msg)
+    LuaError::syntax_raw(&full_msg)
 }
 
 // C: l_noret luaX_syntaxerror (LexState *ls, const char *msg)
@@ -1897,13 +1862,19 @@ fn llex(
 
                     // C: seminfo->ts = ts
                     let is_reserved = ts.is_reserved_word();
-                    let extra = ts.extra.get();
                     *seminfo = TokenValue::Str(ts);
 
                     if is_reserved {
                         // C: return ts->extra - 1 + FIRST_RESERVED
                         // macros.tsv: isreserved → ts.is_reserved_word()
-                        return Ok(extra as i32 - 1 + FIRST_RESERVED);
+                        // TODO_ARCH(phase-b-reconcile): canonical lua_types::LuaString
+                        // does not expose `extra` (reserved-word index).  Routing
+                        // reserved-word recognition through `extra` requires either
+                        // adding an accessor to lua-types::LuaString or recovering
+                        // the index from the byte slice via a keyword table.
+                        return Err(todo!(
+                            "phase-b-reconcile: LuaString::extra accessor missing on canonical type"
+                        ));
                     } else {
                         return Ok(TK_NAME);
                     }
@@ -1925,14 +1896,13 @@ fn llex(
 
 // TODO(port): replace with state.intern_str(bytes) once LuaState gains that
 // method (from lua_vm::string::new_lstr wired in Phase B).
+// TODO_ARCH(phase-b-reconcile): canonical LuaString is constructed via
+// from_bytes; once LuaState::intern_str is wired, route through there instead.
 fn intern_str_stub(
     _state: &mut LuaState,
     bytes: &[u8],
 ) -> Result<GcRef<LuaString>, LuaError> {
-    Ok(Rc::new(LuaString {
-        bytes: Rc::from(bytes),
-        extra: std::cell::Cell::new(0),
-    }))
+    Ok(Rc::new(LuaString::from_bytes(bytes.to_vec())))
 }
 
 /// Result of converting a byte string to a Lua number.
@@ -2005,34 +1975,6 @@ fn utf8_encode_stub(codepoint: u32) -> Vec<u8> {
         buf.push(0x80 | (codepoint & 0x3F) as u8);
     }
     buf
-}
-
-// ── LuaError stub ─────────────────────────────────────────────────────────────
-//
-// TODO(port): remove this module once lua-types defines LuaError properly (Phase B).
-// The real LuaError lives in crates/lua-types/src/error.rs.
-// We need a minimal stub so function signatures typecheck in Phase A.
-
-// PORT NOTE: the `lua_types` import below will resolve once lua-types gains
-// a LuaError type.  The stub impl below is only for Phase A type-checking.
-mod lua_types {
-    /// Phase A stub for `LuaError`.  Phase B replaces with the real type from
-    /// `crates/lua-types/src/error.rs`.
-    #[derive(Debug)]
-    pub enum LuaError {
-        /// Syntax/lexer error.  Carries the formatted message as raw bytes.
-        Syntax(Vec<u8>),
-        /// Out-of-memory.
-        Memory,
-    }
-
-    impl LuaError {
-        /// Construct a syntax error from a pre-formatted byte message.
-        /// TODO(port): replace with LuaError::syntax(format_args!(...)) in Phase B.
-        pub fn syntax_raw(msg: Vec<u8>) -> Self {
-            LuaError::Syntax(msg)
-        }
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

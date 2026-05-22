@@ -24,7 +24,7 @@ use lua_types::{
     LuaStatus,
     gc::GcRef,
 };
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Coroutine status codes ────────────────────────────────────────────────────
 
@@ -250,7 +250,7 @@ pub fn co_status(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: lua_pushstring(L, statname[auxstatus(L, co)]);
     let idx = aux_status(state, &co) as usize;
     let name: &[u8] = STAT_NAMES[idx];
-    let interned = state.intern_str(name);
+    let interned = state.intern_str(name)?;
     state.push(LuaValue::Str(interned));
     Ok(1)
 }

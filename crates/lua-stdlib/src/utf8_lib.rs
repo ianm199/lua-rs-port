@@ -13,7 +13,7 @@ use lua_types::error::LuaError;
 use lua_types::value::LuaValue;
 use lua_types::closure::LuaClosure;
 use lua_types::{LuaType, LuaStatus};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // C: #define MAXUNICODE 0x10FFFFu
 const MAX_UNICODE: u32 = 0x10_FFFF;
@@ -371,7 +371,7 @@ fn utf_char(state: &mut LuaState) -> Result<usize, LuaError> {
     if n == 1 {
         // C: pushutfchar(L, 1);  — optimized single-character path
         let bytes = get_utf_char_bytes(state, 1)?;
-        let s = state.intern_str(&bytes);
+        let s = state.intern_str(&bytes)?;
         state.push(LuaValue::Str(s));
     } else {
         // C: luaL_Buffer b; luaL_buffinit(L, &b);
@@ -383,7 +383,7 @@ fn utf_char(state: &mut LuaState) -> Result<usize, LuaError> {
         for i in 1..=n {
             buf.extend_from_slice(&get_utf_char_bytes(state, i)?);
         }
-        let s = state.intern_str(&buf);
+        let s = state.intern_str(&buf)?;
         state.push(LuaValue::Str(s));
     }
 
@@ -616,7 +616,7 @@ pub fn open_utf8(state: &mut LuaState) -> Result<usize, LuaError> {
     state.new_lib(FUNCS)?;
 
     // C: lua_pushlstring(L, UTF8PATT, sizeof(UTF8PATT)/sizeof(char) - 1);
-    let patt = state.intern_str(UTF8_PATT);
+    let patt = state.intern_str(UTF8_PATT)?;
     state.push(LuaValue::Str(patt));
 
     // C: lua_setfield(L, -2, "charpattern");

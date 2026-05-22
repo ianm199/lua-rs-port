@@ -12,7 +12,7 @@
 use std::io::{self, BufRead, Write};
 
 use lua_types::{GcRef, LuaError, LuaString, LuaType, LuaValue, LuaStatus};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug as DebugInfo};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug as DebugInfo};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -105,10 +105,10 @@ fn settabss(state: &mut LuaState, k: &[u8], v: Option<&[u8]>) -> Result<(), LuaE
     // C: lua_pushstring(L, v);  /* NULL -> nil */
     match v {
         Some(s) => {
-            let ls = state.intern_str(s);
-            state.push(LuaValue::Str(ls))?;
+            let ls = state.intern_str(s)?;
+            state.push(LuaValue::Str(ls));
         }
-        None => { state.push(LuaValue::Nil)?; }
+        None => { state.push(LuaValue::Nil); }
     }
     // C: lua_setfield(L, -2, k);
     state.set_field(-2, k)
@@ -177,7 +177,7 @@ pub(crate) fn get_metatable(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_any(1)?;
     // C: if (!lua_getmetatable(L, 1)) lua_pushnil(L);
     if !state.get_metatable(1)? {
-        state.push(LuaValue::Nil)?;
+        state.push(LuaValue::Nil);
     }
     Ok(1)
 }
@@ -310,13 +310,13 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     // C: lua_newtable(L);  /* table to collect results */
-    state.new_table()?;
+    state.new_table();
 
     // C: if (strchr(options, 'S')) { ... }
     if options.contains(&b'S') {
         // C: lua_pushlstring(L, ar.source, ar.srclen); lua_setfield(L, -2, "source");
-        let src = state.intern_str(ar.source_bytes());
-        state.push(LuaValue::Str(src))?;
+        let src = state.intern_str(ar.source_bytes())?;
+        state.push(LuaValue::Str(src));
         state.set_field(-2, b"source")?;
 
         settabss(state, b"short_src", Some(ar.short_src_bytes()))?;
@@ -385,10 +385,10 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
         let name = state.get_param_name(0, nvar)?;
         match name {
             Some(n) => {
-                let ls = state.intern_str(&n);
-                state.push(LuaValue::Str(ls))?;
+                let ls = state.intern_str(&n)?;
+                state.push(LuaValue::Str(ls));
             }
-            None => { state.push(LuaValue::Nil)?; }
+            None => { state.push(LuaValue::Nil); }
         }
         // C: return 1;  /* return only name (there is no value) */
         // The pushed function below name is discarded by the VM when it collects
@@ -419,8 +419,8 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
             // requires simultaneous mutable access to two LuaState instances.
         }
         // C: lua_pushstring(L, name); lua_rotate(L, -2, 1); return 2;
-        let ls = state.intern_str(&n);
-        state.push(LuaValue::Str(ls))?;
+        let ls = state.intern_str(&n)?;
+        state.push(LuaValue::Str(ls));
         state.rotate(-2, 1)?;
         Ok(2)
     } else {
@@ -475,10 +475,10 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: lua_pushstring(L, name);
     match name {
         Some(n) => {
-            let ls = state.intern_str(&n);
-            state.push(LuaValue::Str(ls))?;
+            let ls = state.intern_str(&n)?;
+            state.push(LuaValue::Str(ls));
         }
-        None => { state.push(LuaValue::Nil)?; }
+        None => { state.push(LuaValue::Nil); }
     }
     Ok(1)
 }
@@ -516,8 +516,8 @@ fn aux_upvalue(state: &mut LuaState, get: bool) -> Result<usize, LuaError> {
     };
 
     // C: lua_pushstring(L, name);
-    let ls = state.intern_str(&name_ref);
-    state.push(LuaValue::Str(ls))?;
+    let ls = state.intern_str(&name_ref)?;
+    state.push(LuaValue::Str(ls));
 
     // C: lua_insert(L, -(get+1));  /* no-op if get is false */
     // When get=true: stack is [..., value, name]; insert at -2 → [..., name, value].
@@ -646,14 +646,14 @@ pub(crate) fn hookf(state: &mut LuaState, ar: &mut DebugInfo) -> Result<(), LuaE
         let event_idx: usize = 0;
         let _ = ar;
         debug_assert!(event_idx < HOOKNAMES.len(), "hook event out of range");
-        let event_str = state.intern_str(HOOKNAMES[event_idx]);
-        state.push(LuaValue::Str(event_str))?;
+        let event_str = state.intern_str(HOOKNAMES[event_idx])?;
+        state.push(LuaValue::Str(event_str));
 
         // C: if (ar->currentline >= 0) lua_pushinteger(L, ar->currentline); else lua_pushnil(L);
         if ar.currentline >= 0 {
-            state.push(LuaValue::Int(ar.currentline as i64))?;
+            state.push(LuaValue::Int(ar.currentline as i64));
         } else {
-            state.push(LuaValue::Nil)?;
+            state.push(LuaValue::Nil);
         }
 
         // C: lua_assert(lua_getinfo(L, "lS", ar));
@@ -750,8 +750,8 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
         // Table was just created. Set it up as a weak-keyed table so that
         // thread keys do not prevent GC of finished threads.
         // C: lua_pushliteral(L, "k"); lua_setfield(L, -2, "__mode");
-        let k = state.intern_str(b"k");
-        state.push(LuaValue::Str(k))?;
+        let k = state.intern_str(b"k")?;
+        state.push(LuaValue::Str(k));
         state.set_field(-2, b"__mode")?;
         // C: lua_pushvalue(L, -1); lua_setmetatable(L, -2);
         state.push_value_at(-1)?;
@@ -776,7 +776,7 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
     if target_is_self {
         // TODO(phase-b): HookFn type in state_stub takes &mut LuaDebug; set_hook takes lua_CFunction. Wire through real hook registry once lua-vm lands.
         let _ = hook_active;
-        state.set_hook(None, mask, count)?;
+        state.set_hook_full(None, mask, count)?;
     } else {
         // TODO(port): set hook on another thread — requires &mut LuaState for
         // the target concurrently with the current state.
@@ -950,7 +950,7 @@ pub(crate) fn traceback(state: &mut LuaState) -> Result<usize, LuaError> {
         // TODO(phase-b): cross-thread traceback target requires simultaneous &mut access to two LuaState; signature in state_stub takes &mut LuaState, not Option.
         let _ = other_thread;
         let _ = (msg_owned, level);
-        state.push(LuaValue::Nil)?;
+        state.push(LuaValue::Nil);
     }
     Ok(1)
 }
@@ -964,7 +964,7 @@ pub(crate) fn set_c_stack_limit(state: &mut LuaState) -> Result<usize, LuaError>
     let limit = state.check_arg_integer(1)? as i32;
     // C: int res = lua_setcstacklimit(L, limit); lua_pushinteger(L, res); return 1;
     let res = state.set_c_stack_limit(limit)?;
-    state.push(LuaValue::Int(res as i64))?;
+    state.push(LuaValue::Int(res as i64));
     Ok(1)
 }
 

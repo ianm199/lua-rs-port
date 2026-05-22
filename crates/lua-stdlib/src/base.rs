@@ -13,7 +13,7 @@ use lua_types::{
     arith::ArithOp,
     gc::GcRef,
 };
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 
@@ -408,7 +408,7 @@ pub(crate) fn rawequal_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_any(2)?;
     // C: lua_pushboolean(L, lua_rawequal(L, 1, 2));
     let eq = state.raw_equal(1, 2)?;
-    state.push(LuaValue::Bool(eq))?;
+    state.push(LuaValue::Bool(eq));
     Ok(1)
 }
 

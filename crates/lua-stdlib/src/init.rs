@@ -5,7 +5,7 @@
 //!
 //! Port of `src/linit.c` (66 lines, 1 function).
 
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 use lua_types::error::LuaError;
 
 // C: lua_CFunction — fn pointer type for Lua-callable C functions.

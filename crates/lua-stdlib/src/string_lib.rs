@@ -16,7 +16,7 @@ use lua_types::arith::ArithOp;
 use lua_types::gc::GcRef;
 use lua_types::string::LuaString;
 use lua_types::{LuaType, LuaStatus};
-use crate::state_stub::{LuaState, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -1010,7 +1010,7 @@ fn push_captures(
     state.ensure_stack(nlevels as i32, "too many captures")?;
     for i in 0..nlevels {
         match get_one_capture(ms, i, s, e)? {
-            CaptureInfo::Position(n) => state.push(LuaValue::Int(n))?,
+            CaptureInfo::Position(n) => state.push(LuaValue::Int(n)),
             CaptureInfo::Bytes(b) => state.push_bytes(b)?,
         }
     }
@@ -1218,7 +1218,7 @@ fn add_value(
         LuaType::Table => {
             // C: push_onecapture(ms, 0, s, e); lua_gettable(L, 3);
             match get_one_capture(ms, 0, s, e)? {
-                CaptureInfo::Position(n) => state.push(LuaValue::Int(n))?,
+                CaptureInfo::Position(n) => state.push(LuaValue::Int(n)),
                 CaptureInfo::Bytes(b) => state.push_bytes(b)?,
             }
             state.get_table(3)?;
