@@ -1169,7 +1169,11 @@ impl LuaState {
     pub fn coerce_to_string(&mut self, _idx: StackIdx) -> Result<GcRef<LuaString>, LuaError> { todo!("phase-b: coerce_to_string") }
     pub fn str_to_num(&mut self, _s: &[u8]) -> Option<(LuaValue, usize)> { todo!("phase-b: str_to_num") }
 
-    pub fn fast_get<T, K>(&mut self, _t: T, _k: K) -> Result<Option<LuaValue>, LuaError> { todo!("phase-b: fast_get") }
+    pub fn fast_get(&mut self, t: &LuaValue, k: &LuaValue) -> Result<Option<LuaValue>, LuaError> {
+        let LuaValue::Table(tbl) = t else { return Ok(None); };
+        let v = tbl.get(k);
+        if matches!(v, LuaValue::Nil) { Ok(None) } else { Ok(Some(v)) }
+    }
     pub fn fast_get_int<T>(&mut self, _t: T, _k: i64) -> Result<Option<LuaValue>, LuaError> { todo!("phase-b: fast_get_int") }
     pub fn fast_get_short_str<T, K>(&mut self, _t: T, _k: K) -> Result<Option<LuaValue>, LuaError> { todo!("phase-b: fast_get_short_str") }
     pub fn fast_tm_table<U, T>(&mut self, _t: U, _tm: T) -> LuaValue { todo!("phase-b: fast_tm_table") }

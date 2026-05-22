@@ -10,3 +10,6 @@
 {"ts":"2026-05-16T13:51:23Z","action":"dispatch_done","detail":"func=registry_value cost=0.5117385","total_cost":0.00}
 {"ts":"2026-05-16T13:51:23Z","action":"panic_detected","detail":"func=table_get_with_tm iter=4","total_cost":0.00}
 {"ts":"2026-05-16T13:51:23Z","action":"dispatch_start","detail":"func=table_get_with_tm iter=4","total_cost":0.00}
+{"ts":"2026-05-16T13:55:01Z","action":"dispatch_done","detail":"func=table_get_with_tm cost=1.9590297499999993","total_cost":0.00}
+{"ts":"2026-05-16T13:55:01Z","action":"panic_detected","detail":"func=fast_get iter=5","total_cost":0.00}
+{"ts":"2026-05-16T13:55:01Z","action":"dispatch_start","detail":"func=fast_get iter=5","total_cost":0.00}

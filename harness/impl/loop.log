@@ -17,3 +17,7 @@
 [2026-05-16T13:51:23Z] ─── iter 4  (spent: $0.00) ───
 [2026-05-16T13:51:23Z]   blocked on: table_get_with_tm
 [2026-05-16T13:51:23Z]   dispatching agent for table_get_with_tm (budget $10)
+[2026-05-16T13:55:01Z]   agent done. iter cost=$1.9590297499999993  total=$0.00
+[2026-05-16T13:55:01Z] ─── iter 5  (spent: $0.00) ───
+[2026-05-16T13:55:01Z]   blocked on: fast_get
+[2026-05-16T13:55:01Z]   dispatching agent for fast_get (budget $10)
