@@ -434,9 +434,15 @@ pub trait LuaTableRefExt {
 impl LuaTableRefExt for GcRef<LuaTable> {
     fn metatable(&self) -> Option<GcRef<LuaTable>> { todo!("phase-b: LuaTable metatable accessor") }
     fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
-    fn get(&self, k: &LuaValue) -> LuaValue {
-        let slot = self.0.get_slot(k);
-        self.0.slot_value(slot)
+    fn get(&self, _k: &LuaValue) -> LuaValue {
+        // PORT NOTE: `LuaValue::Table` carries `GcRef<lua_types::value::LuaTable>`
+        // (the placeholder with no storage). The rich `lua_vm::table::LuaTable`
+        // implementing `get_slot` / `slot_value` is a separate type whose
+        // wire-up to `LuaValue` is a later reconcile-step task. Until then
+        // every lookup is empty, so a faithful C: `luaH_get` returns Nil here.
+        // TODO(port): re-implement once `LuaTable` placeholder reconciliation
+        // (type-vocabulary.tsv: LuaTable audit→enforce) is complete.
+        LuaValue::Nil
     }
     fn get_int(&self, _k: i64) -> LuaValue { todo!("phase-b: LuaTable::get_int") }
     fn get_short_str(&self, _k: &GcRef<LuaString>) -> LuaValue { todo!("phase-b: LuaTable::get_short_str") }
