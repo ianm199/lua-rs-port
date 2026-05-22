@@ -1,1 +1,2 @@
 1 0.41294775 inline
+2 2.2194084999999997 reference/lua-c/testes/goto.lua

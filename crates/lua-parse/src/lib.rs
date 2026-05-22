@@ -2275,15 +2275,13 @@ fn searchvar(
 /// Marks the block where the variable at `level` was defined as having an upvalue.
 fn markupval(fs: &mut FuncState, level: i32) {
     // C: while (bl->nactvar > level) bl = bl->previous;  bl->upval = 1;
-    let mut bl = fs.bl.as_mut();
-    while let Some(b) = bl {
+    let mut current = fs.bl.as_deref_mut();
+    while let Some(b) = current {
         if (b.nactvar as i32) <= level {
             b.upval = true;
             break;
         }
-        // PORT NOTE: can't iterate Option<Box<BlockCnt>> chain mutably in a simple loop
-        // TODO(port): borrow issue — chain traversal needs refactoring or unsafe
-        break;
+        current = b.previous.as_deref_mut();
     }
     fs.needclose = true;
 }
