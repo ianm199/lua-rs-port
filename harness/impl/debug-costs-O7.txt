@@ -4,3 +4,4 @@
 2 3.61352425 reference/lua-c/testes/strings.lua
 5 2.6474474999999997 reference/lua-c/testes/locals.lua
 6 1.5529877499999998 reference/lua-c/testes/calls.lua
+3 8.688720500000002 reference/lua-c/testes/math.lua

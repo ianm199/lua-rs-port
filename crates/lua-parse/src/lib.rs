@@ -1341,7 +1341,13 @@ fn cg_exp_to_any_reg(
 ) -> Result<u8, LuaError> {
     cg_discharge_vars(fs, line, e)?;
     if e.k == ExprKind::NonReloc {
-        return Ok(e.u.info as u8);
+        if e.t == NO_JUMP && e.f == NO_JUMP {
+            return Ok(e.u.info as u8);
+        }
+        if e.u.info >= fs.nactvar as i32 {
+            cg_exp_to_reg(fs, line, e, e.u.info as u8)?;
+            return Ok(e.u.info as u8);
+        }
     }
     cg_exp_to_next_reg(fs, line, e)?;
     Ok(e.u.info as u8)
