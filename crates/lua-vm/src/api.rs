@@ -343,6 +343,14 @@ impl LuaState {
         Ok(())
     }
 
+    pub fn push_c_closure(
+        &mut self,
+        f: fn(&mut LuaState) -> Result<usize, LuaError>,
+        n: i32,
+    ) -> Result<(), LuaError> {
+        push_cclosure(self, f, n)
+    }
+
     pub fn create_table(&mut self, narr: i32, nrec: i32) -> Result<(), LuaError> {
         create_table(self, narr, nrec)
     }
