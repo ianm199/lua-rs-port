@@ -1,15 +1,10 @@
 [1/4] Creating LuaState...
 [2/4] Opening standard library...
-DBG run_pending_finalizers: pending count = 1
-DBG   [0] strong_count = 1
-DBG   firing finalizer for [0]
-DBG     gc_fn type = Discriminant(6)
-DBG     calling __gc
-DBG     __gc pcall result = Ok(Ok)
 [3/4] Loading source (parse + compile)...
 [4/4] Executing chunk...
 testing errors
 
  >>> testC not active: skipping tests for messages in C <<<
 
-lua: pcall_k failed: Runtime: stdin:39: assertion failed!
+CHECKMESSAGE FAIL prog=aaa = x1; aaa = x2; aaa = x3; aaa = x4; aaa = x5; aaa = x6; aaa = x7; aaa = x8;  expected=method 'bbb' got=[string "aaa = x1; aaa = x2; aaa = x3; aaa = x4; aaa =..."]:1: attempt to call a nil value (method 'x233')
+lua: pcall_k failed: Runtime: stdin:40: assertion failed!
