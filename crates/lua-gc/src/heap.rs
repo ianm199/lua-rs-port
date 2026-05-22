@@ -386,6 +386,14 @@ impl Marker {
     pub fn try_visit(&mut self, addr: usize) -> bool {
         self.visited.insert(addr)
     }
+
+    /// True iff `id` was reached during the mark phase. Used by the
+    /// post-mark hook (`Heap::full_collect_with_post_mark`) to decide whether
+    /// a weak-table entry's target is still strongly reachable. Read-only —
+    /// callers cannot add entries.
+    pub fn is_visited(&self, id: usize) -> bool {
+        self.visited.contains(&id)
+    }
 }
 
 /// Phases of the collection cycle. Currently only Idle and StopTheWorld are
@@ -515,18 +523,51 @@ impl Heap {
     /// Caller passes the root set (the runtime — typically `GlobalState`
     /// implementing `Trace`).
     pub fn step(&self, roots: &dyn Trace) {
+        self.step_with_post_mark(roots, |_| {});
+    }
+
+    /// Like [`step`] but invokes a `post_mark` hook when a collection
+    /// actually fires (threshold reached). Hook is a no-op on the
+    /// short-circuit path. The runtime uses this to bridge weak-table
+    /// pruning into implicit GC steps fired from inside the VM loop.
+    pub fn step_with_post_mark<F: FnOnce(&dyn Fn(usize) -> bool)>(
+        &self,
+        roots: &dyn Trace,
+        post_mark: F,
+    ) {
         if self.paused.get() {
             return;
         }
         if self.bytes.get() < self.threshold.get() {
             return;
         }
-        self.full_collect(roots);
+        self.full_collect_with_post_mark(roots, post_mark);
     }
 
     /// Stop-the-world full collect. Marks every reachable object from
     /// `roots`, then sweeps white (unreachable) boxes from the allgc chain.
     pub fn full_collect(&self, roots: &dyn Trace) {
+        self.full_collect_with_post_mark(roots, |_| {});
+    }
+
+    /// Stop-the-world full collect with a post-mark hook.
+    ///
+    /// Runs in three phases: (1) mark from roots and drain the gray queue,
+    /// (2) invoke `post_mark` with a read-only reachability query, (3) sweep
+    /// white boxes from the allgc chain. The hook receives `&dyn Fn(usize) ->
+    /// bool` so weak-table sweepers in higher crates can decide which entries
+    /// reference objects that have no other strong path. Clearing those
+    /// entries before sweep prevents weak handlers from observing dangling
+    /// `Gc<T>` pointers when the sweep frees the referent.
+    ///
+    /// The hook must NOT allocate (we hold heap-internal state during the
+    /// collect) and must NOT mutate the GC graph beyond clearing weak
+    /// entries; new strong edges introduced here would not be marked.
+    pub fn full_collect_with_post_mark<F: FnOnce(&dyn Fn(usize) -> bool)>(
+        &self,
+        roots: &dyn Trace,
+        post_mark: F,
+    ) {
         if self.paused.get() {
             return;
         }
@@ -557,6 +598,12 @@ impl Heap {
                 bx.value.trace(&mut marker);
             }
         }
+
+        // ── Post-mark hook ──────────────────────────────────────────────
+        // Hand the hook a closure that queries the visited set. The hook
+        // typically iterates weak-table entries and clears those whose weak
+        // target was not reached during mark.
+        post_mark(&|id: usize| marker.is_visited(id));
 
         // ── Sweep phase ─────────────────────────────────────────────────
         // Walk allgc; drop white boxes, keep black. Reset black→white for

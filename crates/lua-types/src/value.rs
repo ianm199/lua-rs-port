@@ -130,28 +130,13 @@ impl LuaTable {
 
     /// Read a key; returns `LuaValue::Nil` if absent or if key is nil.
     ///
-    /// If this table has weak keys or values (`__mode`), any matching entry
-    /// whose weakly-tagged component has no other strong holders (Rc
-    /// `strong_count == 1`) is removed and `Nil` is returned. This is the
-    /// Phase-A/B/C stand-in for the real incremental sweeper.
+    /// Weak-table semantics: under Phase D-2, weak entries are pruned at
+    /// `Heap::full_collect` time via the reachability-driven post-mark hook
+    /// — not eagerly on every read. Between collections a weak entry whose
+    /// target has no other strong path is still observable until the next
+    /// cycle; that matches C-Lua's stop-the-world atomic-phase clearing.
     pub fn get(&self, k: &LuaValue) -> LuaValue {
         if matches!(k, LuaValue::Nil) { return LuaValue::Nil; }
-        let mode = self.weak_mode.get();
-        if mode != 0 {
-            let entries = self.entries.borrow();
-            let found = entries.iter().position(|(ek, _)| lua_key_eq(ek, k));
-            if let Some(i) = found {
-                let (ek, ev) = &entries[i];
-                let dead = entry_is_weakly_dead(ek, ev, mode);
-                if dead {
-                    drop(entries);
-                    self.entries.borrow_mut().swap_remove(i);
-                    return LuaValue::Nil;
-                }
-                return ev.clone();
-            }
-            return LuaValue::Nil;
-        }
         for (ek, ev) in self.entries.borrow().iter() {
             if lua_key_eq(ek, k) { return ev.clone(); }
         }
@@ -212,14 +197,12 @@ impl LuaTable {
     /// returns the first entry. Otherwise returns the entry that follows
     /// `k` in insertion order. Returns `None` when iteration is done.
     ///
-    /// Skips weakly-dead entries on the way; this keeps `pairs()` over a
-    /// weak table from observing collected slots.
+    /// Tombstone entries (key present, value nil) are skipped — but they
+    /// stay in the entries Vec so a `for k,v in pairs(t) do t[k] = nil end`
+    /// loop can still resume from the just-cleared key. Weak-table pruning
+    /// is no longer performed here; see [`prune_weak_dead`] for the
+    /// GC-time weak sweep.
     pub fn next_pair(&self, k: &LuaValue) -> Option<(LuaValue, LuaValue)> {
-        let mode = self.weak_mode.get();
-        if mode != 0 {
-            let mut entries = self.entries.borrow_mut();
-            entries.retain(|(ek, ev)| !entry_is_weakly_dead(ek, ev, mode));
-        }
         let entries = self.entries.borrow();
         let start = if matches!(k, LuaValue::Nil) {
             0
@@ -236,6 +219,74 @@ impl LuaTable {
             }
         }
         None
+    }
+
+    /// Drop weak entries whose weakly-tracked target is unreachable.
+    ///
+    /// Called from the post-mark hook (`Heap::full_collect_with_post_mark`)
+    /// while the GC marker still holds the visited set. `is_reachable(id)`
+    /// returns true iff the object at GC identity `id` was reached during
+    /// the mark phase. Non-collectable LuaValue variants (`Int`, `Float`,
+    /// `Bool`, `Nil`, `LightUserData`, primitive strings owned outside the
+    /// heap) are treated as always reachable.
+    ///
+    /// Mode dispatch (`mode` is the `WEAK_KEYS | WEAK_VALUES` bitmask):
+    ///   * `__mode = "v"`: clear when the value side is unreachable.
+    ///   * `__mode = "kv"`: clear when either side is unreachable.
+    ///   * `__mode = "k"`: clear when the key side is unreachable. NOTE:
+    ///     this is a *simplification* of Lua's ephemeron semantics — full
+    ///     ephemerons require a fixed-point iteration where a value's
+    ///     reachability is conditional on the key's, and vice versa for
+    ///     cycles. Here the trace impl marks values strongly regardless
+    ///     of key reachability, so values held only by an entry that we
+    ///     are about to clear survive one extra cycle. Sufficient for
+    ///     `gc.lua`'s weak-table block; full ephemerons remain a follow-up.
+    ///
+    /// Tombstone semantics (value = Nil with the key slot still occupied)
+    /// are preserved: a tombstone is NOT subject to weak-side checks
+    /// because callers rely on the key remaining for `next(t, last_key)`.
+    pub fn prune_weak_dead(&self, is_reachable: &dyn Fn(usize) -> bool) {
+        let mode = self.weak_mode.get();
+        if mode == 0 {
+            return;
+        }
+        let weak_k = (mode & WEAK_KEYS) != 0;
+        let weak_v = (mode & WEAK_VALUES) != 0;
+        let mut entries = self.entries.borrow_mut();
+        entries.retain(|(k, v)| {
+            if matches!(v, LuaValue::Nil) {
+                return true;
+            }
+            if weak_v && !value_is_reachable(v, is_reachable) {
+                return false;
+            }
+            if weak_k && !value_is_reachable(k, is_reachable) {
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// Reachability check for a `LuaValue` used by [`LuaTable::prune_weak_dead`].
+/// Returns `true` for non-collectable variants (no identity to check) so
+/// they survive the weak-table sweep.
+fn value_is_reachable(v: &LuaValue, is_reachable: &dyn Fn(usize) -> bool) -> bool {
+    match v {
+        LuaValue::Table(t) => is_reachable(t.identity()),
+        LuaValue::UserData(u) => is_reachable(u.identity()),
+        LuaValue::Thread(th) => is_reachable(th.identity()),
+        LuaValue::Function(c) => match c {
+            LuaClosure::Lua(x) => is_reachable(x.identity()),
+            LuaClosure::C(x) => is_reachable(x.identity()),
+            LuaClosure::LightC(_) => true,
+        },
+        LuaValue::Str(s) => is_reachable(s.identity()),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_) => true,
     }
 }
 
@@ -259,272 +310,6 @@ fn extract_weak_mode(mt: &LuaTable) -> u8 {
         }
     }
     0
-}
-
-/// True when the entry's weakly-tagged component(s) have no strong
-/// references outside this single entry. Strings and other non-collectable
-/// values are never considered dead — strings live in the intern pool and
-/// would otherwise vanish from weak caches almost immediately.
-///
-/// The naive form (strong_count == 1) is wrong when an entry stores the
-/// *same* Rc in both key and value slots (`a[t] = t`): the in-entry slots
-/// then contribute 2 strong refs, and we must also distinguish slots that
-/// keep the target alive (strong) from slots that do not (weak per the
-/// table's `__mode`).
-fn entry_is_weakly_dead(k: &LuaValue, v: &LuaValue, mode: u8) -> bool {
-    let weak_k = (mode & WEAK_KEYS) != 0;
-    let weak_v = (mode & WEAK_VALUES) != 0;
-    if weak_k && is_dead_side(k, k, v, weak_k, weak_v) {
-        return true;
-    }
-    if weak_v && is_dead_side(v, k, v, weak_k, weak_v) {
-        return true;
-    }
-    false
-}
-
-fn is_dead_side(
-    target: &LuaValue,
-    k: &LuaValue,
-    v: &LuaValue,
-    weak_k: bool,
-    weak_v: bool,
-) -> bool {
-    let total = match strong_count_of(target) {
-        Some(n) => n,
-        None => return false,
-    };
-    let key_slot_refs_target = if same_rc(target, k) { 1usize } else { 0 };
-    let value_slot_refs_target = if same_rc(target, v) { 1usize } else { 0 };
-    let strong_from_key_slot = if !weak_k { key_slot_refs_target } else { 0 };
-    let strong_from_value_slot = if !weak_v { value_slot_refs_target } else { 0 };
-    if strong_from_key_slot + strong_from_value_slot > 0 {
-        return false;
-    }
-    let in_entry = key_slot_refs_target + value_slot_refs_target;
-    total <= in_entry
-}
-
-fn strong_count_of(v: &LuaValue) -> Option<usize> {
-    use std::rc::Rc;
-    match v {
-        LuaValue::Table(t)    => Some(t.strong_count()),
-        LuaValue::UserData(u) => Some(u.strong_count()),
-        LuaValue::Thread(th)  => Some(th.strong_count()),
-        LuaValue::Function(c) => match c {
-            LuaClosure::Lua(x)    => Some(x.strong_count()),
-            LuaClosure::C(x)      => Some(x.strong_count()),
-            LuaClosure::LightC(_) => None,
-        },
-        _ => None,
-    }
-}
-
-/// Cross-table weak-sweep used at `collectgarbage("collect")` time.
-///
-/// The per-table `entry_is_weakly_dead` check called from `get`/`next_pair`
-/// undercounts when the same target is held weakly across multiple tables
-/// (the "bug-in-5.1" case in `testes/gc.lua`): each call inspects only one
-/// entry and treats the other table's weak Rc as if it were strong.
-///
-/// This routine iterates the full list of currently-registered weak tables
-/// and removes entries whose weak target is held only by weak slots —
-/// counted across *all* tables in the list. Iterates until the sweep makes
-/// no further progress so that chain-clears (clearing one entry exposes
-/// another) settle to a fixed point.
-pub fn sweep_weak_tables(tables: &[GcRef<LuaTable>]) {
-    if tables.is_empty() {
-        return;
-    }
-    loop {
-        let mut any_removed = false;
-        for t in tables {
-            let mode = t.weak_mode.get();
-            if mode == 0 {
-                continue;
-            }
-            let dead_indices: Vec<usize> = {
-                let entries = t.entries.borrow();
-                let mut result = Vec::new();
-                for (i, (k, v)) in entries.iter().enumerate() {
-                    // PORT NOTE: tombstone entries (key present, value Nil)
-                    // are left behind by `raw_set(k, Nil)` so that
-                    // `next(t, k)` can locate the removed key during
-                    // iteration. C-Lua's collector clears them in the
-                    // atomic weak-sweep phase. Without this, a string key
-                    // held only by a tombstone in a weak table would never
-                    // be released (the per-entry `entry_is_weakly_dead`
-                    // check returns false for strings), and the
-                    // `collectgarbage("count") <= m + 1` assert at the end
-                    // of gc.lua's weak-string-keys block would fail. Tables
-                    // not in `weak_tables_registry` are not touched here so
-                    // mid-iteration `for k,v in pairs(t) do t[k] = nil end`
-                    // semantics on non-weak tables are preserved.
-                    if matches!(v, LuaValue::Nil) {
-                        result.push(i);
-                        continue;
-                    }
-                    if entry_is_weakly_dead_global(k, v, mode, tables) {
-                        result.push(i);
-                    }
-                }
-                result
-            };
-            if !dead_indices.is_empty() {
-                let mut entries = t.entries.borrow_mut();
-                for &i in dead_indices.iter().rev() {
-                    entries.swap_remove(i);
-                }
-                drop(entries);
-                any_removed = true;
-            }
-        }
-        if !any_removed {
-            break;
-        }
-    }
-}
-
-fn entry_is_weakly_dead_global(
-    k: &LuaValue,
-    v: &LuaValue,
-    mode: u8,
-    all_tables: &[GcRef<LuaTable>],
-) -> bool {
-    let weak_k = (mode & WEAK_KEYS) != 0;
-    let weak_v = (mode & WEAK_VALUES) != 0;
-    if weak_k && is_target_dead_global(k, all_tables) {
-        return true;
-    }
-    if weak_v && is_target_dead_global(v, all_tables) {
-        return true;
-    }
-    false
-}
-
-fn is_target_dead_global(target: &LuaValue, all_tables: &[GcRef<LuaTable>]) -> bool {
-    is_target_dead_global_with_fdos(target, all_tables, &[])
-}
-
-/// Same as `is_target_dead_global` but additionally treats `fdos` (finalizable-
-/// dead objects: tables in `pending_finalizers` whose only strong ref is the
-/// queue itself) as if they were already dropped — so any strong ref the
-/// target receives from an FDO's entries or metatable is discounted.
-fn is_target_dead_global_with_fdos(
-    target: &LuaValue,
-    all_tables: &[GcRef<LuaTable>],
-    fdos: &[GcRef<LuaTable>],
-) -> bool {
-    let total = match strong_count_of(target) {
-        Some(n) => n,
-        None => return false,
-    };
-    let mut extra_rc = 0usize;
-    if let LuaValue::Table(target_tbl) = target {
-        for t in all_tables {
-            if GcRef::ptr_eq(target_tbl, t) {
-                extra_rc += 1;
-            }
-        }
-        for f in fdos {
-            if GcRef::ptr_eq(target_tbl, f) {
-                extra_rc += 1;
-            }
-        }
-    }
-    let mut weak_refs = 0usize;
-    for t in all_tables {
-        let tmode = t.weak_mode.get();
-        if tmode == 0 {
-            continue;
-        }
-        let tweak_k = (tmode & WEAK_KEYS) != 0;
-        let tweak_v = (tmode & WEAK_VALUES) != 0;
-        for (ek, ev) in t.entries.borrow().iter() {
-            if tweak_k && same_rc(target, ek) {
-                weak_refs += 1;
-            }
-            if tweak_v && same_rc(target, ev) {
-                weak_refs += 1;
-            }
-        }
-    }
-    let mut fdo_refs = 0usize;
-    for f in fdos {
-        for (fk, fv) in f.entries.borrow().iter() {
-            if same_rc(target, fk) {
-                fdo_refs += 1;
-            }
-            if same_rc(target, fv) {
-                fdo_refs += 1;
-            }
-        }
-        if let Some(mt) = f.metatable() {
-            if let LuaValue::Table(target_tbl) = target {
-                if GcRef::ptr_eq(&mt, target_tbl) {
-                    fdo_refs += 1;
-                }
-            }
-        }
-    }
-    let strong = total
-        .saturating_sub(extra_rc)
-        .saturating_sub(weak_refs)
-        .saturating_sub(fdo_refs);
-    strong == 0
-}
-
-/// Pre-finalizer weak-**value** sweep.
-///
-/// Clears entries in weak-value tables whose value is reachable only through
-/// finalizable-dead objects (`fdos`) and other weak slots. Weak-key entries
-/// are NOT touched here — those are cleared by the post-finalizer
-/// [`sweep_weak_tables`] pass, by which point the FDOs have been dropped.
-///
-/// PORT NOTE: mirrors the order in C-Lua's `atomic()`:
-///   `clearbyvalues(g, g->weak, NULL)` — runs **before** `markbeingfnz`
-///   resurrects finalizable objects' transitive closure. The "bug-in-5.1"
-///   testes/gc.lua case (`a.x = t; setmetatable(a, {__gc = … assert(C.key == nil)})`)
-///   requires this ordering: `C.key` (a weak value pointing at `t`) must be
-///   cleared before `a`'s finalizer runs, even though `a.x = t` keeps `t`
-///   strongly reachable through the finalizable `a`.
-pub fn sweep_weak_values_pre_finalizer(
-    weak_tables: &[GcRef<LuaTable>],
-    fdos: &[GcRef<LuaTable>],
-) {
-    if weak_tables.is_empty() || fdos.is_empty() {
-        return;
-    }
-    loop {
-        let mut any_removed = false;
-        for t in weak_tables {
-            let mode = t.weak_mode.get();
-            if (mode & WEAK_VALUES) == 0 {
-                continue;
-            }
-            let dead_indices: Vec<usize> = {
-                let entries = t.entries.borrow();
-                let mut result = Vec::new();
-                for (i, (_, v)) in entries.iter().enumerate() {
-                    if is_target_dead_global_with_fdos(v, weak_tables, fdos) {
-                        result.push(i);
-                    }
-                }
-                result
-            };
-            if !dead_indices.is_empty() {
-                let mut entries = t.entries.borrow_mut();
-                for &i in dead_indices.iter().rev() {
-                    entries.swap_remove(i);
-                }
-                drop(entries);
-                any_removed = true;
-            }
-        }
-        if !any_removed {
-            break;
-        }
-    }
 }
 
 fn same_rc(a: &LuaValue, b: &LuaValue) -> bool {

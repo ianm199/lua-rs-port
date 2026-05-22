@@ -83,16 +83,37 @@ impl Trace for UpVal {
     }
 }
 
-/// LuaTable — array+hash entries plus optional metatable. Weak-key/value
-/// pruning is not implemented here; the Phase A/B/C strong_count check at
-/// `get` / `next_pair` is the current stand-in for the atomic
-/// weak-table pass.
+/// LuaTable — array+hash entries plus optional metatable.
+///
+/// Weak-table semantics (Phase D-2):
+///   * `__mode = "v"` — values are weak; mark keys only. Dead values get
+///     pruned in the post-mark hook via [`crate::value::LuaTable::prune_weak_dead`].
+///   * `__mode = "kv"` — both sides weak; trace neither. Both get pruned.
+///   * `__mode = "k"` — keys are weak; mark values only. Entries whose key
+///     is unreachable get pruned. NOTE: this is NOT a full ephemeron
+///     implementation — proper ephemerons require a fixed-point pass where
+///     a value's reachability is conditional on the key's reachability
+///     (and vice versa for cycles). The simpler approach here marks the
+///     value strongly regardless, so values held only by a soon-to-be-
+///     cleared weak-key entry survive one extra cycle before they get
+///     freed. Sufficient for `gc.lua`'s weak-table block; full
+///     ephemerons tracked as a follow-up.
+///   * No `__mode` — trace both unconditionally.
 impl Trace for LuaTable {
     fn trace(&self, m: &mut Marker) {
+        const WEAK_KEYS: u8 = 1;
+        const WEAK_VALUES: u8 = 1 << 1;
+        let mode = self.weak_mode();
+        let trace_keys = (mode & WEAK_KEYS) == 0;
+        let trace_values = (mode & WEAK_VALUES) == 0;
         let mut key = LuaValue::Nil;
         while let Some((k, v)) = self.next_pair(&key) {
-            k.trace(m);
-            v.trace(m);
+            if trace_keys {
+                k.trace(m);
+            }
+            if trace_values {
+                v.trace(m);
+            }
             key = k;
         }
         if let Some(mt) = self.metatable() {

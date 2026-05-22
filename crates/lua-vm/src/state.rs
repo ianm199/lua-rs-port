@@ -2028,6 +2028,7 @@ impl LuaState {
         if !self.global().pending_finalizers.is_empty() {
             crate::api::run_pending_finalizers(self);
         }
+        self.gc().check_step();
     }
     pub fn gc_barrier_back<T, U>(&mut self, _t: T, _v: U) { /* phase-b no-op */ }
     pub fn gc_barrier_upval<T, U, V>(&mut self, _cl: T, _uv: U, _v: V) { /* phase-b no-op */ }
@@ -2080,24 +2081,83 @@ impl<'a> lua_gc::Trace for CollectRoots<'a> {
 impl<'a> GcHandle<'a> {
     /// C: `luaC_checkGC(L)` — conditional GC step.
     /// macros.tsv: `luaC_checkGC → state.gc().check_step()`
+    ///
+    /// Phase D-2: drives implicit collection when the heap's byte threshold
+    /// is exceeded. Without this hook, loops that allocate without an
+    /// explicit `collectgarbage()` call (e.g. `closure.lua`'s
+    /// `while x[1] do local a = A..A end` GC-driven loop) never settle.
     pub fn check_step(&self) {
-        // PORT NOTE: Phase A–C no-op; Phase D triggers incremental GC step
+        self.collect_via_heap(/* force = */ false);
     }
 
     /// C: `luaC_fullgc(L, isemergency)` — full collection.
     /// macros.tsv: `luaC_fullgc → state.gc().full_collect()`
     pub fn full_collect(&self) {
-        // Phase D: trigger real mark-and-sweep. The root set is the union of
-        // GlobalState (registry, mt[], string interns, etc.) and the running
-        // LuaState (stack 0..top + openupval list). The mainthread cycle
-        // workaround leaves `global.mainthread = None` (see new_state), so the
-        // active thread is NOT reachable from the global root and must be
-        // injected here as a second root.
+        self.collect_via_heap(/* force = */ true);
+    }
+
+    /// Shared driver behind both `full_collect` (force-collect) and
+    /// `check_step` (collect only if heap byte threshold exceeded).
+    ///
+    /// Snapshots the weak-tables registry, invokes the heap's collect path
+    /// with a post-mark weak-prune hook, and rebuilds the registry by
+    /// retaining only entries whose target was reachable. The same hook
+    /// works for both modes — the heap short-circuits when force=false and
+    /// the threshold isn't met.
+    fn collect_via_heap(&self, force: bool) {
         let state_ref: &LuaState = &*self._state;
-        let global = state_ref.global.borrow();
-        global.heap.unpause();
-        let roots = CollectRoots { global: &*global, thread: state_ref };
-        global.heap.full_collect(&roots);
+
+        // Snapshot weak tables BEFORE the collect. `identity()` reads only
+        // the pointer address — safe even on still-dangling weak handles —
+        // and dedup by identity keeps the iteration linear.
+        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+            let g = state_ref.global.borrow();
+            let mut seen = std::collections::HashSet::<usize>::new();
+            g.weak_tables_registry
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .filter(|t| seen.insert(t.identity()))
+                .collect()
+        };
+
+        let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+        let collect_ran = std::cell::Cell::new(false);
+
+        {
+            let global = state_ref.global.borrow();
+            global.heap.unpause();
+            let roots = CollectRoots { global: &*global, thread: state_ref };
+            let hook = |is_reachable: &dyn Fn(usize) -> bool| {
+                collect_ran.set(true);
+                for t in &weak_tables_snapshot {
+                    let id = t.identity();
+                    if is_reachable(id) {
+                        t.prune_weak_dead(is_reachable);
+                        alive_ids.borrow_mut().insert(id);
+                    }
+                }
+            };
+            if force {
+                global.heap.full_collect_with_post_mark(&roots, hook);
+            } else {
+                global.heap.step_with_post_mark(&roots, hook);
+            }
+        }
+
+        if !collect_ran.get() {
+            return;
+        }
+
+        // After collect, drop weak-table-registry entries whose target was
+        // swept. Without this filter the registry leaks one dangling
+        // `GcWeak<LuaTable>` per dead weak table; the next collect would
+        // upgrade those handles (current placeholder GcWeak always returns
+        // Some) and the prune walk would deref freed memory.
+        let alive_set = alive_ids.into_inner();
+        let mut g = state_ref.global.borrow_mut();
+        g.weak_tables_registry
+            .retain(|w| alive_set.contains(&w.0.identity()));
     }
 
     /// Phase-B stub for `luaC_step(L)`.
