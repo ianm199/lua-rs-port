@@ -351,6 +351,10 @@ impl LuaState {
         push_cclosure(self, f, n)
     }
 
+    pub fn raw_seti(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
+        raw_set_i(self, idx, n)
+    }
+
     pub fn create_table(&mut self, narr: i32, nrec: i32) -> Result<(), LuaError> {
         create_table(self, narr, nrec)
     }

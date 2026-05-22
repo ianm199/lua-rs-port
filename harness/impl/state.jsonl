@@ -176,3 +176,6 @@
 {"ts":"2026-05-16T18:42:51Z","action":"dispatch_done","detail":"type=implement func=new_lib cost=1.4807439999999998","total_cost":0.00}
 {"ts":"2026-05-16T18:42:51Z","action":"panic_detected","detail":"func=push_c_closure iter=6","total_cost":0.00}
 {"ts":"2026-05-16T18:42:51Z","action":"dispatch_start","detail":"type=implement func=push_c_closure iter=6","total_cost":0.00}
+{"ts":"2026-05-16T18:43:34Z","action":"dispatch_done","detail":"type=implement func=push_c_closure cost=0.46256875000000003","total_cost":0.00}
+{"ts":"2026-05-16T18:43:34Z","action":"panic_detected","detail":"func=raw_seti iter=7","total_cost":0.00}
+{"ts":"2026-05-16T18:43:34Z","action":"dispatch_start","detail":"type=implement func=raw_seti iter=7","total_cost":0.00}
