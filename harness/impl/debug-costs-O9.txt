@@ -1,0 +1,1 @@
+2 0.722568 reference/lua-c/testes/literals.lua

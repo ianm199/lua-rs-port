@@ -864,3 +864,4 @@
 [2026-05-18T06:14:56Z mega]   [O9.D4] DEBUG dispatch on file: reference/lua-c/testes/constructs.lua [parallel]
 [2026-05-18T06:14:56Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: coroutine.yield: coroutines not yet implemented (Phase E)): reference/lua-c/testes/nextvar.lua
 [2026-05-18T06:14:56Z mega]   skip stuck prog (same sig 2 rounds: [err] pcall_k failed: Runtime: field 'year' missing in date table): reference/lua-c/testes/files.lua
+[2026-05-18T06:17:01Z mega]   [O9.D5] DEBUG dispatch on file: reference/lua-c/testes/errors.lua [parallel]
