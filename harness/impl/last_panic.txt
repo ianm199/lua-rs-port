@@ -1,1 +1,1 @@
-set_top_idx
+set_global
