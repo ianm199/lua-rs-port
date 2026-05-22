@@ -5,3 +5,4 @@
 13.552095499999997 reference/lua-c/testes/math.lua
 1 8.697557500000004 reference/lua-c/testes/pm.lua
 7 1.6061307500000004 reference/lua-c/testes/files.lua
+6 3.0446777499999995 reference/lua-c/testes/constructs.lua

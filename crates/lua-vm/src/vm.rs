@@ -1937,7 +1937,6 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let flip = i.arg_k() != 0;
                         let prev_inst = state.proto_code(&cl, pc - 2);
                         let result_idx = base + prev_inst.arg_a();
-                        eprintln!("DBG MMBINI: p1={} imm={} tm={:?}", ra_v.type_name(), imm, tm);
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
                         state.try_bin_i_tm(&ra_v, Some(ra_idx), imm, flip, result_idx, tm)?;
