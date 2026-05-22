@@ -163,9 +163,9 @@ warning: variable does not need to be mutable
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> crates/lua-vm/src/state.rs:2808:9
+    --> crates/lua-vm/src/state.rs:2842:9
      |
-2808 |     let mut status = if status == LuaStatus::Yield as i32 {
+2842 |     let mut status = if status == LuaStatus::Yield as i32 {
      |         ----^^^^^^
      |         |
      |         help: remove this `mut`
@@ -550,21 +550,21 @@ warning: constant `LUA_EXTRASPACE` is never used
     |       ^^^^^^^^^^^^^^
 
 warning: function `inc_c_stack` is never used
-    --> crates/lua-vm/src/state.rs:2399:15
+    --> crates/lua-vm/src/state.rs:2433:15
      |
-2399 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
+2433 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^^^
 
 warning: function `free_thread` is never used
-    --> crates/lua-vm/src/state.rs:2748:15
+    --> crates/lua-vm/src/state.rs:2782:15
      |
-2748 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
+2782 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
      |               ^^^^^^^^^^^
 
 warning: function `warn_error` is never used
-    --> crates/lua-vm/src/state.rs:3157:15
+    --> crates/lua-vm/src/state.rs:3191:15
      |
-3157 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
+3191 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
      |               ^^^^^^^^^^
 
 warning: type alias `LocalGcRef` is never used

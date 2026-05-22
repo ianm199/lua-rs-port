@@ -1,0 +1,11 @@
+old_pattern	new_pattern	notes
+GcRef::new(LuaTable::placeholder())	state.new_table()	already-existing helper
+GcRef::new(LuaString::from_bytes(v))	state.new_string(&v)	or state.intern_str(&v) for short
+GcRef::new(LuaString::placeholder())	state.new_string(b"")	placeholder = empty
+GcRef::new(LuaProto::placeholder())	state.new_proto()	new D-1a method
+GcRef::new(LuaLClosure { proto, upvals })	state.new_lclosure(proto, upvals.len())	new D-1a method; upvals filled with Nil
+GcRef::new(UpVal::closed(v))	state.new_upval_closed(v)	new D-1a method
+GcRef::new(UpVal::open(thread_id, level))	state.new_upval_open(thread_id, level)	new D-1a method
+GcRef::new(LuaUserData {...})	state.new_userdata(...)	method body still todo!; agent may need to implement OR leave site alone
+GcRef::new(LuaCClosure {...})	state.new_c_closure(...)	method body still todo!; same caveat
+LEAVE	LEAVE	If &mut LuaState is not in scope at the call site (e.g. inside LuaError constructors in lua-types/src/error.rs), DO NOT migrate. Tag with // TODO(D-1c-bridge) comment.
