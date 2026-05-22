@@ -342,6 +342,23 @@ impl LuaState {
         push_lstring(self, s)?;
         Ok(())
     }
+
+    /// Ensure `registry[name]` is a table; push it onto the stack.
+    /// Returns `true` if the table already existed, `false` if newly created.
+    ///
+    /// C: `luaL_getsubtable(L, LUA_REGISTRYINDEX, name)`
+    pub fn get_subtable_registry(&mut self, name: &[u8]) -> Result<bool, LuaError> {
+        if get_field(self, LUA_REGISTRYINDEX, name)? == LuaType::Table {
+            return Ok(true);
+        }
+        self.pop_n(1);
+        let idx = abs_index(self, LUA_REGISTRYINDEX);
+        let new_tbl = self.new_table();
+        self.push(LuaValue::Table(new_tbl));
+        push_value(self, -1);
+        set_field(self, idx, name)?;
+        Ok(false)
+    }
 }
 
 // ── access functions (stack → Rust) ──────────────────────────────────────────
