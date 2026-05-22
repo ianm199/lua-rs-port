@@ -1173,7 +1173,13 @@ impl LuaState {
     pub fn is_current_ci(&self, idx: CallInfoIdx) -> bool { idx == self.ci }
     pub fn ci_next_func(&self, _idx: CallInfoIdx) -> StackIdx { todo!("phase-b: ci_next_func") }
     pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].top }
-    pub fn ci_trap(&mut self, _idx: CallInfoIdx) -> bool { todo!("phase-b: ci_trap") }
+    pub fn ci_trap(&mut self, idx: CallInfoIdx) -> bool {
+        if let CallInfoFrame::Lua { trap, .. } = self.call_info[idx.as_usize()].u {
+            trap
+        } else {
+            false
+        }
+    }
     pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 { self.call_info[idx.as_usize()].saved_pc() }
     pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
         self.call_info[idx.as_usize()].set_saved_pc(pc);

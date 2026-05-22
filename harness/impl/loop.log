@@ -480,3 +480,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T19:59:16Z] ─── iter 2  (spent: $0.00) ───
 [2026-05-16T19:59:16Z]   stub blocker: adjust_varargs
 [2026-05-16T19:59:16Z]   dispatching IMPLEMENT agent for adjust_varargs at crates/lua-vm/src/state.rs:1302:108 (budget $10)
+[2026-05-16T20:00:54Z]   agent done. iter cost=$0.9152015000000001  total=$0.00
+[2026-05-16T20:00:54Z] ─── iter 3  (spent: $0.00) ───
+[2026-05-16T20:00:54Z]   stub blocker: ci_trap
+[2026-05-16T20:00:54Z]   dispatching IMPLEMENT agent for ci_trap at crates/lua-vm/src/state.rs:1176:60 (budget $10)
