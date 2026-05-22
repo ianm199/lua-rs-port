@@ -84,7 +84,10 @@ fn main() -> ExitCode {
                 Ok(Some(s)) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
                 _ => "(no error message on stack)".to_string(),
             };
-            return Err(format!("load_string status={}: {}", status, msg));
+            return Err(format!(
+                "Syntax: {} (load_string status={})",
+                msg, status
+            ));
         }
 
         eprintln!("[4/4] Executing chunk...");

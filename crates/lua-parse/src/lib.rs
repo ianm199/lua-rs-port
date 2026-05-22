@@ -2782,19 +2782,20 @@ pub fn parse(
     // C: luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar)
     // TODO(port): lua_lex::set_input(state, &mut lexstate, z, source, firstchar)?;
 
-    mainfunc(&mut lexstate, state, main_fs)?;
-
-    debug_assert!(lexstate.fs.is_none());
-    debug_assert!(lexstate.dyd.actvar.is_empty());
-    debug_assert!(lexstate.dyd.gt.is_empty());
-    debug_assert!(lexstate.dyd.label.is_empty());
-
-    // C: L->top.p-- — remove scanner's table
-    // TODO(port): state.pop();
-
-    // C: return cl — closure is on the stack, too
-    // TODO(port): wrap proto in LuaLClosure and return GcRef
-    Err(LuaError::syntax(format_args!("TODO(port): parse returns placeholder")))
+    // PORT NOTE: The parser body (mainfunc → statlist → …) is fully
+    // translated, but every `// TODO(port): lua_lex::next(ls, state)?;`
+    // site is unimplemented, so the token stream is never advanced. Driving
+    // the parser without a live lexer produces a spurious "unexpected
+    // symbol" error at the very first token. Until the lua-lex ↔ lua-parse
+    // bridge lands (the Phase-B reconcile noted in the PORT STATUS trailer
+    // below — `LexState` here is a stub, distinct from `lua_lex::LexState`),
+    // surface a stub sentinel so the implement loop routes this to the
+    // correct next step instead of treating the spurious parse failure as
+    // a real Lua syntax error.
+    let _ = (state, lexstate, main_fs);
+    Err(LuaError::syntax(format_args!(
+        "phase-b: lua_parse::parse needs lua_lex bridge (mainfunc requires lua_lex::next to drive tokens; local LexState stub vs lua_lex::LexState reconcile)"
+    )))
 }
 
 // ──────────────────────────────────────────────────────────────────────────

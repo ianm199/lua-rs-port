@@ -121,3 +121,6 @@
 {"ts":"2026-05-16T17:16:35Z","action":"dispatch_done","detail":"type=debug err=load_string returned non-zero status: 1 cost=2.4356544999999987","total_cost":0.00}
 {"ts":"2026-05-16T17:16:36Z","action":"real_error","detail":"err=load_string status=1: print(\"hello\"): Lua text parser not yet wired (phase-b: lua-parse::parse) step=3/4 Loading source (parse + compile) iter=2","total_cost":0.00}
 {"ts":"2026-05-16T17:16:36Z","action":"dispatch_start","detail":"type=debug err=load_string status=1: print(\"hello\"): Lua text parser not yet wired (phase-b: lua-parse::parse) iter=2","total_cost":0.00}
+{"ts":"2026-05-16T17:22:15Z","action":"dispatch_done","detail":"type=debug err=load_string status=1: print(\"hello\"): Lua text parser not yet wired (phase-b: lua-parse::parse) cost=2.9143534999999994","total_cost":0.00}
+{"ts":"2026-05-16T17:22:15Z","action":"real_error","detail":"err=load_string status=1: unexpected symbol step=3/4 Loading source (parse + compile) iter=3","total_cost":0.00}
+{"ts":"2026-05-16T17:22:15Z","action":"dispatch_start","detail":"type=debug err=load_string status=1: unexpected symbol iter=3","total_cost":0.00}

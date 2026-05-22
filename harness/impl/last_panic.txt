@@ -1,1 +1,1 @@
-load_string status=1: print("hello"): Lua text parser not yet wired (phase-b: lua-parse::parse)
+load_string status=1: unexpected symbol
