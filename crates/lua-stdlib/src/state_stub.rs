@@ -182,7 +182,10 @@ pub trait LuaStateStubExt {
     fn warning(&mut self, msg: &[u8], to_cont: bool) -> Result<(), LuaError> { todo!("phase-b-reconcile: warning") }
     fn write_output(&mut self, msg: &[u8]) -> Result<(), LuaError> { todo!("phase-b-reconcile: write_output") }
     fn set_warn_fn(&mut self, f: Option<lua_CFunction>, ud: Option<LuaValue>) -> Result<(), LuaError> { todo!("phase-b-reconcile: set_warn_fn") }
-    fn set_funcs<F: Copy>(&mut self, funcs: &[(&[u8], F)], nup: i32) -> Result<(), LuaError> { todo!("phase-b-reconcile: set_funcs") }
+    fn set_funcs(&mut self, funcs: &[(&[u8], lua_CFunction)], nup: i32) -> Result<(), LuaError> {
+        let _ = (funcs, nup);
+        todo!("phase-b-reconcile: set_funcs")
+    }
     fn set_global(&mut self, name: &[u8]) -> Result<(), LuaError> { todo!("phase-b-reconcile: set_global") }
     fn set_upvalue(&mut self, fidx: i32, n: i32) -> Result<Option<Vec<u8>>, LuaError> { todo!("phase-b-reconcile: set_upvalue") }
     fn get_info(&mut self, what: &[u8], ar: &mut LuaDebug) -> Result<(), LuaError> { todo!("phase-b-reconcile: get_info") }
@@ -354,6 +357,19 @@ impl LuaStateStubExt for LuaState {
     fn push_globals(&mut self) -> Result<(), LuaError> {
         let g = self.global().globals.clone();
         self.push(g);
+        Ok(())
+    }
+
+    fn set_funcs(&mut self, funcs: &[(&[u8], lua_CFunction)], nup: i32) -> Result<(), LuaError> {
+        lua_vm::api::check_stack(self, nup);
+        for (name, f) in funcs {
+            for _ in 0..nup {
+                lua_vm::api::push_value(self, -nup);
+            }
+            lua_vm::api::push_cclosure(self, *f, nup)?;
+            lua_vm::api::set_field(self, -(nup + 2), name)?;
+        }
+        self.pop_n(nup as usize);
         Ok(())
     }
 }
