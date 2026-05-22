@@ -2689,7 +2689,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 
 /// C: static void mainfunc(LexState *ls, FuncState *fs)
 /// Compiles the main chunk (always a vararg function with _ENV upvalue).
-fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Result<(), LuaError> {
+fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Result<Box<LuaProto>, LuaError> {
     // C: open_func(ls, fs, &bl)
     open_func(ls, state, main_fs)?;
 
@@ -2716,8 +2716,7 @@ fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Resu
     // C: check(ls, TK_EOS)
     check(ls, TK_EOS)?;
 
-    close_func(ls, state)?;
-    Ok(())
+    close_func(ls, state)
 }
 
 /// C: LClosure *luaY_parser(lua_State *L, ZIO *z, Mbuffer *buff, Dyndata *dyd,
@@ -2795,8 +2794,7 @@ pub fn parse(
         needclose: false,
     };
 
-    let _ = (state, &mut lexstate, main_fs);
-    Ok(Box::new(LuaProto::placeholder()))
+    mainfunc(&mut lexstate, state, main_fs)
 }
 
 /// Convert a `lua_lex::TokenValue` into the local `parse::TokenValue` flat shape.

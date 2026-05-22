@@ -224,3 +224,9 @@
 {"ts":"2026-05-16T19:14:26Z","action":"dispatch_done","detail":"type=implement func=ci_base cost=0.5580062499999999","total_cost":0.00}
 {"ts":"2026-05-16T19:14:27Z","action":"panic_detected","detail":"func=proto_code iter=22","total_cost":0.00}
 {"ts":"2026-05-16T19:14:27Z","action":"dispatch_start","detail":"type=implement func=proto_code iter=22","total_cost":0.00}
+{"ts":"2026-05-16T19:15:54Z","action":"dispatch_done","detail":"type=implement func=proto_code cost=0.8516985000000001","total_cost":0.00}
+{"ts":"2026-05-16T19:15:54Z","action":"no_panic","detail":"iter=23 rc=101","total_cost":0.00}
+{"ts":"2026-05-16T19:15:54Z","action":"run_end","detail":"iterations=22 total_cost=0.00","total_cost":0.00}
+{"ts":"2026-05-16T19:16:48Z","action":"run_start","detail":"print(\"hello\")","total_cost":0.00}
+{"ts":"2026-05-16T19:16:48Z","action":"real_error","detail":"err=crates/lua-vm/src/state.rs:1382:22: step=4/4 Executing chunk iter=1","total_cost":0.00}
+{"ts":"2026-05-16T19:16:48Z","action":"dispatch_start","detail":"type=debug err=crates/lua-vm/src/state.rs:1382:22: iter=1","total_cost":0.00}

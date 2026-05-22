@@ -86,7 +86,9 @@ detect_failure_type() {
     # Classify the run output. Returns one of:
     #   success      - program produced "hello" output (or whatever marker)
     #   stub         - hit a todo!() panic OR a `phase-b: ...` LuaError sentinel
-    #   real-error   - hit a real Lua runtime error (not a stub sentinel)
+    #   real-error   - hit a real Lua runtime error OR a non-stub Rust panic
+    #                  (a bug in a recently-implemented function — index OOB,
+    #                  unwrap on None, etc.)
     #   unknown      - exited non-zero with no recognizable diagnostic
     local out="$1"
     if grep -q '^hello$' "$out" || grep -q '^"hello"$' "$out"; then
@@ -99,11 +101,19 @@ detect_failure_type() {
     if grep -qE "^\[err\]" "$out"; then
         echo "real-error"; return
     fi
+    if grep -qE "^thread '[^']+' .* panicked at " "$out" \
+        && ! grep -qE "not yet implemented:" "$out"; then
+        echo "real-error"; return
+    fi
     echo "unknown"
 }
 
 extract_real_error() {
-    grep -E "^\[err\]" "$1" | head -1 | sed 's/^\[err\] //'
+    # Prefer [err] line (LuaError path); fall back to panic message.
+    local err
+    err=$(grep -E "^\[err\]" "$1" | head -1 | sed 's/^\[err\] //')
+    if [ -n "$err" ]; then echo "$err"; return; fi
+    grep -oE "panicked at [^:]+:[0-9]+:[0-9]+:.*" "$1" | head -1 | sed -E 's/^panicked at //'
 }
 
 extract_step() {

@@ -1,8 +1,8 @@
 warning: unused imports: `CallInfoIdx`, `CallInfo`, `GlobalState`, `LuaClosureExt`, `LuaProtoExt`, and `LuaStringRefExt`
-  --> crates/lua-vm/src/api.rs:16:30
+  --> crates/lua-vm/src/api.rs:16:44
    |
-16 | use crate::state::{LuaState, GlobalState, CallInfo, CallInfoIdx, StackIdx,
-   |                              ^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^
+16 | use crate::state::{LuaState, LuaCFunction, GlobalState, CallInfo, CallInfoIdx, StackIdx,
+   |                                            ^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^
 17 |     LuaValueExt, LuaTypeExt, StackIdxExt,
 18 |     LuaTableRefExt, LuaUserDataRefExt, LuaStringRefExt,
    |                                        ^^^^^^^^^^^^^^^
@@ -156,9 +156,9 @@ warning: variable does not need to be mutable
     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> crates/lua-vm/src/state.rs:2121:9
+    --> crates/lua-vm/src/state.rs:2131:9
      |
-2121 |     let mut status = if status == LuaStatus::Yield as i32 {
+2131 |     let mut status = if status == LuaStatus::Yield as i32 {
      |         ----^^^^^^
      |         |
      |         help: remove this `mut`
@@ -807,27 +807,27 @@ warning: constant `LUA_EXTRASPACE` is never used
     |       ^^^^^^^^^^^^^^
 
 warning: function `set_debt` is never used
-    --> crates/lua-vm/src/state.rs:1495:15
+    --> crates/lua-vm/src/state.rs:1505:15
      |
-1495 | pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
+1505 | pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
      |               ^^^^^^^^
 
 warning: function `inc_c_stack` is never used
-    --> crates/lua-vm/src/state.rs:1713:15
+    --> crates/lua-vm/src/state.rs:1723:15
      |
-1713 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
+1723 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^^^
 
 warning: function `free_thread` is never used
-    --> crates/lua-vm/src/state.rs:2061:15
+    --> crates/lua-vm/src/state.rs:2071:15
      |
-2061 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
+2071 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
      |               ^^^^^^^^^^^
 
 warning: function `warn_error` is never used
-    --> crates/lua-vm/src/state.rs:2463:15
+    --> crates/lua-vm/src/state.rs:2473:15
      |
-2463 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
+2473 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
      |               ^^^^^^^^^^
 
 warning: type alias `LocalGcRef` is never used
@@ -2299,12 +2299,6 @@ warning: constant `SHIFT64_FIG` is never used
 31 | const SHIFT64_FIG: u32 = 64 - FIGS; // = 11
    |       ^^^^^^^^^^^
 
-warning: type alias `LuaCFunction` is never used
-  --> crates/lua-stdlib/src/math_lib.rs:37:6
-   |
-37 | type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
-   |      ^^^^^^^^^^^^
-
 warning: struct `LibReg` is never constructed
   --> crates/lua-stdlib/src/math_lib.rs:43:8
    |
@@ -2340,138 +2334,6 @@ warning: function `project` is never used
     |
 129 | fn project(mut ran: u64, n: u64, s: &mut [u64; 4]) -> u64 {
     |    ^^^^^^^
-
-warning: function `push_num_int` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:162:4
-    |
-162 | fn push_num_int(state: &mut LuaState, d: f64) {
-    |    ^^^^^^^^^^^^
-
-warning: function `math_abs` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:182:4
-    |
-182 | fn math_abs(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_sin` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:203:4
-    |
-203 | fn math_sin(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_cos` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:213:4
-    |
-213 | fn math_cos(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_tan` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:222:4
-    |
-222 | fn math_tan(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_asin` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:231:4
-    |
-231 | fn math_asin(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_acos` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:240:4
-    |
-240 | fn math_acos(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_atan` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:250:4
-    |
-250 | fn math_atan(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_toint` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:263:4
-    |
-263 | fn math_toint(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^^
-
-warning: function `math_floor` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:283:4
-    |
-283 | fn math_floor(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^^
-
-warning: function `math_ceil` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:298:4
-    |
-298 | fn math_ceil(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_fmod` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:312:4
-    |
-312 | fn math_fmod(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_modf` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:342:4
-    |
-342 | fn math_modf(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_sqrt` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:363:4
-    |
-363 | fn math_sqrt(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
-
-warning: function `math_ult` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:372:4
-    |
-372 | fn math_ult(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_log` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:384:4
-    |
-384 | fn math_log(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_exp` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:409:4
-    |
-409 | fn math_exp(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_deg` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:418:4
-    |
-418 | fn math_deg(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_rad` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:428:4
-    |
-428 | fn math_rad(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_min` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:438:4
-    |
-438 | fn math_min(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_max` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:459:4
-    |
-459 | fn math_max(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^
-
-warning: function `math_type` is never used
-   --> crates/lua-stdlib/src/math_lib.rs:481:4
-    |
-481 | fn math_type(state: &mut LuaState) -> Result<usize, LuaError> {
-    |    ^^^^^^^^^
 
 warning: function `math_random` is never used
    --> crates/lua-stdlib/src/math_lib.rs:508:4
@@ -4528,8 +4390,10 @@ help: use `let _ = ...` to ignore the expression or result
 
 [1/4] Creating LuaState...
 [2/4] Opening standard library...
+[3/4] Loading source (parse + compile)...
+[4/4] Executing chunk...
 
-thread 'main' (4756864) panicked at crates/lua-stdlib/src/state_stub.rs:95:67:
-not yet implemented: phase-b-reconcile: push_string
+thread 'main' (4845943) panicked at crates/lua-vm/src/state.rs:1382:22:
+index out of bounds: the len is 0 but the index is 0
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-[panic] not yet implemented: phase-b-reconcile: push_string
+[panic] index out of bounds: the len is 0 but the index is 0
