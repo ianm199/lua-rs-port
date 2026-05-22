@@ -191,7 +191,6 @@ impl LuaTable {
 
     pub fn set_metatable(&self, mt: Option<GcRef<LuaTable>>) {
         let mode = mt.as_ref().map(|t| extract_weak_mode(t)).unwrap_or(0);
-        eprintln!("[set_metatable] mode={} mt_has_entries={}", mode, mt.as_ref().map(|t| t.entries.borrow().len()).unwrap_or(0));
         self.weak_mode.set(mode);
         *self.metatable.borrow_mut() = mt;
     }
