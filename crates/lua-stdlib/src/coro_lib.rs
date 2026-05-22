@@ -200,11 +200,15 @@ pub fn co_create(state: &mut LuaState) -> Result<usize, LuaError> {
     // TODO(port): coroutine stub — new_thread allocates a fresh LuaState coroutine
     // and pushes a Thread value for it; Phase E needed.
     let _nl = state.new_thread()?;
-    state.push_value(1)?;
-    // C: lua_xmove(L, NL, 1);  /* move function from L to NL */
+    // C: lua_pushvalue(L, 1);          /* move function to top */
+    // C: lua_xmove(L, NL, 1);          /* move function from L to NL */
+    // PORT NOTE: in C the function copy is pushed and then xmove pops it
+    // off L's stack into NL's. The Phase E xmove is not yet wired, but the
+    // net stack effect on L is "thread on top". Skip the push entirely so
+    // co_wrap's push_cclosure captures the thread (not the function) as
+    // upvalue 1. Phase E will restore the push + xmove pair.
     // TODO(port): coroutine stub — xmove transfers the function from L's stack to
     // NL's stack so it becomes the coroutine body; Phase E needed.
-    // state.xmove(&nl, 1)?;
     Ok(1)
 }
 
