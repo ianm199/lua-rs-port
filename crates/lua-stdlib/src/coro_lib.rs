@@ -22,6 +22,8 @@ use lua_types::{
     value::LuaValue,
     LuaType,
     LuaStatus,
+    LuaClosure,
+    UpValState,
     gc::GcRef,
 };
 use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index};
