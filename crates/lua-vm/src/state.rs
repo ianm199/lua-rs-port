@@ -1080,7 +1080,11 @@ impl LuaState {
         todo!("phase-b: set_top_idx")
     }
     pub fn dec_top(&mut self) { todo!("phase-b: dec_top") }
-    pub fn pop_n(&mut self, _n: usize) { todo!("phase-b: pop_n") }
+    pub fn pop_n(&mut self, n: usize) {
+        let cur = self.top.0 as usize;
+        let new = cur.saturating_sub(n);
+        self.top = StackIdx(new as u32);
+    }
     pub fn peek_at(&mut self, _idx: impl Into<StackIdxConv>) -> LuaValue { todo!("phase-b: peek_at") }
     pub fn peek_top(&mut self) -> LuaValue { todo!("phase-b: peek_top") }
     pub fn peek_string_at_top(&mut self) -> GcRef<LuaString> { todo!("phase-b: peek_string_at_top") }
