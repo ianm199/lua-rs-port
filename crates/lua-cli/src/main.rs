@@ -55,8 +55,15 @@ fn file_loader_hook(filename: &[u8]) -> Result<Vec<u8>, LuaError> {
 /// lost when `io.close()` drops the `Box<dyn LuaFileHandle>`.
 enum FsFile {
     Read(BufReader<std::fs::File>),
-    Write(BufWriter<std::fs::File>),
+    Write(BufWriter<std::fs::File>, bool, FsBufMode),
     ReadWrite(std::fs::File, Option<u8>),
+}
+
+#[derive(Clone, Copy)]
+enum FsBufMode {
+    No,
+    Full,
+    Line,
 }
 
 impl FsFile {
@@ -91,12 +98,12 @@ impl FsFile {
             }
             (b'w', false) => {
                 let f = std::fs::File::create(&path)?;
-                Ok(FsFile::Write(BufWriter::new(f)))
+                Ok(FsFile::Write(BufWriter::new(f), false, FsBufMode::Full))
             }
             (b'a', false) => {
                 let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&path)?;
                 f.seek(SeekFrom::End(0))?;
-                Ok(FsFile::Write(BufWriter::new(f)))
+                Ok(FsFile::Write(BufWriter::new(f), false, FsBufMode::Full))
             }
             _ => {
                 let f = std::fs::OpenOptions::new()
@@ -132,7 +139,10 @@ impl LuaFileHandle for FsFile {
                     _ => -1,
                 }
             }
-            FsFile::Write(_) => -1,
+            FsFile::Write(_, errored, _) => {
+                *errored = true;
+                -1
+            }
         }
     }
 
@@ -148,13 +158,21 @@ impl LuaFileHandle for FsFile {
                     *pushback = Some(byte as u8);
                 }
             }
-            FsFile::Write(_) => {}
+            FsFile::Write(_, _, _) => {}
         }
     }
 
     fn write_bytes(&mut self, data: &[u8]) -> io::Result<usize> {
         match self {
-            FsFile::Write(w) => w.write(data),
+            FsFile::Write(w, _, mode) => {
+                let n = w.write(data)?;
+                match mode {
+                    FsBufMode::No => w.flush()?,
+                    FsBufMode::Line if data[..n].contains(&b'\n') => w.flush()?,
+                    FsBufMode::Line | FsBufMode::Full => {}
+                }
+                Ok(n)
+            }
             FsFile::ReadWrite(f, _) => f.write(data),
             FsFile::Read(_) => Err(io::Error::new(io::ErrorKind::PermissionDenied, "file not open for writing")),
         }
@@ -162,7 +180,7 @@ impl LuaFileHandle for FsFile {
 
     fn flush(&mut self) -> io::Result<()> {
         match self {
-            FsFile::Write(w) => w.flush(),
+            FsFile::Write(w, _, _) => w.flush(),
             FsFile::ReadWrite(f, _) => f.flush(),
             FsFile::Read(_) => Ok(()),
         }
@@ -171,7 +189,7 @@ impl LuaFileHandle for FsFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match self {
             FsFile::Read(r) => r.seek(pos),
-            FsFile::Write(w) => w.seek(pos),
+            FsFile::Write(w, _, _) => w.seek(pos),
             FsFile::ReadWrite(f, _) => f.seek(pos),
         }
     }
@@ -180,14 +198,33 @@ impl LuaFileHandle for FsFile {
         self.seek(SeekFrom::Current(0))
     }
 
-    fn clear_error(&mut self) {}
+    fn clear_error(&mut self) {
+        if let FsFile::Write(_, errored, _) = self {
+            *errored = false;
+        }
+    }
 
-    fn has_error(&self) -> bool { false }
+    fn has_error(&self) -> bool {
+        matches!(self, FsFile::Write(_, true, _))
+    }
+
+    fn set_buf_mode(&mut self, mode: i32, _size: usize) -> io::Result<()> {
+        if let FsFile::Write(w, _, current) = self {
+            w.flush()?;
+            *current = match mode {
+                0 => FsBufMode::No,
+                1 => FsBufMode::Full,
+                2 => FsBufMode::Line,
+                _ => FsBufMode::Full,
+            };
+        }
+        Ok(())
+    }
 }
 
 impl Drop for FsFile {
     fn drop(&mut self) {
-        if let FsFile::Write(w) = self {
+        if let FsFile::Write(w, _, _) = self {
             let _ = w.flush();
         }
     }

@@ -658,7 +658,7 @@ pub(crate) fn os_tmpname(state: &mut LuaState) -> Result<usize, LuaError> {
         .unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let suffix = format!("lua_{:x}_{:x}", nanos, n);
+    let suffix = format!("lua_{:x}_{:x}_{:x}", std::process::id(), nanos, n);
     dir.extend_from_slice(suffix.as_bytes());
 
     // C: lua_pushstring(L, buff);

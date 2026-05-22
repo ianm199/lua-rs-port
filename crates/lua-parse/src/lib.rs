@@ -504,6 +504,23 @@ pub struct LexState {
     /// which forward to `lua_lex::next` / `lua_lex::lookahead` on this inner
     /// state and then mirror the resulting token into `self.t` / `self.lookahead`.
     pub lex: lua_lex::LexState,
+    /// Parser recursion depth for C-Lua's `enterlevel` / `leavelevel` guard.
+    pub recursion_depth: u32,
+}
+
+const PARSER_MAX_C_CALLS: u32 = 200;
+
+fn enter_level(ls: &mut LexState) -> Result<(), LuaError> {
+    ls.recursion_depth += 1;
+    if ls.recursion_depth >= PARSER_MAX_C_CALLS {
+        Err(LuaError::syntax(format_args!("C stack overflow")))
+    } else {
+        Ok(())
+    }
+}
+
+fn leave_level(ls: &mut LexState) {
+    ls.recursion_depth = ls.recursion_depth.saturating_sub(1);
 }
 
 /// Advance the lexer one token and mirror the resulting state into the
@@ -616,11 +633,16 @@ fn bump_maxstack(fs: &mut FuncState, n: u8) {
     }
 }
 
-fn reserve_reg(fs: &mut FuncState) -> u8 {
+fn reserve_reg(fs: &mut FuncState) -> Result<u8, LuaError> {
+    if fs.freereg == u8::MAX {
+        return Err(LuaError::syntax(format_args!(
+            "function or expression needs too many registers"
+        )));
+    }
     let r = fs.freereg;
     fs.freereg += 1;
     bump_maxstack(fs, fs.freereg);
-    r
+    Ok(r)
 }
 
 fn reserve_regs(fs: &mut FuncState, n: i32) -> Result<(), LuaError> {
@@ -1793,7 +1815,7 @@ fn cg_exp_to_next_reg(
 ) -> Result<(), LuaError> {
     cg_discharge_vars(fs, line, e)?;
     cg_free_exp(fs, e);
-    let reg = reserve_reg(fs);
+    let reg = reserve_reg(fs)?;
     cg_exp_to_reg(fs, line, e, reg)
 }
 
@@ -2245,9 +2267,8 @@ fn search_upvalue(fs: &FuncState, name: &GcRef<LuaString>) -> i32 {
 /// Grows upvalues array and returns index of the new slot.
 fn alloc_upvalue(fs: &mut FuncState) -> Result<usize, LuaError> {
     // C: checklimit(fs, fs->nups + 1, MAXUPVAL, "upvalues")
-    // TODO(port): checklimit needs LexState for the error; passing MAX_UPVAL directly
     if fs.nups as i32 + 1 > MAX_UPVAL as i32 {
-        return Err(LuaError::syntax(format_args!("too many upvalues (limit is {})", MAX_UPVAL)));
+        return Err(error_limit(fs, MAX_UPVAL as i32, "upvalues"));
     }
     // C: luaM_growvector — Vec handles this automatically
     let idx = fs.nups as usize;
@@ -2436,7 +2457,7 @@ fn adjust_assign(
     }
     if needed > 0 {
         for _ in 0..needed {
-            reserve_reg(fs);
+            reserve_reg(fs)?;
         }
     } else {
         fs.freereg = (fs.freereg as i32 + needed) as u8;
@@ -3602,7 +3623,7 @@ fn subexpr(
     limit: i32,
 ) -> Result<BinOpr, LuaError> {
     // C: enterlevel(ls) — luaE_incCstack(ls->L)
-    // TODO(port): state.inc_c_calls()?;
+    enter_level(ls)?;
 
     let uop = getunopr(ls.t.token);
     if uop != UnOpr::NoUnOpr {
@@ -3627,7 +3648,7 @@ fn subexpr(
     }
 
     // C: leavelevel(ls) — L->nCcalls--
-    // TODO(port): state.dec_c_calls();
+    leave_level(ls);
     Ok(op)
 }
 
@@ -3742,10 +3763,10 @@ fn restassign(
             check_conflict(ls, state, lh, &nv_assign.v.clone())?;
         }
         // C: enterlevel(ls)
-        // TODO(port): state.inc_c_calls()?;
+        enter_level(ls)?;
         restassign(ls, state, &mut nv_assign, nvars + 1)?;
         // C: leavelevel(ls)
-        // TODO(port): state.dec_c_calls();
+        leave_level(ls);
     } else {
         // C: restassign -> '=' explist
         let mut e = ExprDesc::default();
@@ -4353,7 +4374,7 @@ fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let line = ls.linenumber;
     // C: enterlevel(ls)
-    // TODO(port): state.inc_c_calls()?;
+    enter_level(ls)?;
     match ls.t.token {
         c if c == b';' as TokenKind => {
             lex_next(ls, state)?;
@@ -4414,7 +4435,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let nv = nvarstack(ls, ls.fs.as_ref().unwrap());
     ls.fs.as_mut().unwrap().freereg = nv as u8;
     // C: leavelevel(ls)
-    // TODO(port): state.dec_c_calls();
+    leave_level(ls);
     Ok(())
 }
 
@@ -4500,6 +4521,7 @@ pub fn parse(
         source: Some(source_str.clone()),
         envn: Some(lex_ls.envn.clone()),
         lex: lex_ls,
+        recursion_depth: 0,
     };
     // C: luaX_setinput is the only setup the C parser performs before
     //   `mainfunc`; it does NOT pre-read the first token. `mainfunc` itself

@@ -10,24 +10,24 @@ calls_isolated_tmp	PASS	-
 closure	PASS	-
 code	PASS	-
 constructs	PASS	-
-coroutine	FAIL	lua: pcall_k failed: Runtime: stdin:327: assertion failed!
-cstack	FAIL	testing stack overflow detection
-db	FAIL	lua: pcall_k failed: Runtime: stdin:28: assertion failed!
-errors	FAIL	lua: pcall_k failed: Runtime: stdin:591: assertion failed!
+coroutine	FAIL	lua: pcall_k failed: Runtime: ...lua-rs-port/harness/impl/official/coroutine.combined.lua:327: asser
+cstack	PASS	-
+db	FAIL	lua: pcall_k failed: Runtime: ...iments/lua-rs-port/harness/impl/official/db.combined.lua:28: assert
+errors	PASS	-
 events	PASS	-
 files-debug	PASS	-
-files	FAIL	thread 'main' (23618728) panicked at crates/lua-stdlib/src/io_lib.rs:1563:5:
+files	PASS	-
 gc	TIMEOUT	-
 gc_part	PASS	-
 gctmp	PASS	-
-gengc	FAIL	lua: pcall_k failed: Runtime: stdin:130: assertion failed!
+gengc	FAIL	lua: pcall_k failed: Runtime: ...nts/lua-rs-port/harness/impl/official/gengc.combined.lua:130: asser
 goto	PASS	-
 heavy	PASS	-
-literals	FAIL	lua: pcall_k failed: Runtime: cannot resume dead coroutine
-locals	FAIL	lua: pcall_k failed: Runtime: stdin:982: assertion failed!
+literals	PASS	-
+locals	FAIL	lua: pcall_k failed: Runtime: ...ts/lua-rs-port/harness/impl/official/locals.combined.lua:982: asser
 main	PASS	-
 math	PASS	-
-nextvar	FAIL	lua: pcall_k failed: Runtime: stdin:16: assertion failed!
+nextvar	PASS	-
 pm	PASS	-
 repro_closure	PASS	-
 sort	PASS	-

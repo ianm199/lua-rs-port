@@ -51,11 +51,11 @@ impl Trace for LuaValue {
             LuaValue::UserData(u) => {
                 u.trace(m);
             }
-            LuaValue::Thread(_t) => {
-                // PORT NOTE: GcRef<LuaThread> is a placeholder unit type in
-                // lua-types; the real LuaState lives in lua-vm and is traced
-                // through GlobalState::mainthread / state.openupval, not
-                // here.
+            LuaValue::Thread(t) => {
+                // Mark the thread identity itself. lua-vm's GC post-mark hook
+                // uses the visited identities to trace only reachable
+                // suspended LuaState stacks.
+                t.trace(m);
             }
         }
     }

@@ -1037,13 +1037,21 @@ fn make_string_reader(data: Vec<u8>) -> impl FnMut() -> Option<Vec<u8>> {
 /// dispatch text vs. binary by the first byte. The "binary chunk" branch in
 /// `luaL_loadfilex` exists in C because text mode does newline translation;
 /// `std::fs::read` already returns raw bytes on every platform we support.
-fn skip_bom_and_shebang(buf: &[u8]) -> &[u8] {
+fn skip_bom_and_shebang(buf: &[u8]) -> Vec<u8> {
     let s = if buf.starts_with(b"\xEF\xBB\xBF") { &buf[3..] } else { buf };
     if s.first() == Some(&b'#') {
         let nl = s.iter().position(|&b| b == b'\n').map(|p| p + 1).unwrap_or(s.len());
-        &s[nl..]
+        let rest = &s[nl..];
+        if rest.first() == Some(&0x1B) {
+            rest.to_vec()
+        } else {
+            let mut out = Vec::with_capacity(rest.len() + 1);
+            out.push(b'\n');
+            out.extend_from_slice(rest);
+            out
+        }
     } else {
-        s
+        s.to_vec()
     }
 }
 
@@ -1093,8 +1101,7 @@ pub fn load_filex(
             return Ok(LUA_ERRFILE);
         }
     };
-    let trimmed = skip_bom_and_shebang(&raw);
-    let payload = trimmed.to_vec();
+    let payload = skip_bom_and_shebang(&raw);
     let mut once = Some(payload);
     let boxed: Box<dyn FnMut() -> Option<Vec<u8>>> =
         Box::new(move || once.take());

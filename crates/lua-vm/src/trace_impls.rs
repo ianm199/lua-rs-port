@@ -84,6 +84,12 @@ impl Trace for GlobalState {
 
         self.main_thread_value.trace(m);
 
+        if self.current_thread_id != self.main_thread_id {
+            if let Some(entry) = self.threads.get(&self.current_thread_id) {
+                entry.value.trace(m);
+            }
+        }
+
         // PORT NOTE: `threads` entries are NOT traced unconditionally here.
         // Tracing every registered coroutine as a root pinned it forever,
         // breaking finalizer-on-unreachable-coroutine tests (gc.lua line 544).

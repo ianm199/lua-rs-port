@@ -3,8 +3,8 @@
 #
 # Wraps a single Lua 5.4 official test file (reference/lua-c/testes/*.lua)
 # with a small preamble that defines the globals those tests assume the
-# launcher set up (e.g. _soft, _port, _nomsg, arg) and feeds the whole
-# thing into the lua-rs CLI. Captures stdout+stderr, prints a one-line
+# launcher set up (e.g. _soft, _port, _nomsg, arg) and runs the combined
+# file through the lua-rs CLI. Captures stdout+stderr, prints a one-line
 # PASS/FAIL summary, and (on failure) the first 5 lines of failure
 # context.
 #
@@ -59,14 +59,12 @@ export LUA_PATH="$TESTES_DIR/?.lua;$TESTES_DIR/?/init.lua;./?.lua;./?/init.lua"
 run_with_timeout() {
     local src_file="$1"
     local out_file="$2"
-    local src
-    src="$(cat "$src_file")"
     if command -v gtimeout >/dev/null 2>&1; then
-        gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$out_file" 2>&1
+        gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src_file" > "$out_file" 2>&1
     elif command -v timeout >/dev/null 2>&1; then
-        timeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$out_file" 2>&1
+        timeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src_file" > "$out_file" 2>&1
     else
-        ( "$BIN" "$src" > "$out_file" 2>&1 ) &
+        ( "$BIN" "$src_file" > "$out_file" 2>&1 ) &
         local pid=$!
         ( sleep "$TEST_TIMEOUT_S" && kill -9 "$pid" 2>/dev/null ) &>/dev/null &
         local watcher=$!
@@ -78,18 +76,19 @@ run_with_timeout() {
     fi
 }
 
-run_with_timeout "$COMBINED" "$OUTFILE" || true
+rc=0
+run_with_timeout "$COMBINED" "$OUTFILE" || rc=$?
 
 reached_exec=0
 grep -qE "^\[4/4\] Executing chunk" "$OUTFILE" && reached_exec=1
 
-if grep -qE "^\[ok\] execution completed" "$OUTFILE" \
-    && ! grep -qE "not yet implemented:|^thread '[^']+' .* panicked at |^\[err\]" "$OUTFILE"; then
+if [ "$rc" = "0" ] \
+    && ! grep -qE "not yet implemented|^thread '[^']+' .* panicked at |^\[err\]|pcall_k failed" "$OUTFILE"; then
     printf "PASS  %s\n" "$TEST_FILE"
     exit 0
 fi
 
-if grep -qE "not yet implemented:" "$OUTFILE"; then
+if grep -qE "not yet implemented" "$OUTFILE"; then
     cause="stub"
 elif grep -qE "panicked at .*parser" "$OUTFILE"; then
     cause="parse-panic"
@@ -103,6 +102,8 @@ elif grep -qE "^\[err\]" "$OUTFILE"; then
     else
         cause="parse-or-compile-error"
     fi
+elif grep -qE "pcall_k failed" "$OUTFILE"; then
+    cause="runtime-error"
 else
     cause="unknown"
 fi
@@ -110,7 +111,7 @@ fi
 printf "FAIL  %s  (cause=%s, reached_exec=%s)\n" "$TEST_FILE" "$cause" "$reached_exec"
 echo "--- first 5 lines of failure context ---"
 {
-    grep -nE "not yet implemented:|^thread '[^']+' .* panicked at |^\[err\]|panicked at " "$OUTFILE" \
+    grep -nE "not yet implemented|pcall_k failed|^thread '[^']+' .* panicked at |^\[err\]|panicked at " "$OUTFILE" \
         || tail -n 20 "$OUTFILE"
 } | head -n 5
 echo "--- (full output at $OUTFILE) ---"

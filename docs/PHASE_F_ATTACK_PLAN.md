@@ -1,6 +1,6 @@
 # Phase F Attack Plan
 
-State as of 2026-05-19 late, after H/G-2/G-3/audit/table-refactor/R-alpha/small-fixes: **33/44 PASS** on the upstream Lua 5.4 official test suite.
+State as of 2026-05-19 late, after H/G-2/G-3/audit/table-refactor/R-alpha/small-fixes plus F-1.a/F-1.b/F-1.c: targeted gates show **`files.lua`, `errors.lua`, and `nextvar.lua` PASS**. Full-suite count needs a fresh `run_official_all.sh` rebaseline, but this should move the prior **33/44** baseline to roughly **36/44** if no unrelated test shifted.
 
 Run-time scoring remains:
 
@@ -26,9 +26,9 @@ The pass count did not move, but the failure floor did. The important progress i
 
 | Test | Current failure | Primary family | Next move |
 |---|---|---|---|
-| `files` | panic at `io_lib.rs:1563` | stdlib TODO | Fix the reachable TODO first. This is the cleanest next win. |
-| `errors` | `:stdin:591 assertion failed` | error text/source formatting | Instrument the failing `checkmessage` tuple, then patch the exact mismatch. |
-| `nextvar` | `:stdin:16 assertion failed` | error text/checkerror | Identify which `checkerror` call got the wrong message or wrong error kind. |
+| `files` | PASS | done | F-1.a landed: file-path harness execution, `setvbuf`, `tmpfile`, loadfile line preservation, write/read error handling. |
+| `errors` | PASS | done | F-1.b landed: parser recursion/register/upvalue/local-limit diagnostics now match the official checks. |
+| `nextvar` | PASS | done | F-1.c landed: table `next` validation plus reachable-coroutine GC tracing fixed the deleted-key coroutine case. |
 | `db` | `:stdin:28 assertion failed` | debug line hooks | Audit `debug.sethook(..., "l")` event timing and `getinfo` line state. |
 | `coroutine` | `:stdin:327 assertion failed` | yield/resume semantics | Needs a narrow spec around yield-through-pcall, not a broad coroutine prompt. |
 | `locals` | `:stdin:982 assertion failed` | `__close` + coroutine yield | Same family as coroutine, with to-be-closed propagation. |
@@ -92,7 +92,7 @@ Acceptance:
 
 These are the next good budget targets. They are independent enough to run in parallel worktrees after F-0.
 
-#### F-1.a `files.lua`: panic at `io_lib.rs:1563`
+#### F-1.a `files.lua`: completed
 
 This should be treated as a reachable TODO/stub fix, not as a broad file-I/O rewrite.
 
@@ -106,12 +106,15 @@ Instructions for agent:
 
 Estimated cost: **$10-15 sonnet/opus-lite**.
 
-Acceptance:
+Result:
 
-- `files.lua` advances past `io_lib.rs:1563`.
-- No new ghost abstraction entry is needed unless a real new hook is introduced.
+- `files.lua` passes.
+- The official harness now runs combined files by path and treats process exit status as the primary success signal.
+- `file:setvbuf` has observable full/no/line buffering in the CLI backend.
+- `io.tmpfile` is implemented through the existing file-open hook with a generated temp path.
+- `loadfile` preserves source line numbering when skipping BOM/shebang/comment prefixes.
 
-#### F-1.b `errors.lua`: line 591
+#### F-1.b `errors.lua`: completed
 
 The previous fixes moved this deep into `errors.lua`, so do not guess from the line number alone.
 
@@ -124,12 +127,13 @@ Instructions for agent:
 
 Estimated cost: **$15 opus**.
 
-Acceptance:
+Result:
 
-- `errors.lua` advances past line 591 or passes.
-- Any new error-text helper is covered by a focused unit or official-test gate.
+- `errors.lua` passes.
+- Parser recursion depth now has the C-Lua `enterlevel`/`leavelevel` guard.
+- Register exhaustion and upvalue/local-variable limit errors now produce the expected message family and function line.
 
-#### F-1.c `nextvar.lua`: line 16 `checkerror`
+#### F-1.c `nextvar.lua`: completed
 
 Line 16 is early in `nextvar.lua`, but the failure is usually caused by the first `checkerror` helper seeing a different message than C-Lua.
 
@@ -145,10 +149,11 @@ Instructions for agent:
 
 Estimated cost: **$20 opus**.
 
-Acceptance:
+Result:
 
-- `nextvar.lua` advances past line 16.
-- No regression in `errors.lua`.
+- `nextvar.lua` passes.
+- `next({1,2}, 3)` now errors as C-Lua expects after table array sizing is wired.
+- Coroutine thread identities are traced, and the GC post-mark hook traces stacks for reachable suspended coroutines instead of sweeping them after `collectgarbage()`.
 
 #### F-1.d `db.lua`: line-hook event timing
 

@@ -21,13 +21,13 @@ Pattern regex values use ERE (grep -E) syntax, escaped for shell use.
 
 - `flat-table-grow-cap` → **retired**. Canonical `LuaTable` now lives in `lua-types/src/table.rs` with interior mutability; the FLAT_TABLE_GROW_CAP hack in `state.rs::LuaTableRefExt` is gone; `TOTAL_GROW_CAP=1<<20` in lua-types replaces it.
 - `reset-thread-phase-a-skip` → **retired**. `state.rs::reset_thread` now calls `do_::close_protected` + `do_::set_error_obj`, matching C-Lua's `luaE_resetthread`. Discovered + fixed by H-3a.
+- `thread-reachability-promise` → **retired**. F-1.c wired `LuaValue::Thread` tracing plus a post-mark fixed-point hook that traces only reachable suspended coroutine stacks.
 
 ## Outstanding active entries by priority
 
 | Priority | Ghost | Cost to retire |
 |---|---|---|
 | 2 | `gc-barrier-noops` | $30 — wire `luaC_barrier`/`luaC_barrierback` under incremental GC |
-| 2 | `thread-reachability-promise` | $25 — verify or implement the post-mark fixed-point trace hook |
 | 3 | `gc-phase-predicates-always-constant` | $20 — wire `keep_invariant`/`is_sweep_phase` against real `gcstate` |
 | 4 | `gcweak-always-some` | $40 — real weak-ref semantics; defer until a test exercises it |
 | 4 | `interned-string-strong-root-override` | $40 — treat intern table as weak; long-running script memory leak |
@@ -37,12 +37,6 @@ Pattern regex values use ERE (grep -E) syntax, escaped for shell use.
 | 5 | `extension-trait-shim-layer` | death-by-1000-cuts, retire opportunistically |
 | 5 | `state-stub-trait-defaults-with-todo` | active by design |
 | 5 | `scattered-phase-b-todos-in-code` | one remaining at auxlib.rs:1373 ($5 sonnet) |
-
-## Next-session refinement needed
-
-- Add `LuaTable::placeholder()` constructor false-positive to allowlist (it's a longstanding `pub fn placeholder() -> Self { Self::default() }` Rust idiom in `lua-types`, not a Phase-B stub). 5-line fix to the check script's pattern.
-
----
 
 ## Flat Table Grow Cap
 
@@ -202,7 +196,7 @@ why: The GlobalState::trace impl traces all threads entries unconditionally, but
 retirement_trigger: Hook implementation verified — only reachable threads (reached via stack or coroutine value chain) are traced; canary test covering coroutine reachability passes.
 test_gate: A dedicated canary that creates an unreachable suspended coroutine and asserts it is collected (collectgarbage() returns it as dead).
 priority: 3
-status: active
+status: retired (2026-05-19, F-1.c implemented reachable-thread fixed-point trace hook)
 ```
 
 In `crates/lua-vm/src/trace_impls.rs` the `GlobalState::trace` implementation

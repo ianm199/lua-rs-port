@@ -71,7 +71,7 @@ check_entry() {
   local files_raw="$3"
   local patterns_raw="$4"
 
-  if [ "$status" = "retired" ]; then
+  if [[ "$status" == retired* ]]; then
     printf 'OK\t%s\tstatus=retired (skipped)\n' "$name" >> "$FINDINGS"
     return
   fi
@@ -255,7 +255,7 @@ check_new_ghost_pattern \
 check_new_ghost_pattern \
   "new-placeholder-fn" \
   "pub fn placeholder" \
-  "value.rs" "proto.rs" "string.rs" "userdata.rs" "closure.rs"
+  "value.rs" "proto.rs" "string.rs" "userdata.rs" "closure.rs" "table.rs"
 
 # Detect duplicate pub struct definitions not already in the register
 # Registered duplicates that are known ghosts with their own entries:

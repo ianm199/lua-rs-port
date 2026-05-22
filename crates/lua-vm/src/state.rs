@@ -2323,13 +2323,13 @@ impl LuaState {
         let tbl = tbl.clone();
         tbl.raw_set_int(self, idx as i64 + 1, v)
     }
-    pub fn table_ensure_array<T>(&mut self, _t: T, _n: usize) -> Result<(), LuaError> {
-        // PORT NOTE: C's luaH_resizearray preallocates the table's contiguous
-        // array region (h->array). Phase B's LuaTable (lua-types/src/value.rs)
-        // is a single Vec<(K,V)> placeholder with no separate array part, so
-        // there is nothing to preallocate — actual storage happens lazily in
-        // table_array_set via raw_set. The rich array+hash impl in
-        // crates/lua-vm/src/table.rs lights up in Phase D.
+    pub fn table_ensure_array(&mut self, t: &LuaValue, n: usize) -> Result<(), LuaError> {
+        let LuaValue::Table(tbl) = t else {
+            return Err(LuaError::type_error(t, "index"));
+        };
+        if n > tbl.array_len() {
+            tbl.resize(self, n, 0)?;
+        }
         Ok(())
     }
     pub fn table_length(&mut self, t: &LuaValue) -> Result<i64, LuaError> {
@@ -2361,12 +2361,8 @@ impl LuaState {
             }
         }
     }
-    pub fn table_resize(&mut self, _t: &GcRef<LuaTable>, _na: usize, _nh: usize) -> Result<(), LuaError> {
-        // PORT NOTE: Phase B's LuaTable (lua-types/src/value.rs) is a single
-        // Vec<(K,V)> placeholder with no separate array/hash parts, so the
-        // OP_NEWTABLE pre-sizing hint has nothing to act on. The rich
-        // array+hash impl in crates/lua-vm/src/table.rs lights up in Phase D.
-        Ok(())
+    pub fn table_resize(&mut self, t: &GcRef<LuaTable>, na: usize, nh: usize) -> Result<(), LuaError> {
+        t.resize(self, na, nh)
     }
     pub fn table_getn(&self, t: &GcRef<LuaTable>) -> i64 {
         // PORT NOTE: C's `luaH_getn` returns a boundary i such that t[i] is
@@ -2542,6 +2538,32 @@ impl<'a> lua_gc::Trace for CollectRoots<'a> {
     }
 }
 
+fn trace_reachable_threads(
+    global: &GlobalState,
+    current_thread_id: u64,
+    marker: &mut lua_gc::Marker,
+) {
+    use lua_gc::Trace;
+
+    loop {
+        let visited_before = marker.visited_count();
+        for (id, entry) in global.threads.iter() {
+            if *id == current_thread_id {
+                continue;
+            }
+            if marker.is_visited(entry.value.identity()) {
+                if let Ok(thread) = entry.state.try_borrow() {
+                    thread.trace(marker);
+                }
+            }
+        }
+        marker.drain_gray_queue();
+        if marker.visited_count() == visited_before {
+            break;
+        }
+    }
+}
+
 impl<'a> GcHandle<'a> {
     /// C: `luaC_checkGC(L)` — conditional GC step.
     /// macros.tsv: `luaC_checkGC → state.gc().check_step()`
@@ -2622,6 +2644,7 @@ impl<'a> GcHandle<'a> {
             let roots = CollectRoots { global: &*global, thread: state_ref };
             let hook = |marker: &mut lua_gc::Marker| {
                 collect_ran.set(true);
+                trace_reachable_threads(&*global, global.current_thread_id, marker);
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot {

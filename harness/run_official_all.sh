@@ -60,18 +60,16 @@ for test_file in "$TESTES_DIR"/*.lua; do
         *)
             { printf '%s\n' "$PREAMBLE"; cat "$test_file"; } > "$combined" ;;
     esac
-    src=$(cat "$combined")
-
     case "$base" in
         all) run_cwd="$TESTES_DIR" ;;
         *)   run_cwd="$ROOT" ;;
     esac
 
     if command -v gtimeout >/dev/null 2>&1; then
-        ( cd "$run_cwd" && gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$outfile" 2>&1 )
+        ( cd "$run_cwd" && gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$combined" > "$outfile" 2>&1 )
         rc=$?
     else
-        ( cd "$run_cwd" && "$BIN" "$src" > "$outfile" 2>&1 ) &
+        ( cd "$run_cwd" && "$BIN" "$combined" > "$outfile" 2>&1 ) &
         pid=$!
         ( sleep "$TEST_TIMEOUT_S" && kill -9 "$pid" 2>/dev/null ) &
         wpid=$!
@@ -89,8 +87,8 @@ for test_file in "$TESTES_DIR"/*.lua; do
         continue
     fi
 
-    if grep -q "^\[ok\] execution completed" "$outfile" \
-        && ! grep -qE "not yet implemented:|panicked at|^\[err\]|pcall_k failed" "$outfile"; then
+    if [ "$rc" = "0" ] \
+        && ! grep -qE "not yet implemented|panicked at|^\[err\]|pcall_k failed" "$outfile"; then
         pass=$((pass+1))
         printf "  %-20s PASS\n" "$base"
         printf '%s\tPASS\t-\n' "$base" >> "$TSV"

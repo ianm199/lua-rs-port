@@ -45,6 +45,12 @@ pub trait LuaFileHandle: Send {
 
     /// Return `true` if the handle has a pending error.
     fn has_error(&self) -> bool;
+
+    /// Control write buffering. Mode values mirror `file:setvbuf` option order:
+    /// 0 = no buffering, 1 = full buffering, 2 = line buffering.
+    fn set_buf_mode(&mut self, _mode: i32, _size: usize) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

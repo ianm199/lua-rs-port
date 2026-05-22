@@ -52,16 +52,15 @@ TESTES_DIR="$(cd "$(dirname "$TEST_FILE")" && pwd)"
 export LUA_PATH="$TESTES_DIR/?.lua;$TESTES_DIR/?/init.lua;./?.lua;./?/init.lua"
 export LUA_RS_VERBOSE=1
 
-src=$(cat "$COMBINED")
 rc=0
 if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$OUTFILE" 2>&1
+    gtimeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$COMBINED" > "$OUTFILE" 2>&1
     rc=$?
 elif command -v timeout >/dev/null 2>&1; then
-    timeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$src" > "$OUTFILE" 2>&1
+    timeout --signal=KILL "$TEST_TIMEOUT_S" "$BIN" "$COMBINED" > "$OUTFILE" 2>&1
     rc=$?
 else
-    ( "$BIN" "$src" > "$OUTFILE" 2>&1 ) &
+    ( "$BIN" "$COMBINED" > "$OUTFILE" 2>&1 ) &
     pid=$!
     ( sleep "$TEST_TIMEOUT_S" && kill -9 "$pid" 2>/dev/null ) &>/dev/null &
     watcher=$!
@@ -76,8 +75,8 @@ if [ "$rc" = "137" ] || [ "$rc" = "124" ]; then
     exit 0
 fi
 
-if grep -qE "^\[ok\] execution completed" "$OUTFILE" \
-    && ! grep -qE "not yet implemented:|^thread '[^']+' .* panicked at |^\[err\]|pcall_k failed" "$OUTFILE"; then
+if [ "$rc" = "0" ] \
+    && ! grep -qE "not yet implemented|^thread '[^']+' .* panicked at |^\[err\]|pcall_k failed" "$OUTFILE"; then
     echo "PASS"
 else
     echo "FAIL"

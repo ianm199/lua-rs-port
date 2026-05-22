@@ -740,11 +740,48 @@ pub fn io_popen(state: &mut LuaState) -> Result<usize, LuaError> {
 pub fn io_tmpfile(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: p->f = tmpfile();
     // C: return (p->f == NULL) ? luaL_fileresult(L, 0, NULL) : 1;
-    new_file(state)?;
-    // TODO(port): create anonymous temp file (tempfile crate or OS workaround)
-    Err(LuaError::runtime(format_args!(
-        "tmpfile not yet implemented"
-    )))
+    let hook = state.global().file_open_hook;
+    let Some(open_fn) = hook else {
+        let os_err = io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no filesystem hook registered",
+        );
+        return file_result(state, false, None, os_err);
+    };
+
+    let mut path = std::env::temp_dir().to_string_lossy().as_bytes().to_vec();
+    if path.last().copied() != Some(b'/') && path.last().copied() != Some(b'\\') {
+        path.push(b'/');
+    }
+    let unique = format!(
+        "lua_tmpfile_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    path.extend_from_slice(unique.as_bytes());
+
+    match open_fn(&path, b"w+b") {
+        Ok(fh) => {
+            let cell = new_file(state)?;
+            cell.borrow_mut().file = Some(fh);
+            Ok(1)
+        }
+        Err(e) => {
+            let os_err = io::Error::new(
+                io::ErrorKind::Other,
+                match &e {
+                    LuaError::Runtime(LuaValue::Str(s)) => {
+                        String::from_utf8_lossy(s.as_bytes()).into_owned()
+                    }
+                    other => format!("{:?}", other),
+                },
+            );
+            file_result(state, false, None, os_err)
+        }
+    }
 }
 
 // ── io.input / io.output ─────────────────────────────────────────────────────
@@ -959,7 +996,12 @@ fn g_read(
     first: i32,
 ) -> Result<usize, LuaError> {
     // C: int nargs = lua_gettop(L) - 1;
-    let nargs = state.top() - 1;
+    //
+    // In C, `getiofile` leaves the default stream on the stack, so subtracting
+    // one skips that extra value. This Rust port resolves registry streams into
+    // an Rc and pops the registry value before reaching `g_read`, so count the
+    // read formats directly from `first`.
+    let nargs = (state.top() - first + 1).max(0);
     let mut n = first;
     let mut success = true;
 
@@ -1233,36 +1275,17 @@ pub fn io_write(state: &mut LuaState) -> Result<usize, LuaError> {
         }
     }
 
-    // Step 2: get the current output file handle from LSTREAM_REGISTRY if possible.
-    // Push the IO_OUTPUT userdata to the stack to read its identity, then pop it.
-    // The metatable check also verifies this is a live (not collected) file handle.
-    let ud_id: Option<usize> = {
-        state.registry_get(IO_OUTPUT_KEY)?;
-        let id = state.test_arg_userdata(-1, LUA_FILE_HANDLE)
-            .map(|ud| ud.identity());
-        state.pop_n(1);
-        id
-    };
-
-    if let Some(id) = ud_id {
-        if let Some(rc) = lookup_lstream(id) {
-            let mut p = rc.borrow_mut();
-            if let Some(fh) = p.file.as_mut() {
-                for chunk in &chunks {
-                    fh.write_bytes(chunk).map_err(|e| {
-                        LuaError::runtime(format_args!("io.write: {}", e))
-                    })?;
-                }
-                drop(p);
-                state.registry_get(IO_OUTPUT_KEY)?;
-                return Ok(1);
-            }
+    // Step 2: resolve the current output file. C's `getiofile` errors when
+    // the default output is closed; do not silently fall back to stdout.
+    let p_rc = get_io_file_rc(state, IO_OUTPUT_KEY)?;
+    {
+        let mut p = p_rc.borrow_mut();
+        let fh = p.file.as_mut().expect("open stream has no file handle");
+        for chunk in &chunks {
+            fh.write_bytes(chunk).map_err(|e| {
+                LuaError::runtime(format_args!("io.write: {}", e))
+            })?;
         }
-    }
-
-    // Fallback: IO_OUTPUT is not a live file handle; write to the VM stdout sink.
-    for chunk in &chunks {
-        state.write_output(chunk)?;
     }
     state.registry_get(IO_OUTPUT_KEY)?;
     Ok(1)
@@ -1368,11 +1391,11 @@ pub fn f_setvbuf(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: static const char *const modenames[] = {"no","full","line",NULL};
     static MODE_NAMES: &[&[u8]] = &[b"no", b"full", b"line"];
 
-    let _ = tofile(state)?;
+    let p_rc = tofile(state)?;
     let op = state.check_arg_option(2, None, MODE_NAMES)?;
     // C: lua_Integer sz = luaL_optinteger(L, 3, LUAL_BUFFERSIZE);
     let sz: i64 = state.opt_arg_integer(3, LUAL_BUFFER_SIZE as i64)?;
-    let _mode = match op {
+    let mode = match op {
         0 => BufMode::No,
         1 => BufMode::Full,
         2 => BufMode::Line,
@@ -1380,11 +1403,20 @@ pub fn f_setvbuf(state: &mut LuaState) -> Result<usize, LuaError> {
     };
     // C: res = setvbuf(f, NULL, mode[op], (size_t)sz);
     // C: return luaL_fileresult(L, res == 0, NULL);
-    // TODO(port): borrow split — same as f_seek; also setvbuf is POSIX-only.
-    let _ = sz;
-    Err(LuaError::runtime(format_args!(
-        "TODO(port): borrow split needed for f_setvbuf"
-    )))
+    let result = {
+        let mut p = p_rc.borrow_mut();
+        let fh = p.file.as_mut().expect("open stream has no file handle");
+        let mode_index = match mode {
+            BufMode::No => 0,
+            BufMode::Full => 1,
+            BufMode::Line => 2,
+        };
+        fh.set_buf_mode(mode_index, sz.max(0) as usize)
+    };
+    match result {
+        Ok(()) => file_result(state, true, None, io::Error::last_os_error()),
+        Err(e) => file_result(state, false, None, e),
+    }
 }
 
 /// `io.flush()`. C: `io_flush`.
@@ -1467,13 +1499,13 @@ fn aux_lines(state: &mut LuaState, toclose: bool) -> Result<(), LuaError> {
         ));
     }
     // C: lua_pushvalue(L, 1);
-    state.push_value_at(1);
+    state.push_value_at(1)?;
     // C: lua_pushinteger(L, n);
     state.push(LuaValue::Int(n as i64));
     // C: lua_pushboolean(L, toclose);
     state.push(LuaValue::Bool(toclose));
     // C: lua_rotate(L, 2, 3);  /* move three values to their positions */
-    state.rotate(2, 3);
+    state.rotate(2, 3)?;
     // C: lua_pushcclosure(L, io_readline, 3 + n);
     state.push_c_closure(io_readline, (3 + n) as i32)?;
     Ok(())
@@ -1546,7 +1578,7 @@ fn io_readline(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     // C: lua_settop(L, 1);
-    state.set_top(1);
+    lua_vm::api::set_top(state, 1)?;
     // C: luaL_checkstack(L, n, "too many arguments");
     state.ensure_stack(n as i32, "too many arguments")?;
 
@@ -1586,8 +1618,8 @@ fn io_readline(state: &mut LuaState) -> Result<usize, LuaError> {
     );
     if toclose {
         // C: lua_settop(L, 0); lua_pushvalue(L, lua_upvalueindex(1)); aux_close(L);
-        state.set_top(0);
-        state.push_upvalue(1);
+        lua_vm::api::set_top(state, 0)?;
+        state.push_upvalue(1)?;
         aux_close(state)?;
     }
 
