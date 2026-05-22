@@ -359,12 +359,21 @@ impl Marker {
 
     /// Mark a `Gc<T>` as gray (reachable, but its outgoing edges not yet
     /// traced). Called by `Trace::trace` implementations.
+    ///
+    /// Per-cycle dedup uses `visited` (a HashSet of box identities) rather
+    /// than the color flag. Color-based dedup would silently skip
+    /// `new_uncollected` boxes left Black by the previous cycle — those
+    /// allocations are NOT on the heap's allgc chain, so the start-of-mark
+    /// "reset all allgc to White" loop does not reach them, and a Black
+    /// uncollected box would be skipped without re-tracing its children
+    /// (causing reachable allgc descendants to be swept). The visited set
+    /// is rebuilt every `full_collect` (Marker::new), so this dedup is
+    /// always per-cycle.
     pub fn mark<T: Trace + 'static>(&mut self, gc: Gc<T>) {
-        let header = gc.header();
-        if header.color.get() == Color::White {
+        let id = gc.identity();
+        if self.visited.insert(id) {
+            let header = gc.header();
             header.color.set(Color::Gray);
-            // Coerce to NonNull<GcBox<dyn Trace>> so we can store in a
-            // heterogeneous queue. Requires T: Sized for the unsizing.
             let ptr: NonNull<GcBox<dyn Trace>> = gc.ptr;
             self.gray_queue.push(ptr);
         }
@@ -446,10 +455,7 @@ impl Heap {
         let raw: *mut GcBox<T> = Box::into_raw(boxed);
         let ptr: NonNull<GcBox<T>> =
             NonNull::new(raw).expect("Box::into_raw is non-null");
-        // Coerce to dyn Trace for the intrusive list.
         let dyn_ptr: NonNull<GcBox<dyn Trace>> = ptr;
-        // SAFETY: ptr is a freshly allocated GcBox; we hold the only handle
-        // until we publish it into self.head and return Gc<T> to the caller.
         unsafe {
             (*raw).header.next.set(self.head.get());
         }

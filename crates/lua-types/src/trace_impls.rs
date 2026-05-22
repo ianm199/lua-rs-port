@@ -18,18 +18,19 @@ use crate::closure::{LuaClosure, LuaLClosure, LuaCClosure};
 use crate::userdata::LuaUserData;
 use crate::value::LuaThread;
 
-/// Cycle-breaking forwarder for the Phase A-D-0 `GcRef<T>` (an `Rc<T>`
-/// newtype). Real `Gc<T>` defers tracing through the gray queue, which is
-/// inherently cycle-safe; until the runtime fully transitions, recursive
-/// `Trace` impls would otherwise blow the Rust call stack on self-referential
-/// graphs (the global table is reachable from itself via `_G._G == _G`).
-/// Every `gc_ref.trace(m)` site dispatches through this impl, so registering
-/// the pointer identity once per collection suffices to break the loop.
+/// Forwarder for `GcRef<T>`. Now that `GcRef` wraps a real `lua_gc::Gc<T>`
+/// (D-1e), tracing must enqueue the box onto the gray queue via
+/// `Marker::mark` — that is what flips its header color from White to Gray
+/// and ultimately to Black during gray-queue drainage. The previous
+/// `try_visit` short-circuit was a Phase A-D-0 workaround for the
+/// `Rc`-backed handle (no header, no color), and produced a silent bug
+/// post-D-1e: every GC-tracked allocation stayed White and was freed in
+/// the sweep on the first `collectgarbage()`. Cycles are now handled
+/// natively by the heap's gray-queue (Color::Gray check in `mark` makes
+/// re-visits idempotent).
 impl<T: Trace + 'static> Trace for GcRef<T> {
     fn trace(&self, m: &mut Marker) {
-        if m.try_visit(self.identity()) {
-            (**self).trace(m);
-        }
+        m.mark(self.0);
     }
 }
 

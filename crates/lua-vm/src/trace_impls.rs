@@ -87,6 +87,15 @@ impl Trace for GlobalState {
 
         self.l_registry.trace(m);
 
+        // PORT NOTE (phase-b-reconcile): The lua-types LuaTable placeholder is
+        // storage-less, so `globals` and `loaded` cannot live inside the registry
+        // table (see `init_registry`). They are kept as direct GlobalState fields
+        // and must be traced explicitly as roots; once the placeholder reconciles
+        // with vm::LuaTable, these become reachable via `l_registry` and the two
+        // lines below disappear.
+        self.globals.trace(m);
+        self.loaded.trace(m);
+
         if let Some(t) = &self.mainthread {
             t.trace(m);
         }
@@ -107,9 +116,35 @@ impl Trace for GlobalState {
             th.trace(m);
         }
 
-        // PORT NOTE: `strt` (intern table) is a weak table in C; entries are
-        // cleared during the atomic weak-table pass (`clearbykeys`), not
-        // marked as roots. Same for `strcache` and `interned_lt`.
+        // The short-string intern cache holds `GcRef<LuaString>` values that
+        // callers (parser, stdlib) reuse by pointer-equality across
+        // `intern_str` calls. C-Lua treats this as a weak table cleared during
+        // the atomic weak-table pass (`clearbykeys`); we have no incremental
+        // weak-sweep yet, so leaving these untraced would leave the HashMap
+        // with dangling `Gc<LuaString>` entries after the very next collect.
+        // Trace them as strong roots until the weak-sweep machinery lands.
+        for s in self.interned_lt.values() {
+            s.trace(m);
+        }
+        for row in self.strcache.iter() {
+            for s in row.iter() {
+                s.trace(m);
+            }
+        }
+
+        // Pending finalizers pin tables whose `__gc` is still queued to run;
+        // they must outlive the next mark even though no live program path
+        // references them.
+        for t in self.pending_finalizers.iter() {
+            t.trace(m);
+        }
+
+        // PORT NOTE: `strt` (the internal LuaStringImpl intern table) is a
+        // weak table in C; entries are cleared during the atomic weak-table
+        // pass (`clearbykeys`), not marked as roots. The current port has no
+        // incremental weak-sweep, but `strt` is keyed by byte-content rather
+        // than by `Gc` identity, so a dangling entry there is silently
+        // recreated by the next `intern_str` — no UAF, unlike `interned_lt`.
         // PORT NOTE: `fixedgc` holds objects pre-marked fixed/black at
         // allocation (`luaC_fix`); the mark phase never re-visits them, and
         // `dyn Collectable` does not implement `Trace` here.
