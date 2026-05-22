@@ -1345,25 +1345,43 @@ fn adjust_assign(
     e: &mut ExprDesc,
 ) -> Result<(), LuaError> {
     let needed = nvars - nexps;
+    let line = ls.linenumber;
     let fs = ls.fs.as_mut().unwrap();
     if e.k.has_mult_ret() {
         // C: extra = needed + 1; if (extra < 0) extra = 0; luaK_setreturns(fs, e, extra)
-        let extra = if needed + 1 < 0 { 0 } else { needed + 1 };
+        let _extra = if needed + 1 < 0 { 0 } else { needed + 1 };
         // TODO(port): lua_code::set_returns(fs, e, extra)?;
     } else {
         if e.k != ExprKind::Void {
-            // TODO(port): lua_code::exp_to_next_reg(fs, e)?;
+            cg_exp_to_next_reg(fs, line, e)?;
         }
         if needed > 0 {
-            // TODO(port): lua_code::emit_nil(fs, fs.freereg as i32, needed)?;
+            let from = fs.freereg as i32;
+            cg_emit_nil(fs, line, from, needed);
         }
     }
     if needed > 0 {
-        // TODO(port): lua_code::reserve_regs(fs, needed)?;
+        for _ in 0..needed {
+            reserve_reg(fs);
+        }
     } else {
         fs.freereg = (fs.freereg as i32 + needed) as u8;
     }
     Ok(())
+}
+
+/// Minimal `luaK_nil`: emits a LoadNil instruction filling `n` consecutive
+/// registers starting at `from` with `nil`. Does not perform the C
+/// optimization that merges with a preceding LoadNil.
+fn cg_emit_nil(fs: &mut FuncState, line: i32, from: i32, n: i32) {
+    let inst = lua_code::opcodes::Instruction::abck(
+        lua_code::opcodes::OpCode::LoadNil,
+        from as u32,
+        (n - 1) as u32,
+        0,
+        0,
+    );
+    emit_inst(fs, line, inst);
 }
 
 // ── §6 Label / goto management ───────────────────────────────────────────────

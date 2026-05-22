@@ -1031,19 +1031,6 @@ help: use `let _ = ...` to ignore the resulting value
 1405 |                         let _ = state.upvalue_set(&cl, b, v.clone());
      |                         +++++++
 
-warning: unreachable call
-    --> crates/lua-lex/src/lib.rs:1886:32
-     |
-1886 |                           return Err(todo!(
-     |  ________________________________^^^_-
-     | |                                |
-     | |                                unreachable call
-1887 | |                             "phase-b-reconcile: LuaString::extra accessor missing on canonical type"
-1888 | |                         ));
-     | |_________________________- any code following this expression is unreachable
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
 warning: unused variable: `ls`
    --> crates/lua-lex/src/lib.rs:842:5
     |

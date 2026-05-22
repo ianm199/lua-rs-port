@@ -1713,3 +1713,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T21:06:00Z] ─── iter 1  (spent: $0.00) ───
 [2026-05-16T21:06:00Z]   real-error blocker at step 3/4 Loading source (parse + compile): Syntax: syntax error (load_string status=1)
 [2026-05-16T21:06:00Z]   dispatching DEBUG agent for real-error (budget $15)
+[2026-05-16T21:12:03Z]   agent done. iter cost=$0  total=$0.00
+[2026-05-16T21:12:03Z] ─── iter 2  (spent: $0.00) ───
+[2026-05-16T21:12:03Z]   real-error blocker at step 3/4 Loading source (parse + compile): crates/lua-parse/src/lib.rs:3019:5:
+[2026-05-16T21:12:03Z]   dispatching DEBUG agent for real-error (budget $15)
