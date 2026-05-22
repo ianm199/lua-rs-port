@@ -63,11 +63,17 @@ run_test() {
 }
 
 extract_panic_func() {
-    # Panic tags follow the pattern: `not yet implemented: <phase-tag>: <symbol>`
-    # where <symbol> can be a plain function (`require_lib`), a method on a
-    # type (`LuaTable::get`), or a generic-instantiated name. Allow letters,
-    # digits, underscores, and `::` in the symbol.
-    grep -oE "not yet implemented: [a-z0-9_-]+: [A-Za-z0-9_:]+" "$1" | head -1 | sed 's/^.*: //'
+    # Extract the first todo!() description from the panic output. Accepts
+    # symbol-style tags (`require_lib`, `LuaTable::get`) AND free-text
+    # descriptions (`LuaTable metatable accessor`). Returns whatever follows
+    # the second `: ` on the panic line, up to end-of-line.
+    grep "not yet implemented:" "$1" | head -1 | sed -E 's/^.*not yet implemented: [a-z0-9_-]+: //' | sed -E 's/[[:space:]]+$//'
+}
+
+extract_panic_loc() {
+    # Extract the file:line:col of the first panic, so the agent can navigate
+    # to the todo!() directly without guessing.
+    grep -oE "panicked at [^:]+:[0-9]+:[0-9]+" "$1" | head -1 | sed 's/^panicked at //'
 }
 
 dispatch_implement_agent() {

@@ -432,7 +432,17 @@ pub trait LuaTableRefExt {
     fn next(&self, _k: LuaValue) -> Result<Option<(LuaValue, LuaValue)>, LuaError>;
 }
 impl LuaTableRefExt for GcRef<LuaTable> {
-    fn metatable(&self) -> Option<GcRef<LuaTable>> { todo!("phase-b: LuaTable metatable accessor") }
+    fn metatable(&self) -> Option<GcRef<LuaTable>> {
+        // PORT NOTE: `LuaValue::Table` carries `GcRef<lua_types::value::LuaTable>`
+        // (the placeholder with no storage). The rich `lua_vm::table::LuaTable`
+        // with a metatable field is a separate type whose wire-up is a later
+        // reconcile-step task. C: `luaH_new` initializes Table.metatable to
+        // NULL and no `setmetatable` path currently reaches placeholder
+        // tables, so `None` is the faithful answer.
+        // TODO(port): re-implement once `LuaTable` placeholder reconciliation
+        // (type-vocabulary.tsv: LuaTable audit→enforce) is complete.
+        None
+    }
     fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
     fn get(&self, _k: &LuaValue) -> LuaValue {
         // PORT NOTE: `LuaValue::Table` carries `GcRef<lua_types::value::LuaTable>`
