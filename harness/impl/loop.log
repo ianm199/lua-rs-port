@@ -504,3 +504,7 @@ help: use `let _ = ...` to ignore the expression or result
 [2026-05-16T20:11:07Z] ─── iter 8  (spent: $0.00) ───
 [2026-05-16T20:11:07Z]   stub blocker: precall
 [2026-05-16T20:11:07Z]   dispatching IMPLEMENT agent for precall at crates/lua-vm/src/state.rs:1302:107 (budget $10)
+[2026-05-16T20:11:47Z]   agent done. iter cost=$0.42421174999999994  total=$0.00
+[2026-05-16T20:11:47Z] ─── iter 9  (spent: $0.00) ───
+[2026-05-16T20:11:47Z]   real-error blocker at step 4/4 Executing chunk: pcall_k failed: Runtime: attempt to call a nil value
+[2026-05-16T20:11:47Z]   dispatching DEBUG agent for real-error (budget $15)
