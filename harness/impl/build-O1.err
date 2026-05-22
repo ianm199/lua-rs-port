@@ -6,6 +6,12 @@ warning: unused imports: `CallInfoIdx`, `CallInfo`, and `GlobalState`
    |
    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
+warning: unused import: `UpVal`
+  --> crates/lua-vm/src/api.rs:21:70
+   |
+21 |     LuaValue, LuaType, LuaError, LuaString, LuaUserData, LuaClosure, UpVal,
+   |                                                                      ^^^^^
+
 warning: unused imports: `CIST_C`, `LuaTable`, and `UpVal`
   --> crates/lua-vm/src/debug.rs:14:69
    |
@@ -43,6 +49,12 @@ warning: unused import: `LuaClosure`
    |
 22 | use lua_types::closure::{LuaClosure, LuaLClosure};
    |                          ^^^^^^^^^^
+
+warning: unused import: `lua_types::upval::UpVal`
+  --> crates/lua-vm/src/undump.rs:23:5
+   |
+23 | use lua_types::upval::UpVal;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unnecessary parentheses around method argument
     --> crates/lua-vm/src/vm.rs:2328:54
@@ -103,17 +115,17 @@ warning: unused import: `LuaProtoExt`
    |                                       ^^^^^^^^^^^
 
 warning: unused variable: `state`
-    --> crates/lua-vm/src/debug.rs:1207:47
+    --> crates/lua-vm/src/debug.rs:1208:47
      |
-1207 | fn in_stack(ci: &CallInfo, val_idx: StackIdx, state: &LuaState) -> i32 {
+1208 | fn in_stack(ci: &CallInfo, val_idx: StackIdx, state: &LuaState) -> i32 {
      |                                               ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
      |
      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `state`
-    --> crates/lua-vm/src/debug.rs:1506:5
+    --> crates/lua-vm/src/debug.rs:1507:5
      |
-1506 |     state: &mut LuaState,
+1507 |     state: &mut LuaState,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
@@ -163,17 +175,17 @@ warning: variable does not need to be mutable
      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 warning: variable does not need to be mutable
-    --> crates/lua-vm/src/state.rs:2842:9
+    --> crates/lua-vm/src/state.rs:2846:9
      |
-2842 |     let mut status = if status == LuaStatus::Yield as i32 {
+2846 |     let mut status = if status == LuaStatus::Yield as i32 {
      |         ----^^^^^^
      |         |
      |         help: remove this `mut`
 
 warning: unused variable: `state`
-   --> crates/lua-vm/src/string.rs:831:5
+   --> crates/lua-vm/src/string.rs:833:5
     |
-831 |     state: &mut LuaState,
+833 |     state: &mut LuaState,
     |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
@@ -364,63 +376,63 @@ warning: constant `LUA_YIELD_STATUS` is never used
    |       ^^^^^^^^^^^^^^^^
 
 warning: function `runtime_from_top` is never used
-  --> crates/lua-vm/src/debug.rs:82:4
+  --> crates/lua-vm/src/debug.rs:83:4
    |
-82 | fn runtime_from_top(state: &mut crate::state::LuaState) -> LuaError {
+83 | fn runtime_from_top(state: &mut crate::state::LuaState) -> LuaError {
    |    ^^^^^^^^^^^^^^^^
 
 warning: function `for_error` is never used
-    --> crates/lua-vm/src/debug.rs:1383:15
+    --> crates/lua-vm/src/debug.rs:1384:15
      |
-1383 | pub(crate) fn for_error(state: &LuaState, val: &LuaValue, what: &[u8]) -> LuaError {
+1384 | pub(crate) fn for_error(state: &LuaState, val: &LuaValue, what: &[u8]) -> LuaError {
      |               ^^^^^^^^^
 
 warning: function `concat_error` is never used
-    --> crates/lua-vm/src/debug.rs:1400:15
+    --> crates/lua-vm/src/debug.rs:1401:15
      |
-1400 | pub(crate) fn concat_error(
+1401 | pub(crate) fn concat_error(
      |               ^^^^^^^^^^^^
 
 warning: function `order_error` is never used
-    --> crates/lua-vm/src/debug.rs:1474:15
+    --> crates/lua-vm/src/debug.rs:1475:15
      |
-1474 | pub(crate) fn order_error(state: &LuaState, p1: &LuaValue, p2: &LuaValue) -> LuaError {
+1475 | pub(crate) fn order_error(state: &LuaState, p1: &LuaValue, p2: &LuaValue) -> LuaError {
      |               ^^^^^^^^^^^
 
 warning: function `add_info` is never used
-    --> crates/lua-vm/src/debug.rs:1505:15
+    --> crates/lua-vm/src/debug.rs:1506:15
      |
-1505 | pub(crate) fn add_info(
+1506 | pub(crate) fn add_info(
      |               ^^^^^^^^
 
 warning: function `error_msg` is never used
-    --> crates/lua-vm/src/debug.rs:1540:15
+    --> crates/lua-vm/src/debug.rs:1541:15
      |
-1540 | pub(crate) fn error_msg(state: &mut LuaState) -> Result<(), LuaError> {
+1541 | pub(crate) fn error_msg(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^
 
 warning: function `run_error` is never used
-    --> crates/lua-vm/src/debug.rs:1572:15
+    --> crates/lua-vm/src/debug.rs:1573:15
      |
-1572 | pub(crate) fn run_error(state: &mut LuaState, msg: Vec<u8>) -> Result<(), LuaError> {
+1573 | pub(crate) fn run_error(state: &mut LuaState, msg: Vec<u8>) -> Result<(), LuaError> {
      |               ^^^^^^^^^
 
 warning: function `changed_line` is never used
-    --> crates/lua-vm/src/debug.rs:1604:4
+    --> crates/lua-vm/src/debug.rs:1605:4
      |
-1604 | fn changed_line(p: &LuaProto, oldpc: i32, newpc: i32) -> bool {
+1605 | fn changed_line(p: &LuaProto, oldpc: i32, newpc: i32) -> bool {
      |    ^^^^^^^^^^^^
 
 warning: function `trace_call` is never used
-    --> crates/lua-vm/src/debug.rs:1640:15
+    --> crates/lua-vm/src/debug.rs:1641:15
      |
-1640 | pub(crate) fn trace_call(state: &mut LuaState) -> Result<i32, LuaError> {
+1641 | pub(crate) fn trace_call(state: &mut LuaState) -> Result<i32, LuaError> {
      |               ^^^^^^^^^^
 
 warning: function `trace_exec` is never used
-    --> crates/lua-vm/src/debug.rs:1671:15
+    --> crates/lua-vm/src/debug.rs:1672:15
      |
-1671 | pub(crate) fn trace_exec(state: &mut LuaState, pc: u32) -> Result<i32, LuaError> {
+1672 | pub(crate) fn trace_exec(state: &mut LuaState, pc: u32) -> Result<i32, LuaError> {
      |               ^^^^^^^^^^
 
 warning: constant `LUA_HOOKTAILCALL` is never used
@@ -472,27 +484,27 @@ warning: function `new_lua_closure` is never used
     |               ^^^^^^^^^^^^^^^
 
 warning: function `unlink_upval` is never used
-   --> crates/lua-vm/src/func.rs:439:15
+   --> crates/lua-vm/src/func.rs:438:15
     |
-439 | pub(crate) fn unlink_upval(state: &mut LuaState, uv: &GcRef<UpVal>) {
+438 | pub(crate) fn unlink_upval(state: &mut LuaState, uv: &GcRef<UpVal>) {
     |               ^^^^^^^^^^^^
 
 warning: function `new_proto` is never used
-   --> crates/lua-vm/src/func.rs:574:15
+   --> crates/lua-vm/src/func.rs:573:15
     |
-574 | pub(crate) fn new_proto(state: &mut LuaState) -> GcRef<crate::state::LuaProto> {
+573 | pub(crate) fn new_proto(state: &mut LuaState) -> GcRef<crate::state::LuaProto> {
     |               ^^^^^^^^^
 
 warning: function `free_proto` is never used
-   --> crates/lua-vm/src/func.rs:608:15
+   --> crates/lua-vm/src/func.rs:606:15
     |
-608 | pub(crate) fn free_proto(_state: &mut LuaState, _f: GcRef<crate::state::LuaProto>) {
+606 | pub(crate) fn free_proto(_state: &mut LuaState, _f: GcRef<crate::state::LuaProto>) {
     |               ^^^^^^^^^^
 
 warning: constant `DUMMY_C_FUNCTION_IDX` is never used
-   --> crates/lua-vm/src/func.rs:684:7
+   --> crates/lua-vm/src/func.rs:682:7
     |
-684 | const DUMMY_C_FUNCTION_IDX: crate::state::LuaCFnPtr = usize::MAX;
+682 | const DUMMY_C_FUNCTION_IDX: crate::state::LuaCFnPtr = usize::MAX;
     |       ^^^^^^^^^^^^^^^^^^^^
 
 warning: constant `L_MAX_LEN_NUM` is never used
@@ -550,21 +562,21 @@ warning: constant `LUA_EXTRASPACE` is never used
     |       ^^^^^^^^^^^^^^
 
 warning: function `inc_c_stack` is never used
-    --> crates/lua-vm/src/state.rs:2433:15
+    --> crates/lua-vm/src/state.rs:2435:15
      |
-2433 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
+2435 | pub(crate) fn inc_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
      |               ^^^^^^^^^^^
 
 warning: function `free_thread` is never used
-    --> crates/lua-vm/src/state.rs:2782:15
+    --> crates/lua-vm/src/state.rs:2786:15
      |
-2782 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
+2786 | pub(crate) fn free_thread(caller: &mut LuaState, thread: &mut LuaState) {
      |               ^^^^^^^^^^^
 
 warning: function `warn_error` is never used
-    --> crates/lua-vm/src/state.rs:3191:15
+    --> crates/lua-vm/src/state.rs:3196:15
      |
-3191 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
+3196 | pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
      |               ^^^^^^^^^^
 
 warning: type alias `LocalGcRef` is never used
@@ -574,48 +586,48 @@ warning: type alias `LocalGcRef` is never used
    |      ^^^^^^^^^^
 
 warning: field `hash` is never read
-   --> crates/lua-vm/src/string.rs:157:5
+   --> crates/lua-vm/src/string.rs:158:5
     |
-146 | pub struct LuaStringImpl {
+147 | pub struct LuaStringImpl {
     |            ------------- field in this struct
 ...
-157 |     hash: Cell<u32>,
+158 |     hash: Cell<u32>,
     |     ^^^^
 
 warning: function `eq_long_str` is never used
-   --> crates/lua-vm/src/string.rs:359:15
+   --> crates/lua-vm/src/string.rs:360:15
     |
-359 | pub(crate) fn eq_long_str(a: &LuaStringImpl, b: &LuaStringImpl) -> bool {
+360 | pub(crate) fn eq_long_str(a: &LuaStringImpl, b: &LuaStringImpl) -> bool {
     |               ^^^^^^^^^^^
 
 warning: function `hash_long_str` is never used
-   --> crates/lua-vm/src/string.rs:441:15
+   --> crates/lua-vm/src/string.rs:442:15
     |
-441 | pub(crate) fn hash_long_str(ts: &LuaStringImpl) -> u32 {
+442 | pub(crate) fn hash_long_str(ts: &LuaStringImpl) -> u32 {
     |               ^^^^^^^^^^^^^
 
 warning: function `clear_cache` is never used
-   --> crates/lua-vm/src/string.rs:545:15
+   --> crates/lua-vm/src/string.rs:546:15
     |
-545 | pub(crate) fn clear_cache(g: &mut GlobalState) {
+546 | pub(crate) fn clear_cache(g: &mut GlobalState) {
     |               ^^^^^^^^^^^
 
 warning: function `create_long_str` is never used
-   --> crates/lua-vm/src/string.rs:635:15
+   --> crates/lua-vm/src/string.rs:636:15
     |
-635 | pub(crate) fn create_long_str(state: &mut LuaState, l: usize) -> GcRef<LuaStringImpl> {
+636 | pub(crate) fn create_long_str(state: &mut LuaState, l: usize) -> GcRef<LuaStringImpl> {
     |               ^^^^^^^^^^^^^^^
 
 warning: function `remove_str` is never used
-   --> crates/lua-vm/src/string.rs:666:15
+   --> crates/lua-vm/src/string.rs:667:15
     |
-666 | pub(crate) fn remove_str(state: &mut LuaState, ts: &LuaStringImpl) {
+667 | pub(crate) fn remove_str(state: &mut LuaState, ts: &LuaStringImpl) {
     |               ^^^^^^^^^^
 
 warning: function `new_userdata` is never used
-   --> crates/lua-vm/src/string.rs:830:15
+   --> crates/lua-vm/src/string.rs:832:15
     |
-830 | pub(crate) fn new_userdata(
+832 | pub(crate) fn new_userdata(
     |               ^^^^^^^^^^^^
 
 warning: methods `set_key_nil` and `key_is_collectable` are never used
@@ -664,9 +676,9 @@ warning: field `name` is never read
     |     ^^^^
 
 warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
-    --> crates/lua-vm/src/api.rs:1165:61
+    --> crates/lua-vm/src/api.rs:1166:61
      |
-1165 |             match g.c_functions.iter().position(|&existing| existing == f) {
+1166 |             match g.c_functions.iter().position(|&existing| existing == f) {
      |                                                             ^^^^^^^^^^^^^
      |
      = note: the address of the same function can vary between different codegen units
@@ -675,8 +687,8 @@ warning: function pointer comparisons do not produce meaningful results since th
      = note: `#[warn(unpredictable_function_pointer_comparisons)]` on by default
 help: refactor your code, or use `std::ptr::fn_addr_eq` to suppress the lint
      |
-1165 -             match g.c_functions.iter().position(|&existing| existing == f) {
-1165 +             match g.c_functions.iter().position(|&existing| std::ptr::fn_addr_eq(existing, f)) {
+1166 -             match g.c_functions.iter().position(|&existing| existing == f) {
+1166 +             match g.c_functions.iter().position(|&existing| std::ptr::fn_addr_eq(existing, f)) {
      |
 
 warning: structure field `nCcalls` should have a snake case name
