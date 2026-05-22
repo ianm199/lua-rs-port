@@ -359,6 +359,25 @@ impl LuaState {
         create_table(self, narr, nrec)
     }
 
+    /// Create a new metatable in the registry under key `tname`. Leaves the
+    /// new metatable on top of the stack and returns `true` when newly
+    /// created. If `registry[tname]` already exists, leaves it on top of the
+    /// stack and returns `false`.
+    ///
+    /// C: `LUALIB_API int luaL_newmetatable(lua_State *L, const char *tname)`
+    pub fn new_metatable(&mut self, tname: &[u8]) -> Result<bool, LuaError> {
+        if get_field(self, LUA_REGISTRYINDEX, tname)? != LuaType::Nil {
+            return Ok(false);
+        }
+        self.pop_n(1);
+        create_table(self, 0, 2)?;
+        push_lstring(self, tname)?;
+        set_field(self, -2, b"__name")?;
+        push_value(self, -1);
+        set_field(self, LUA_REGISTRYINDEX, tname)?;
+        Ok(true)
+    }
+
     /// Create a new library table sized for `funcs` and register each entry as
     /// a closure field on it. Leaves the table on the top of the stack.
     ///

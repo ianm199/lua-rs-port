@@ -1,1 +1,1 @@
-set_funcs_with_upvalues
+new_metatable
