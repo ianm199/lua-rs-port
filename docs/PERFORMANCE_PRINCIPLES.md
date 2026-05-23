@@ -118,6 +118,26 @@ arbitrary integer keys past `alimit` — wasn't disabled. It's still
 correct. The hot path just stopped paying for it when alimit alone
 sufficed.
 
+**Sub-pattern: cache the invariant, not the mutable value.** Example
+(lua, applied 658c7ec): `upvalue_get` was paying a `RefCell::borrow`
+on the shared `GlobalState` to read `current_thread_id` per call. The
+naïve cache shape is "snapshot the global on read, refresh on every
+write site" — that requires hunting down every assignment to
+`current_thread_id` (in lua-coro, ...) and inserting refresh calls.
+
+The better shape: cache **each thread's own immutable id** on the
+per-thread `LuaState`. The invariant `global.current_thread_id ==
+self.cached_thread_id` is preserved structurally by the existing
+resume protocol — there's no write path that breaks it. No refresh
+logic, no cross-crate coordination, just a regular `u64` field set
+once at thread construction. Reduced `upvalue_get`'s profile share
+from 9.2% to 5.7% with zero invalidation logic.
+
+The general lesson: when "cache the precondition" tempts you toward a
+refresh-everywhere shape, look for an immutable invariant equivalent
+to the mutable value. If it exists, cache that instead and the
+invalidation problem evaporates.
+
 ### 2. Match upstream's structure, not just upstream's behavior
 
 C-Lua's `lua_geti` doesn't go through the same code path as
