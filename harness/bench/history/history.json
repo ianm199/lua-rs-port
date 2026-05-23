@@ -3,96 +3,109 @@
     {
       "sha": "88e1aef",
       "subject": "agent: auto-commit at stop (2026-05-22T20:26:23Z)",
-      "ts": "2026-05-22T22:17:47Z"
+      "ts_iso": "2026-05-22T22:17:47Z",
+      "ts_unix": 1779481583
     },
     {
       "sha": "7682720",
       "subject": "perf: route #t through canonical LuaTable::getn (O(log n) boundary search)",
-      "ts": "20260523T023822Z"
+      "ts_iso": "20260523T023822Z",
+      "ts_unix": 1779503810
     },
     {
       "sha": "615e197",
       "subject": "agent: auto-commit at stop (2026-05-23T02:43:20Z)",
-      "ts": "20260523T030313Z"
+      "ts_iso": "20260523T030313Z",
+      "ts_unix": 1779504200
     },
     {
       "sha": "b23a4fc",
       "subject": "bench: rebuild dashboard with post-GC-fastpath datapoint",
-      "ts": "20260523T030940Z"
+      "ts_iso": "20260523T030940Z",
+      "ts_unix": 1779505693
     },
     {
       "sha": "4061f51",
       "subject": "agent: auto-commit at stop (2026-05-23T03:33:51Z)",
-      "ts": "20260523T034215Z"
+      "ts_iso": "20260523T034215Z",
+      "ts_unix": 1779507231
     },
     {
       "sha": "d86364b",
       "subject": "bench: rebuild dashboard for hygiene commit",
-      "ts": "20260523T035425Z"
+      "ts_iso": "20260523T035425Z",
+      "ts_unix": 1779508136
     },
     {
       "sha": "408156e",
       "subject": "docs: recalibrate ceiling \u2014 parity is the target, not 1.5x",
-      "ts": "20260523T043725Z"
+      "ts_iso": "20260523T043725Z",
+      "ts_unix": 1779510777
     },
     {
       "sha": "8d1ab73",
       "subject": "agent: auto-commit at stop (2026-05-23T04:46:23Z)",
-      "ts": "20260523T045041Z"
+      "ts_iso": "20260523T045041Z",
+      "ts_unix": 1779511583
     },
     {
       "sha": "0152912",
       "subject": "agent: auto-commit at stop (2026-05-23T13:48:25Z)",
-      "ts": "20260523T135221Z"
+      "ts_iso": "20260523T135221Z",
+      "ts_unix": 1779544105
     },
     {
       "sha": "a55fa43",
       "subject": "agent: auto-commit at stop (2026-05-23T13:54:08Z)",
-      "ts": "20260523T140316Z"
+      "ts_iso": "20260523T140316Z",
+      "ts_unix": 1779544448
     },
     {
       "sha": "74f0fad",
       "subject": "agent: auto-commit at stop (2026-05-23T14:08:40Z)",
-      "ts": "20260523T141727Z"
+      "ts_iso": "20260523T141727Z",
+      "ts_unix": 1779545320
     },
     {
       "sha": "3438165",
       "subject": "agent: auto-commit at stop (2026-05-23T14:34:18Z)",
-      "ts": "20260523T143656Z"
+      "ts_iso": "20260523T143656Z",
+      "ts_unix": 1779546858
     },
     {
       "sha": "b86190f",
       "subject": "agent: auto-commit at stop (2026-05-23T15:12:24Z)",
-      "ts": "20260523T152043Z"
+      "ts_iso": "20260523T152043Z",
+      "ts_unix": 1779549144
     },
     {
       "sha": "d2d4ab9",
       "subject": "agent: auto-commit at stop (2026-05-23T15:50:34Z)",
-      "ts": "20260523T160055Z"
+      "ts_iso": "20260523T160055Z",
+      "ts_unix": 1779551434
     },
     {
       "sha": "b1275f2",
       "subject": "perf: inline LuaTableRefExt + drop key clone + redundant key check      (table_ops_long 2.85\u21922.60)",
-      "ts": "20260523T161206Z"
+      "ts_iso": "20260523T161206Z",
+      "ts_unix": 1779552696
     },
     {
       "sha": "81be424",
       "subject": "agent: auto-commit at stop (2026-05-23T16:13:32Z)",
-      "ts": "20260523T161723Z"
+      "ts_iso": "20260523T161723Z",
+      "ts_unix": 1779552812
     },
     {
       "sha": "8138bad",
       "subject": "agent: auto-commit at stop (2026-05-23T16:18:24Z)",
-      "ts": "20260523T161943Z"
+      "ts_iso": "20260523T161943Z",
+      "ts_unix": 1779553104
     }
   ],
-  "metrics": [
-    "wall_ratio",
-    "rss_ratio"
-  ],
   "series": {
-    "rss_ratio": {
-      "binarytrees": [
+    "binarytrees": {
+      "rss": [
         2.7,
         2.48,
         35.63,
@@ -111,7 +124,28 @@
         35.65,
         35.84
       ],
-      "closure_ops": [
+      "wall": [
+        3.0,
+        3.2,
+        1.8,
+        1.78,
+        1.79,
+        1.84,
+        1.77,
+        1.75,
+        1.8,
+        1.78,
+        1.71,
+        1.73,
+        1.77,
+        1.78,
+        1.83,
+        1.73,
+        1.88
+      ]
+    },
+    "closure_ops": {
+      "rss": [
         2.68,
         2.39,
         1.41,
@@ -130,7 +164,28 @@
         1.41,
         1.77
       ],
-      "fibonacci": [
+      "wall": [
+        143.33,
+        4.0,
+        2.28,
+        2.28,
+        2.28,
+        2.22,
+        2.28,
+        2.28,
+        2.35,
+        2.35,
+        2.29,
+        2.41,
+        2.29,
+        2.41,
+        2.41,
+        2.53,
+        2.47
+      ]
+    },
+    "fibonacci": {
+      "rss": [
         1.61,
         1.7,
         1.47,
@@ -149,7 +204,28 @@
         1.47,
         1.48
       ],
-      "mandelbrot": [
+      "wall": [
+        5.22,
+        5.24,
+        2.71,
+        2.7,
+        2.76,
+        2.78,
+        2.79,
+        2.78,
+        2.76,
+        2.74,
+        2.72,
+        2.8,
+        2.71,
+        2.6,
+        2.61,
+        2.62,
+        2.39
+      ]
+    },
+    "mandelbrot": {
+      "rss": [
         1.39,
         1.45,
         1.37,
@@ -168,7 +244,28 @@
         1.45,
         1.47
       ],
-      "string_ops": [
+      "wall": [
+        2.25,
+        2.25,
+        2.25,
+        2.25,
+        2.12,
+        2.25,
+        2.25,
+        2.25,
+        2.12,
+        2.12,
+        2.12,
+        2.0,
+        2.0,
+        1.88,
+        1.88,
+        1.88,
+        1.88
+      ]
+    },
+    "string_ops": {
+      "rss": [
         3.93,
         3.29,
         3.2,
@@ -187,7 +284,28 @@
         1.89,
         1.99
       ],
-      "string_ops_long": [
+      "wall": [
+        35.0,
+        9.0,
+        8.0,
+        8.0,
+        8.0,
+        3.0,
+        3.0,
+        3.0,
+        3.0,
+        3.0,
+        3.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ]
+    },
+    "string_ops_long": {
+      "rss": [
         null,
         null,
         null,
@@ -206,7 +324,28 @@
         2.18,
         2.16
       ],
-      "table_ops": [
+      "wall": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        2.11,
+        2.23,
+        2.21,
+        2.21,
+        2.19,
+        2.25,
+        1.58,
+        1.37,
+        1.37,
+        1.37,
+        1.38,
+        1.29
+      ]
+    },
+    "table_ops": {
+      "rss": [
         2.09,
         1.89,
         1.86,
@@ -225,142 +364,7 @@
         1.86,
         1.86
       ],
-      "table_ops_long": [
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        2.85,
-        2.88,
-        2.65,
-        2.66,
-        2.71,
-        2.91,
-        2.73,
-        2.86,
-        3.01,
-        2.7,
-        2.64
-      ]
-    },
-    "wall_ratio": {
-      "binarytrees": [
-        3.0,
-        3.2,
-        1.8,
-        1.78,
-        1.79,
-        1.84,
-        1.77,
-        1.75,
-        1.8,
-        1.78,
-        1.71,
-        1.73,
-        1.77,
-        1.78,
-        1.83,
-        1.73,
-        1.88
-      ],
-      "closure_ops": [
-        143.33,
-        4.0,
-        2.28,
-        2.28,
-        2.28,
-        2.22,
-        2.28,
-        2.28,
-        2.35,
-        2.35,
-        2.29,
-        2.41,
-        2.29,
-        2.41,
-        2.41,
-        2.53,
-        2.47
-      ],
-      "fibonacci": [
-        5.22,
-        5.24,
-        2.71,
-        2.7,
-        2.76,
-        2.78,
-        2.79,
-        2.78,
-        2.76,
-        2.74,
-        2.72,
-        2.8,
-        2.71,
-        2.6,
-        2.61,
-        2.62,
-        2.39
-      ],
-      "mandelbrot": [
-        2.25,
-        2.25,
-        2.25,
-        2.25,
-        2.12,
-        2.25,
-        2.25,
-        2.25,
-        2.12,
-        2.12,
-        2.12,
-        2.0,
-        2.0,
-        1.88,
-        1.88,
-        1.88,
-        1.88
-      ],
-      "string_ops": [
-        35.0,
-        9.0,
-        8.0,
-        8.0,
-        8.0,
-        3.0,
-        3.0,
-        3.0,
-        3.0,
-        3.0,
-        3.0,
-        2.0,
-        2.0,
-        2.0,
-        2.0,
-        2.0,
-        2.0
-      ],
-      "string_ops_long": [
-        null,
-        null,
-        null,
-        null,
-        null,
-        2.11,
-        2.23,
-        2.21,
-        2.21,
-        2.19,
-        2.25,
-        1.58,
-        1.37,
-        1.37,
-        1.37,
-        1.38,
-        1.29
-      ],
-      "table_ops": [
+      "wall": [
         10473.4,
         5.4,
         5.4,
@@ -378,8 +382,29 @@
         3.25,
         3.25,
         2.4
+      ]
+    },
+    "table_ops_long": {
+      "rss": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        2.85,
+        2.88,
+        2.65,
+        2.66,
+        2.71,
+        2.91,
+        2.73,
+        2.86,
+        3.01,
+        2.7,
+        2.64
       ],
-      "table_ops_long": [
+      "wall": [
         null,
         null,
         null,
@@ -400,6 +425,80 @@
       ]
     }
   },
+  "summary": {
+    "best_workload": [
+      "string_ops_long",
+      1.29
+    ],
+    "geomean_first": 19.24140719387539,
+    "geomean_now": 2.0568927511669104,
+    "n_commits": 17,
+    "n_workloads": 8,
+    "parity_threshold": 1.5,
+    "workloads_at_parity": 1,
+    "worst_workload": [
+      "table_ops_long",
+      2.48
+    ]
+  },
+  "workload_summary": [
+    {
+      "at_parity": false,
+      "delta_pct": -37.33333333333334,
+      "first": 3.0,
+      "last": 1.88,
+      "workload": "binarytrees"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -98.2767041093979,
+      "first": 143.33,
+      "last": 2.47,
+      "workload": "closure_ops"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -54.21455938697317,
+      "first": 5.22,
+      "last": 2.39,
+      "workload": "fibonacci"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -16.44444444444445,
+      "first": 2.25,
+      "last": 1.88,
+      "workload": "mandelbrot"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -94.28571428571428,
+      "first": 35.0,
+      "last": 2.0,
+      "workload": "string_ops"
+    },
+    {
+      "at_parity": true,
+      "delta_pct": -38.86255924170615,
+      "first": 2.11,
+      "last": 1.29,
+      "workload": "string_ops_long"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -99.97708480531632,
+      "first": 10473.4,
+      "last": 2.4,
+      "workload": "table_ops"
+    },
+    {
+      "at_parity": false,
+      "delta_pct": -48.440748440748436,
+      "first": 4.81,
+      "last": 2.48,
+      "workload": "table_ops_long"
+    }
+  ],
   "workloads": [
     "binarytrees",
     "closure_ops",
