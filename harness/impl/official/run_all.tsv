@@ -17,28 +17,3 @@ errors	PASS	-
 events	PASS	-
 files-debug	PASS	-
 files	PASS	-
-gc	FAIL	lua: pcall_k failed: Runtime: ...ustExperiments/lua-rs-port/reference/lua-c/testes/gc.lua:469: asser
-gc_part	PASS	-
-gctmp	PASS	-
-gengc	FAIL	lua: pcall_k failed: Runtime: ...Experiments/lua-rs-port/reference/lua-c/testes/gengc.lua:122: asser
-goto	PASS	-
-heavy	PASS	-
-literals	PASS	-
-locals	FAIL	lua: pcall_k failed: Runtime: ...xperiments/lua-rs-port/reference/lua-c/testes/locals.lua:974: asser
-main	PASS	-
-math	PASS	-
-nextvar	PASS	-
-pm	PASS	-
-repro_closure	PASS	-
-sort	PASS	-
-sort_repro	PASS	-
-strings	PASS	-
-strings_part1	PASS	-
-test1	PASS	-
-test_bitor2	PASS	-
-test_weak	PASS	-
-tpack	PASS	-
-tracegc	PASS	-
-utf8	PASS	-
-vararg	PASS	-
-verybig	PASS	-
