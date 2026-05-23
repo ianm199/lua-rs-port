@@ -1387,6 +1387,23 @@ pub struct LuaState {
     // types.tsv: GCObject.marked → u8
     pub marked: u8,
 
+    /// Owner thread id for this `LuaState`, cached as a plain `u64` so the
+    /// hot path of `upvalue_get` can compare against an open upvalue's
+    /// `thread_id` without taking a `RefCell::borrow` on the shared
+    /// `GlobalState`.
+    ///
+    /// Invariant: while this `LuaState` is the actively running thread,
+    /// `GlobalState::current_thread_id == self.cached_thread_id`. This is
+    /// maintained structurally by `new_state`/`new_thread` (which set
+    /// `cached_thread_id` to the thread's own id once at construction)
+    /// combined with the coroutine resume protocol: `coro_lib::resume`
+    /// writes `co_state.global.current_thread_id = co_id` before the
+    /// coroutine runs, and restores `parent_thread_id` on yield/return.
+    /// Because each thread caches its own id (not the global's id), the
+    /// invariant survives every context switch without an explicit refresh
+    /// at the resume site.
+    pub cached_thread_id: u64,
+
 }
 
 impl LuaState {
@@ -2071,30 +2088,31 @@ impl LuaState {
     ///    resume boundary.
     pub fn upvalue_get(&self, cl: &GcRef<LuaClosureLua>, n: usize) -> LuaValue {
         let uv = cl.upval(n);
-        let slot = uv.slot().clone();
-        match slot {
-            lua_types::UpValState::Closed(v) => v,
-            lua_types::UpValState::Open { thread_id, idx } => {
-                let current = self.global().current_thread_id;
-                let tid = thread_id as u64;
-                if tid == current {
-                    return self.stack[idx.0 as usize].val.clone();
-                }
-                let entry_rc = {
-                    let g = self.global();
-                    g.threads.get(&tid).map(|e| e.state.clone())
-                };
-                if let Some(rc) = entry_rc {
-                    if let Ok(home_state) = rc.try_borrow() {
-                        return home_state.get_at(idx);
-                    }
-                }
-                let g = self.global();
-                match g.cross_thread_upvals.get(&(tid, idx)) {
-                    Some(v) => v.clone(),
-                    None => LuaValue::Nil,
-                }
+        let (thread_id, idx) = {
+            let slot_ref = uv.slot();
+            match &*slot_ref {
+                lua_types::UpValState::Closed(v) => return v.clone(),
+                lua_types::UpValState::Open { thread_id, idx } => (*thread_id, *idx),
             }
+        };
+        let current = self.cached_thread_id;
+        let tid = thread_id as u64;
+        if tid == current {
+            return self.stack[idx.0 as usize].val.clone();
+        }
+        let entry_rc = {
+            let g = self.global();
+            g.threads.get(&tid).map(|e| e.state.clone())
+        };
+        if let Some(rc) = entry_rc {
+            if let Ok(home_state) = rc.try_borrow() {
+                return home_state.get_at(idx);
+            }
+        }
+        let g = self.global();
+        match g.cross_thread_upvals.get(&(tid, idx)) {
+            Some(v) => v.clone(),
+            None => LuaValue::Nil,
         }
     }
     /// Write an open or closed upvalue.
@@ -2113,7 +2131,7 @@ impl LuaState {
         };
         match open_slot {
             Some((tid, idx)) => {
-                let current = self.global().current_thread_id;
+                let current = self.cached_thread_id;
                 if tid == current {
                     self.set_at(idx, val);
                     return Ok(());
@@ -3657,6 +3675,13 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
     let hookmask = state.hookmask;
     let basehookcount = state.basehookcount;
 
+    let reserved_id = {
+        let mut g = state.global_mut();
+        let id = g.next_thread_id;
+        g.next_thread_id += 1;
+        id
+    };
+
     let mut new_thread = LuaState {
         status: LuaStatus::Ok as u8,
         allowhook: true,
@@ -3677,6 +3702,7 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
         nCcalls: 0,
         oldpc: 0,
         marked: 0,
+        cached_thread_id: reserved_id,
     };
 
     // C: preinit_thread(L1, g);
@@ -3710,8 +3736,7 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
 
     let value = {
         let mut g = state.global_mut();
-        let id = g.next_thread_id;
-        g.next_thread_id += 1;
+        let id = reserved_id;
         let value = GcRef::new(lua_types::value::LuaThread::new(id));
         g.threads.insert(
             id,
@@ -4044,6 +4069,7 @@ pub fn new_state() -> Option<LuaState> {
         nCcalls: 0,
         oldpc: 0,
         marked: initial_marked,
+        cached_thread_id: 0,
     };
 
     // C: preinit_thread(L, g);
@@ -4191,7 +4217,7 @@ pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
 //   target_crate:  lua-vm
 //   confidence:    medium
 //   todos:         44
-//   port_notes:    33
+//   port_notes:    34
 //   unsafe_blocks: 0   (must be 0 outside lua-gc/lua-coro)
 //   notes:         Logic faithfully follows lstate.c. Key structural changes:
 //                  (1) LX/LG C layout wrappers dropped; GlobalState is Rc<RefCell<>>.
@@ -4201,6 +4227,11 @@ pub(crate) fn warn_error(state: &mut LuaState, where_: &[u8]) {
 //                  (4) errorJmp/setjmp → removed; errors use Result<T, LuaError>.
 //                  (5) Custom allocator (lua_Alloc) → dropped; Rust's allocator handles it.
 //                  (6) make_seed: ASLR pointer entropy requires unsafe; time-only for Phase A.
+//                  (7) Perf: LuaState.cached_thread_id stores the thread's own id once at
+//                      construction; upvalue_get/_set compare against this u64 field
+//                      instead of borrowing global.current_thread_id on every read.
+//                      Invariant survives coroutine resume because each thread caches its
+//                      OWN id, not the global's id (see field doc on cached_thread_id).
 //                  Key TODOs: luaT_init and luaX_init cross-crate calls (Phase B);
 //                  init_registry table mutations through Rc (needs RefCell<LuaTable>);
 //                  luaD_closeprotected/seterrorobj/reallocstack in reset_thread (ldo.c);
