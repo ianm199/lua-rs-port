@@ -1594,6 +1594,89 @@ impl LuaState {
         let i: StackIdx = idx.into().0;
         self.stack[i.0 as usize].val = v;
     }
+    /// Hot-path accessor: returns `Some(i)` only when the stack slot at `idx`
+    /// holds a `LuaValue::Int(i)`. Returns `None` for any other tag (including
+    /// out-of-bounds, which behaves as `Nil`).
+    ///
+    /// C: `ttisinteger(s2v(slot)) ? ivalue(s2v(slot)) : 0` paired with the
+    /// `ttisinteger` predicate that gates the integer arithmetic fast path in
+    /// `lvm.c`'s `op_arith_aux` macro. Avoids the full `LuaValue` clone that
+    /// `get_at` performs — the operand is only needed for its `i64` payload.
+    #[inline]
+    pub fn get_int_at(&self, idx: impl Into<StackIdxConv>) -> Option<i64> {
+        let i: StackIdx = idx.into().0;
+        match self.stack.get(i.0 as usize) {
+            Some(slot) => match &slot.val {
+                LuaValue::Int(v) => Some(*v),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    /// Hot-path accessor: returns `Some((a, b))` only when both stack slots
+    /// at `rb` and `rc` hold integers. Equivalent to two `get_int_at` calls
+    /// but is shaped so the arithmetic opcode dispatch arms can pattern-match
+    /// the common case with a single `if let`.
+    ///
+    /// C: the paired `ttisinteger(v1) && ttisinteger(v2)` check at the top of
+    /// the `op_arith_aux` macro.
+    #[inline]
+    pub fn get_int_pair_at(
+        &self,
+        rb: impl Into<StackIdxConv>,
+        rc: impl Into<StackIdxConv>,
+    ) -> Option<(i64, i64)> {
+        let ib = self.get_int_at(rb)?;
+        let ic = self.get_int_at(rc)?;
+        Some((ib, ic))
+    }
+    /// Hot-path accessor: returns `Some(f)` when the slot holds a `Float(f)`
+    /// or coerces an `Int(i)` to `f64`. Returns `None` for any other tag.
+    /// No `LuaValue` clone — only the primitive payload travels back.
+    ///
+    /// C: the `tonumberns(o, n)` macro inlined for stack-resident operands.
+    #[inline]
+    pub fn get_num_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
+        let i: StackIdx = idx.into().0;
+        match self.stack.get(i.0 as usize) {
+            Some(slot) => match &slot.val {
+                LuaValue::Float(f) => Some(*f),
+                LuaValue::Int(v) => Some(*v as f64),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    /// Hot-path accessor: returns `Some(f)` only when the slot holds a
+    /// `LuaValue::Float(f)`. Does NOT coerce integers; the integer branch is
+    /// the caller's responsibility. Used by opcode arms that have already
+    /// ruled out the integer fast path.
+    #[inline]
+    pub fn get_float_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
+        let i: StackIdx = idx.into().0;
+        match self.stack.get(i.0 as usize) {
+            Some(slot) => match &slot.val {
+                LuaValue::Float(f) => Some(*f),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    /// Hot-path accessor: pair version of `get_num_at` — returns `Some((a,b))`
+    /// when both slots coerce to `f64` (Float or Int), `None` if either does
+    /// not. Used by the float fast path of the arith opcodes.
+    ///
+    /// C: paired `tonumberns(v1, n1) && tonumberns(v2, n2)` from `op_arith_aux`.
+    #[inline]
+    pub fn get_num_pair_at(
+        &self,
+        rb: impl Into<StackIdxConv>,
+        rc: impl Into<StackIdxConv>,
+    ) -> Option<(f64, f64)> {
+        let nb = self.get_num_at(rb)?;
+        let nc = self.get_num_at(rc)?;
+        Some((nb, nc))
+    }
     /// Set `top` to an absolute stack index. Grows the backing stack vector
     /// (filling new slots with `Nil`) when `idx` is past `stack.len()`, but
     /// never clobbers existing slots between the old top and the new top —
@@ -2436,6 +2519,30 @@ impl LuaState {
     #[inline]
     pub fn proto_const(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {
         cl.proto.k[idx].clone()
+    }
+    /// Hot-path accessor: returns `Some(i)` only when the constant pool entry
+    /// at `idx` is an `Int`. Avoids the full `LuaValue` clone that
+    /// `proto_const` performs.
+    ///
+    /// C: `ttisinteger(&k[idx]) ? ivalue(&k[idx]) : 0` inside the K-form
+    /// arithmetic opcode macros (`op_arithK`).
+    #[inline]
+    pub fn proto_const_int(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<i64> {
+        match &cl.proto.k[idx] {
+            LuaValue::Int(v) => Some(*v),
+            _ => None,
+        }
+    }
+    /// Hot-path accessor: returns `Some(f)` for `Float(f)` or `Int(i)` (coerced)
+    /// constants. Avoids the full `LuaValue` clone. Used by the float fast
+    /// path of `OP_ADDK`/`OP_SUBK`/`OP_MULK`/`OP_DIVK`/`OP_POWK`.
+    #[inline]
+    pub fn proto_const_num(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<f64> {
+        match &cl.proto.k[idx] {
+            LuaValue::Float(f) => Some(*f),
+            LuaValue::Int(v) => Some(*v as f64),
+            _ => None,
+        }
     }
     pub fn get_proto_instr(&self, ci: CallInfoIdx, pc: u32) -> lua_types::opcode::Instruction {
         let cl = self.ci_lua_closure(ci)

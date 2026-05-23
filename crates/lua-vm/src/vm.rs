@@ -1775,42 +1775,53 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: op_arithI(L, l_addi, luai_numadd)
                     OpCode::AddI => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
+                        let rb = base + i.arg_b();
                         let imm = i.arg_s_c() as i64;
-                        match &v1 {
-                            LuaValue::Int(iv1) => {
-                                pc += 1;
-                                state.set_at(ra, LuaValue::Int(intop_add(*iv1, imm)));
-                            }
-                            LuaValue::Float(nb) => {
-                                pc += 1;
-                                state.set_at(ra, LuaValue::Float(*nb + imm as f64));
-                            }
-                            _ => { /* metamethod handled by OP_MMBIN* fallback */ }
+                        if let Some(iv1) = state.get_int_at(rb) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_add(iv1, imm)));
+                        } else if let Some(nb) = state.get_float_at(rb) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(nb + imm as f64));
                         }
                     }
                     // ── Arithmetic with K constant operand ─────────────────────
                     // C: op_arithK(L, l_addi, luai_numadd)
                     OpCode::AddK => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.proto_const(&cl, i.arg_c() as usize).clone();
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_add, |a, b| a + b);
+                        let rb = base + i.arg_b();
+                        let kidx = i.arg_c() as usize;
+                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_add(i1, i2)));
+                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 + n2));
+                        }
                     }
                     OpCode::SubK => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.proto_const(&cl, i.arg_c() as usize).clone();
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_sub, |a, b| a - b);
+                        let rb = base + i.arg_b();
+                        let kidx = i.arg_c() as usize;
+                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_sub(i1, i2)));
+                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 - n2));
+                        }
                     }
                     OpCode::MulK => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.proto_const(&cl, i.arg_c() as usize).clone();
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_mul, |a, b| a * b);
+                        let rb = base + i.arg_b();
+                        let kidx = i.arg_c() as usize;
+                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_mul(i1, i2)));
+                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 * n2));
+                        }
                     }
                     // C: op_arithK(L, luaV_mod, luaV_modf) — division by zero possible
                     OpCode::ModK => {
@@ -1825,17 +1836,23 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // C: op_arithfK(L, luai_numpow) — float only
                     OpCode::PowK => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.proto_const(&cl, i.arg_c() as usize).clone();
-                        arith_float_aux(state, ra, &v1, &v2, &mut pc,
-                            |a, b| if b == 2.0 { a * a } else { a.powf(b) });
+                        let rb = base + i.arg_b();
+                        let kidx = i.arg_c() as usize;
+                        if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                            pc += 1;
+                            let r = if n2 == 2.0 { n1 * n1 } else { n1.powf(n2) };
+                            state.set_at(ra, LuaValue::Float(r));
+                        }
                     }
                     // C: op_arithfK(L, luai_numdiv) — float division
                     OpCode::DivK => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.proto_const(&cl, i.arg_c() as usize).clone();
-                        arith_float_aux(state, ra, &v1, &v2, &mut pc, |a, b| a / b);
+                        let rb = base + i.arg_b();
+                        let kidx = i.arg_c() as usize;
+                        if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 / n2));
+                        }
                     }
                     // C: op_arithK(L, luaV_idiv, luai_numidiv)
                     OpCode::IDivK => {
@@ -1891,24 +1908,39 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // ── Arithmetic with register operands ──────────────────────
                     OpCode::Add => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.get_at(base + i.arg_c());
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_add, |a, b| a + b);
+                        let rb = base + i.arg_b();
+                        let rc = base + i.arg_c();
+                        if let Some((i1, i2)) = state.get_int_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_add(i1, i2)));
+                        } else if let Some((n1, n2)) = state.get_num_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 + n2));
+                        }
                     }
                     OpCode::Sub => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.get_at(base + i.arg_c());
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_sub, |a, b| a - b);
+                        let rb = base + i.arg_b();
+                        let rc = base + i.arg_c();
+                        if let Some((i1, i2)) = state.get_int_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_sub(i1, i2)));
+                        } else if let Some((n1, n2)) = state.get_num_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 - n2));
+                        }
                     }
                     OpCode::Mul => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.get_at(base + i.arg_c());
-                        arith_op_aux_rr(state, ra, &v1, &v2, &mut pc,
-                            intop_mul, |a, b| a * b);
+                        let rb = base + i.arg_b();
+                        let rc = base + i.arg_c();
+                        if let Some((i1, i2)) = state.get_int_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Int(intop_mul(i1, i2)));
+                        } else if let Some((n1, n2)) = state.get_num_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 * n2));
+                        }
                     }
                     OpCode::Mod => {
                         let ra = base + i.arg_a();
@@ -1921,16 +1953,22 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     }
                     OpCode::Pow => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.get_at(base + i.arg_c());
-                        arith_float_aux(state, ra, &v1, &v2, &mut pc,
-                            |a, b| if b == 2.0 { a * a } else { a.powf(b) });
+                        let rb = base + i.arg_b();
+                        let rc = base + i.arg_c();
+                        if let Some((n1, n2)) = state.get_num_pair_at(rb, rc) {
+                            pc += 1;
+                            let r = if n2 == 2.0 { n1 * n1 } else { n1.powf(n2) };
+                            state.set_at(ra, LuaValue::Float(r));
+                        }
                     }
                     OpCode::Div => {
                         let ra = base + i.arg_a();
-                        let v1 = state.get_at(base + i.arg_b());
-                        let v2 = state.get_at(base + i.arg_c());
-                        arith_float_aux(state, ra, &v1, &v2, &mut pc, |a, b| a / b);
+                        let rb = base + i.arg_b();
+                        let rc = base + i.arg_c();
+                        if let Some((n1, n2)) = state.get_num_pair_at(rb, rc) {
+                            pc += 1;
+                            state.set_at(ra, LuaValue::Float(n1 / n2));
+                        }
                     }
                     OpCode::IDiv => {
                         let ra = base + i.arg_a();
