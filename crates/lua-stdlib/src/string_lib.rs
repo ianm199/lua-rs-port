@@ -1054,9 +1054,11 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
         return Ok(1);
     }
 
-    // Clone to avoid borrow-across-push issues
-    let s_owned: Vec<u8> = s_bytes.to_vec();
-    let p_owned: Vec<u8> = p_bytes.to_vec();
+    // s_bytes and p_bytes are already owned (check_arg_string returns Vec<u8>).
+    // The previous comment "Clone to avoid borrow-across-push issues" was wrong —
+    // no borrow is being escaped here; the .to_vec() was a pure double-copy.
+    let s_owned = s_bytes;
+    let p_owned = p_bytes;
     let s = &s_owned[..];
     let p = &p_owned[..];
 
@@ -1137,13 +1139,25 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
     state.push_value(upvalue_index(1))?;
     let tbl_idx = state.top();
 
-    // Read t[1] = src, t[2] = pat, t[3] = pos, t[4] = lastmatch.
+    // Read t[1] = src, t[2] = pat as GcRef<LuaString> (no byte copy — was
+    // copying the entire source string Vec<u8> on every match iteration via
+    // to_lua_string_bytes, which is _platform_memmove 62% of wall on
+    // string-heavy workloads). Holding the GcRef keeps the bytes alive for
+    // the &[u8] borrow that follows.
     state.raw_geti(tbl_idx, 1)?;
-    let s: Vec<u8> = state.to_lua_string_bytes(-1).unwrap_or_default();
+    let s_ref = state.to_lua_string(-1);
     state.pop_n(1);
     state.raw_geti(tbl_idx, 2)?;
-    let p: Vec<u8> = state.to_lua_string_bytes(-1).unwrap_or_default();
+    let p_ref = state.to_lua_string(-1);
     state.pop_n(1);
+    let (Some(s_str), Some(p_str)) = (s_ref, p_ref) else {
+        // C: the upvalue must hold strings; if not, the iterator stops.
+        state.pop_n(1);
+        return Ok(0);
+    };
+    let s: &[u8] = s_str.as_bytes();
+    let p: &[u8] = p_str.as_bytes();
+
     state.raw_geti(tbl_idx, 3)?;
     let pos = state.to_integer_x(-1).unwrap_or(1);
     state.pop_n(1);
@@ -1159,7 +1173,7 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
     let ls = s.len();
     let start_pos = if pos < 1 { 0usize } else { (pos - 1) as usize };
 
-    let mut ms = MatchState::new(&s, &p);
+    let mut ms = MatchState::new(s, p);
 
     // C: for (src = gm->src; src <= gm->ms.src_end; src++)
     let mut src = start_pos;
@@ -1199,8 +1213,8 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 /// state into a 4-element Lua table held in a single upvalue (see
 /// `gmatch_aux`).
 pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
-    let s: Vec<u8> = state.check_arg_string(1)?.to_vec();
-    let p: Vec<u8> = state.check_arg_string(2)?.to_vec();
+    let s: Vec<u8> = state.check_arg_string(1)?;
+    let p: Vec<u8> = state.check_arg_string(2)?;
     let ls = s.len();
     // C: size_t init = posrelatI(luaL_optinteger(L, 3, 1), ls) - 1;
     let init_raw = state.opt_arg_integer(3, 1)?;
@@ -1242,9 +1256,7 @@ fn add_s(
     e: usize,
 ) -> Result<(), LuaError> {
     // C: const char *news = lua_tolstring(L, 3, &l);
-    let news_bytes = state.to_lua_string_bytes(3)
-        .map(|b| b.to_vec())
-        .unwrap_or_default();
+    let news_bytes = state.to_lua_string_bytes(3).unwrap_or_default();
     let mut i = 0usize;
     while i < news_bytes.len() {
         if news_bytes[i] != L_ESC {
@@ -1354,8 +1366,8 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
         return Err(LuaError::type_arg_error(3, "string/function/table", &v));
     }
 
-    let src_owned = src_bytes.to_vec();
-    let pat_owned = pat_bytes.to_vec();
+    let src_owned = src_bytes;
+    let pat_owned = pat_bytes;
 
     let anchor = pat_owned.first() == Some(&b'^');
     let pat_slice = if anchor { &pat_owned[1..] } else { &pat_owned[..] };
