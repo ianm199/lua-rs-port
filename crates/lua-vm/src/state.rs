@@ -2407,10 +2407,12 @@ impl LuaState {
         crate::tagmethods::call_orderi_tm(self, p1, v2 as i32, flip, isfloat, event)
     }
 
-    pub fn proto_code(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
+    #[inline]
+    pub fn proto_code(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
         cl.proto.code[pc as usize]
     }
-    pub fn proto_const(&mut self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {
+    #[inline]
+    pub fn proto_const(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {
         cl.proto.k[idx].clone()
     }
     pub fn get_proto_instr(&self, ci: CallInfoIdx, pc: u32) -> lua_types::opcode::Instruction {
