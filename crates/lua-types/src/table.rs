@@ -884,6 +884,100 @@ impl TableInner {
         }
     }
 
+    /// Write an integer key directly, mirroring C's `luaH_setint`. The
+    /// array-part fast path writes the slot in a single bounds-checked
+    /// store with no intermediate [`TableSlotRef`] enum and no second
+    /// lookup; only when the key falls outside `alimit` do we route
+    /// through the cold helper which handles the alimit-aliased slot,
+    /// hash-part walk, array-grow-on-`#t+1`, and `new_key` insertion.
+    /// Caller is responsible for rejecting `Nil` / `NaN` keys and for
+    /// firing the GC write barrier on the value.
+    #[inline]
+    fn set_int_value(&mut self, key: i64, value: LuaValue) -> Result<(), LuaError> {
+        let alimit = self.alimit as u64;
+        let uk = key as u64;
+        if uk.wrapping_sub(1) < alimit {
+            self.array[(key - 1) as usize] = value;
+            return Ok(());
+        }
+        self.set_int_value_cold(key, value)
+    }
+
+    /// Integer-key entry used by [`LuaTable::try_raw_set`] /
+    /// [`LuaTable::try_raw_set_int`]. The array fast path writes
+    /// directly into a slot that is by definition already allocated
+    /// (it lives inside the `Vec` at offset `key-1 < alimit`), so the
+    /// `TOTAL_GROW_CAP` guard cannot apply. Only the cold path can
+    /// allocate; the guard runs there.
+    #[inline]
+    fn try_raw_set_int_fast(&mut self, key: i64, value: LuaValue) -> Result<(), LuaError> {
+        let alimit = self.alimit as u64;
+        let uk = key as u64;
+        if uk.wrapping_sub(1) < alimit {
+            self.array[(key - 1) as usize] = value;
+            return Ok(());
+        }
+        self.try_raw_set_int_cold(key, value)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn try_raw_set_int_cold(&mut self, key: i64, value: LuaValue) -> Result<(), LuaError> {
+        if self.array.len() + self.node.len() >= TOTAL_GROW_CAP
+            && matches!(self.get_int_slot(key), TableSlotRef::Absent)
+        {
+            return Err(LuaError::Memory);
+        }
+        self.set_int_value_cold(key, value)
+    }
+
+    /// Cold fallback for [`Self::set_int_value`]: handles the
+    /// alimit-aliased slot (non-real-`asize` tables), hash-part lookup
+    /// + in-place store, the array-grow-on-`#t+1` heuristic, and
+    /// `new_key` insertion. Split into a `#[cold] #[inline(never)]`
+    /// helper so LLVM lays out the array fast path as straight-line
+    /// code in the inlined caller.
+    #[cold]
+    #[inline(never)]
+    fn set_int_value_cold(&mut self, key: i64, value: LuaValue) -> Result<(), LuaError> {
+        let alimit = self.alimit as u64;
+        let uk = key as u64;
+        if !self.is_real_asize() && alimit > 0 {
+            let masked = (uk.wrapping_sub(1)) & !(alimit.wrapping_sub(1));
+            if masked < alimit {
+                self.array[(key - 1) as usize] = value;
+                return Ok(());
+            }
+        }
+        if !self.is_dummy() {
+            let mut n = self.hash_idx_for_int(key);
+            loop {
+                if self.node[n].key_is_int() && self.node[n].key_int() == key {
+                    self.node[n].value = value;
+                    return Ok(());
+                }
+                let nx = self.node[n].next;
+                if nx == 0 { break; }
+                n = (n as isize + nx as isize) as usize;
+            }
+        }
+        if key > 0 && (key as u64) <= ARRAY_GROW_CAP as u64 {
+            let cur = self.alimit as i64;
+            if key == cur + 1 && !matches!(value, LuaValue::Nil) {
+                let new_size = (key as u32).next_power_of_two().max(4);
+                let capped = new_size.min(ARRAY_GROW_CAP);
+                if capped > self.alimit {
+                    let nsize = self.alloc_sizenode();
+                    self.resize(capped, nsize)?;
+                    let new_slot = self.get_int_slot(key);
+                    return self.finish_set(&LuaValue::Int(key), new_slot, value);
+                }
+            }
+        }
+        let k = LuaValue::Int(key);
+        self.new_key(&k, value)
+    }
+
     // ── boundary search ────────────────────────────────────────────────────
 
     fn hash_search(&self, mut j: u64) -> u64 {
@@ -1082,16 +1176,43 @@ impl LuaTable {
     }
 
     /// Raw set with explicit error returns; preferred path used by
-    /// `LuaTableRefExt::raw_set` in `lua-vm`.
+    /// `LuaTableRefExt::raw_set` in `lua-vm`. Integer keys (and floats
+    /// that are exact integers) take the same direct array-part fast
+    /// path used by [`LuaTable::try_raw_set_int`]; other key shapes
+    /// fall through to the generic slot lookup.
+    #[inline]
     pub fn try_raw_set(&self, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
-        if matches!(k, LuaValue::Nil) {
-            return Err(LuaError::runtime(format_args!("table index is nil")));
-        }
-        if let LuaValue::Float(f) = &k {
-            if f.is_nan() {
-                return Err(LuaError::runtime(format_args!("table index is NaN")));
+        match &k {
+            LuaValue::Nil => {
+                Err(LuaError::runtime(format_args!("table index is nil")))
             }
+            LuaValue::Float(f) if f.is_nan() => {
+                Err(LuaError::runtime(format_args!("table index is NaN")))
+            }
+            LuaValue::Int(i) => {
+                let key = *i;
+                let mut inner = self.inner.borrow_mut();
+                inner.try_raw_set_int_fast(key, v)
+            }
+            LuaValue::Float(f) => {
+                let f = *f;
+                let k_int = f as i64;
+                if k_int as f64 == f {
+                    let mut inner = self.inner.borrow_mut();
+                    inner.try_raw_set_int_fast(k_int, v)
+                } else {
+                    self.try_raw_set_generic(k, v)
+                }
+            }
+            _ => self.try_raw_set_generic(k, v),
         }
+    }
+
+    /// Generic-key path for [`Self::try_raw_set`]. Split out so the
+    /// integer fast path stays branch-light and inlineable.
+    #[cold]
+    #[inline(never)]
+    fn try_raw_set_generic(&self, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
         let mut inner = self.inner.borrow_mut();
         if inner.array.len() + inner.node.len() >= TOTAL_GROW_CAP
             && matches!(inner.get_slot(&k), TableSlotRef::Absent)
@@ -1101,15 +1222,16 @@ impl LuaTable {
         inner.set(&k, v)
     }
 
-    /// Raw set by integer key with explicit error returns.
+    /// Raw set by integer key with explicit error returns. Routes the
+    /// array-part fast path through [`TableInner::set_int_value`] — a
+    /// single bounds-checked store with no intermediate
+    /// [`TableSlotRef`] indirection — and only consults the
+    /// `TOTAL_GROW_CAP` allocation guard when the key would create a
+    /// new slot.
+    #[inline]
     pub fn try_raw_set_int(&self, k: i64, v: LuaValue) -> Result<(), LuaError> {
         let mut inner = self.inner.borrow_mut();
-        if inner.array.len() + inner.node.len() >= TOTAL_GROW_CAP
-            && matches!(inner.get_int_slot(k), TableSlotRef::Absent)
-        {
-            return Err(LuaError::Memory);
-        }
-        inner.set_int(k, v)
+        inner.try_raw_set_int_fast(k, v)
     }
 
     /// Resize the table to new array and hash sizes (sizing hint from
