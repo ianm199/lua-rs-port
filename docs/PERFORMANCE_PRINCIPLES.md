@@ -215,6 +215,32 @@ match is too wide, splitting the cold cases into a separate function
 C-Lua's `vmcase`/`vmbreak` macros plus its `OP_GETI` / `OP_SETI`
 opcodes are the bytecode-level expression of this discipline.
 
+**`#[inline]` vs `#[inline(always)]` — when LLVM bails.** Examples
+(lua, applied 686a8bb + 4682b22): `LuaTable::get` and `do_::precall`
+were both already marked `#[inline]` with LTO + codegen-units=1
+enabled. Profile still showed them as their own frames at 8–20% of
+wall. Upgrading to `#[inline(always)]` made the function bodies vanish
+from the profile and the workloads moved 5–10% each.
+
+The threshold: when a function body is large enough (say >50 lines
+after monomorphization), LLVM's inline-cost heuristic blocks the
+inline even with the `#[inline]` hint. `#[inline(always)]` overrides
+the heuristic. **Rule of thumb: if profile shows a `#[inline]`'d
+function as its own frame share >5%, escalate to
+`#[inline(always)]`.** Doesn't hurt cold callers (each `[always]`-
+inlined copy bloats the binary slightly but in our case the binary is
+tiny relative to that).
+
+The negative-result corollary: not every `#[inline(always)]` move
+pays. Agent on commit `(opcode-dispatch)` upgraded
+`Instruction::opcode` similarly and the bench didn't move — turned
+out the 7.6% profile share was attribution noise on an
+already-inlined function. **Profile share ≠ recoverable wall.**
+The way to distinguish: re-sample after the change. If the frame
+moves AND the workload wall drops, the inline did real work. If the
+frame moves AND the workload wall doesn't drop, only profile
+attribution changed (cosmetic).
+
 **The negative-result variant: clones aren't always the cost.** Example
 (lua, da9401e): we suspected `LuaValue::Clone` in the arith opcodes
 was a real cost — every `OP_ADD` cloned two operands to satisfy the
