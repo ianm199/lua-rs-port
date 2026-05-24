@@ -441,7 +441,9 @@ pub(crate) fn hook(
         let top = state.top_idx();
         let ci = state.get_ci_mut(ci_idx);
         if ci.top.0 < (top + LUA_MINSTACK).0 {
-            ci.top = top + LUA_MINSTACK;
+            let new_top = top + LUA_MINSTACK;
+            ci.top = new_top;
+            state.clear_stack_range(top, new_top);
         }
     }
 
@@ -756,6 +758,8 @@ fn prep_call_info(
     // next_ci → L->ci->next ? L->ci->next : luaE_extendCI(L)
     let ci_idx = state.next_ci()?;
     state.ci = ci_idx;
+    let live_top = state.top_idx();
+    state.clear_stack_range(live_top, top_idx);
     {
         let ci = state.get_ci_mut(ci_idx);
         ci.func = func_idx;
@@ -879,12 +883,14 @@ pub(crate) fn pretailcall(
                 {
                     let new_ci_top = func_idx + 1 + fsize as i32;
                     let stack_last = state.stack_last;
+                    let live_top = state.top_idx();
                     let ci = state.get_ci_mut(ci_idx);
                     ci.top = new_ci_top;
                     debug_assert!(ci.top.0 <= stack_last.0);
                     // C: ci->u.l.savedpc = p->code  (starting point — offset 0)
                     ci.set_saved_pc(0);
                     ci.callstatus |= CIST_TAIL;
+                    state.clear_stack_range(live_top, new_ci_top);
                 }
 
                 // C: L->top.p = func + narg1
@@ -1034,6 +1040,17 @@ fn ccall_inner(
     n_results: i32,
     inc: u32,
 ) -> Result<(), LuaError> {
+    ccall_inner_with_status(state, func_idx, n_results, inc, 0)
+}
+
+#[inline]
+fn ccall_inner_with_status(
+    state: &mut LuaState,
+    func_idx: StackIdx,
+    n_results: i32,
+    inc: u32,
+    extra_callstatus: u16,
+) -> Result<(), LuaError> {
     // C: L->nCcalls += inc;
     state.nCcalls += inc;
 
@@ -1050,7 +1067,7 @@ fn ccall_inner(
     // C: if ((ci = luaD_precall(L, func, nResults)) != NULL)
     if let Some(ci_idx) = precall(state, func_idx, n_results)? {
         // C: ci->callstatus = CIST_FRESH; luaV_execute(L, ci);
-        state.get_ci_mut(ci_idx).callstatus = CIST_FRESH;
+        state.get_ci_mut(ci_idx).callstatus = CIST_FRESH | extra_callstatus;
         vm::execute(state, ci_idx)?;
     }
 

@@ -651,8 +651,67 @@ impl TableInner {
             }
             let idx = lf - 1;
             self.lastfree = Some(idx);
-            if self.node[idx].key_is_nil() { return Some(idx); }
+            if self.node[idx].key_is_nil() && !self.node_has_chain_link(idx) {
+                return Some(idx);
+            }
         }
+    }
+
+    fn node_has_chain_link(&self, idx: usize) -> bool {
+        if self.node[idx].next != 0 {
+            return true;
+        }
+        self.find_chain_predecessor(idx).is_some()
+    }
+
+    fn find_chain_predecessor(&self, idx: usize) -> Option<usize> {
+        self.node.iter().enumerate().find(|(prev, node)| {
+            node.next != 0 && (*prev as isize + node.next as isize) == idx as isize
+        }).map(|(prev, _)| prev)
+    }
+
+    fn clear_node(&mut self, idx: usize) {
+        self.node[idx].key = LuaValue::Nil;
+        self.node[idx].value = LuaValue::Nil;
+        self.node[idx].next = 0;
+    }
+
+    fn remove_hash_node(&mut self, idx: usize) {
+        if let Some(prev) = self.find_chain_predecessor(idx) {
+            let next = self.node[idx].next;
+            self.node[prev].next = if next == 0 {
+                0
+            } else {
+                let target = idx as isize + next as isize;
+                (target - prev as isize) as i32
+            };
+            self.clear_node(idx);
+            return;
+        }
+
+        let next = self.node[idx].next;
+        if next == 0 {
+            self.clear_node(idx);
+            return;
+        }
+
+        let next_idx = (idx as isize + next as isize) as usize;
+        let moved_next = self.node[next_idx].next;
+        let moved_key = self.node[next_idx].key_value();
+        let moved_value = self.node[next_idx].value.clone();
+        self.node[idx].key = moved_key;
+        self.node[idx].value = moved_value;
+        self.node[idx].next = if moved_next == 0 {
+            0
+        } else {
+            let target = next_idx as isize + moved_next as isize;
+            (target - idx as isize) as i32
+        };
+        self.clear_node(next_idx);
+    }
+
+    fn clear_dead_hash_node(&mut self, idx: usize) {
+        self.remove_hash_node(idx);
     }
 
     fn new_key(&mut self, key: &LuaValue, value: LuaValue) -> Result<(), LuaError> {
@@ -1391,16 +1450,20 @@ impl LuaTable {
                 if matches!(v, LuaValue::Str(_)) { to_mark.push(v); }
             }
         }
-        for i in 0..inner.node.len() {
+        let mut i = 0;
+        while i < inner.node.len() {
             let v = inner.node[i].value.clone();
-            if matches!(v, LuaValue::Nil) { continue; }
+            if matches!(v, LuaValue::Nil) {
+                i += 1;
+                continue;
+            }
             let k = inner.node[i].key.clone();
             if weak_v && value_is_dead_collectable(&v, is_reachable) {
-                inner.node[i].value = LuaValue::Nil;
+                inner.clear_dead_hash_node(i);
                 continue;
             }
             if weak_k && value_is_dead_collectable(&k, is_reachable) {
-                inner.node[i].value = LuaValue::Nil;
+                inner.clear_dead_hash_node(i);
                 continue;
             }
             if weak_k {
@@ -1409,6 +1472,7 @@ impl LuaTable {
             if weak_v {
                 if matches!(v, LuaValue::Str(_)) { to_mark.push(v); }
             }
+            i += 1;
         }
         to_mark
     }

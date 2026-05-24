@@ -658,6 +658,31 @@ impl Heap {
         self.full_collect_with_post_mark(roots, |_: &mut Marker| {});
     }
 
+    /// Run only the mark/atomic hook portion of a collection, without sweeping.
+    ///
+    /// This is used by runtimes that need an atomic reachability snapshot for
+    /// weak-table cleanup while they are deliberately avoiding object freeing.
+    pub fn mark_only_with_post_mark<F: FnMut(&mut Marker)>(
+        &self,
+        roots: &dyn Trace,
+        mut post_mark: F,
+    ) {
+        if self.paused.get() {
+            return;
+        }
+        let mut cursor = self.head.get();
+        while let Some(ptr) = cursor {
+            let header = unsafe { &(*ptr.as_ptr()).header };
+            header.color.set(Color::White);
+            cursor = header.next.get();
+        }
+        let mut marker = Marker::new();
+        roots.trace(&mut marker);
+        marker.drain_gray_queue();
+        post_mark(&mut marker);
+        marker.drain_gray_queue();
+    }
+
     /// Stop-the-world full collect with a post-mark hook.
     ///
     /// Internally drives the incremental state machine to completion with

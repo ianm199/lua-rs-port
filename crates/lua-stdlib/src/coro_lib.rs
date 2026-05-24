@@ -112,7 +112,16 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
             None => return COS_DEAD,
         }
     };
-    let co_state = entry_rc.borrow();
+    let co_state = match entry_rc.try_borrow() {
+        Ok(state) => state,
+        Err(_) => {
+            // Nested resumes can hold a mutable borrow of a parent coroutine.
+            // In that case, the safest fallback is to report the target as
+            // "normal" (active but not suspended/dead), which matches the
+            // common nested-resume status for the parent thread.
+            return COS_NORM;
+        }
+    };
     let raw_status = co_state.status;
     if raw_status == LuaStatus::Yield as u8 {
         return COS_YIELD;
@@ -194,23 +203,13 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         }
     }
 
-    // Snapshot the parent's live stack so GC collections triggered from inside
-    // the coroutine keep all parent stack values reachable.  The snapshot is
-    // pushed to `GlobalState::suspended_parent_stacks` (traced as GC roots)
-    // and popped immediately after the coroutine yields or returns.
-    {
-        let top = state.top_idx();
-        let stack_snapshot: Vec<LuaValue> = (0..top.0)
-            .map(|i| state.get_at(lua_vm::state::StackIdx(i)))
-            .collect();
-        state.global_mut().suspended_parent_stacks.push(stack_snapshot);
-    }
+    push_parent_gc_snapshot(state);
 
     let (status, results_or_err): (LuaStatus, Vec<LuaValue>) = {
         let mut co_state = match entry_rc.try_borrow_mut() {
             Ok(b) => b,
             Err(_) => {
-                state.global_mut().suspended_parent_stacks.pop();
+                pop_parent_gc_snapshot(state);
                 let mut g = state.global_mut();
                 for (tid, idx) in &parent_open_upval_slots {
                     g.cross_thread_upvals.remove(&(*tid, *idx));
@@ -222,7 +221,7 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         };
         if co_state.check_stack(narg + 1).is_err() {
             drop(co_state);
-            state.global_mut().suspended_parent_stacks.pop();
+            pop_parent_gc_snapshot(state);
             let mut g = state.global_mut();
             for (tid, idx) in &parent_open_upval_slots {
                 g.cross_thread_upvals.remove(&(*tid, *idx));
@@ -259,7 +258,7 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
     };
 
     // Pop the parent stack snapshot — the coroutine has yielded or returned.
-    state.global_mut().suspended_parent_stacks.pop();
+    pop_parent_gc_snapshot(state);
 
     {
         let mut g = state.global_mut();
@@ -294,6 +293,23 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
             -1
         }
     }
+}
+
+fn push_parent_gc_snapshot(state: &mut LuaState) {
+    let top = state.top_idx();
+    let stack_snapshot: Vec<LuaValue> = (0..top.0)
+        .map(|i| state.get_at(lua_vm::state::StackIdx(i)))
+        .collect();
+    let open_upval_snapshot = state.openupval.clone();
+    let mut g = state.global_mut();
+    g.suspended_parent_stacks.push(stack_snapshot);
+    g.suspended_parent_open_upvals.push(open_upval_snapshot);
+}
+
+fn pop_parent_gc_snapshot(state: &mut LuaState) {
+    let mut g = state.global_mut();
+    g.suspended_parent_open_upvals.pop();
+    g.suspended_parent_stacks.pop();
 }
 
 /// Helper: push a string literal or fall back to Nil on intern failure.
@@ -352,10 +368,21 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
         }
     };
     let narg = state.get_top();
-    let r = aux_resume(state, co, narg);
+    let r = aux_resume(state, co.clone(), narg);
     if r < 0 {
         let top = state.get_top();
-        let err_val = state.value_at(top);
+        let mut err_val = state.value_at(top);
+        if aux_status(state, &co) == COS_DEAD {
+            let old_err = state.pop();
+            let nclose = close_suspended_or_dead(state, co)?;
+            err_val = if nclose >= 2 {
+                let top = state.get_top();
+                state.value_at(top)
+            } else {
+                old_err
+            };
+            state.pop_n(nclose);
+        }
         Err(LuaError::from_value(err_val))
     } else {
         Ok(r as usize)
@@ -452,8 +479,11 @@ pub fn co_isyieldable(state: &mut LuaState) -> Result<usize, LuaError> {
                     .state
                     .clone()
             };
-            let b = entry_rc.borrow();
-            b.is_yieldable()
+            let target_is_yieldable = match entry_rc.try_borrow() {
+                Ok(b) => b.is_yieldable(),
+                Err(_) => false,
+            };
+            target_is_yieldable
         }
     };
     state.push(LuaValue::Bool(is_yieldable));
@@ -541,6 +571,8 @@ fn close_suspended_or_dead(
         }
     }
 
+    push_parent_gc_snapshot(state);
+
     let (status, err_value): (i32, Option<LuaValue>) = {
         let mut co_state = entry_rc.borrow_mut();
         co_state.global_mut().current_thread_id = co_id;
@@ -561,6 +593,8 @@ fn close_suspended_or_dead(
             }
         }
     };
+
+    pop_parent_gc_snapshot(state);
 
     {
         let mut g = state.global_mut();

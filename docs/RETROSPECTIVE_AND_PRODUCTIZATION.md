@@ -14,6 +14,9 @@ next project. Lua 5.4 specifics are *examples*; the principles generalize.
   single highest-leverage upfront investment.
 - Parallel fanout demands care: shared-state hooks and shared temp files are
   race-prone; per-worker scoping is required.
+- For hard runtime bugs, use the **Honest Repro Ladder** in
+  `docs/DEBUGGING_STRATEGIES.md`: exact semantic mini-repro first, then compare
+  the first divergence against the source implementation's state machine.
 
 ## 1. What the harness looks like (4 layers)
 
@@ -747,4 +750,3 @@ Each function is replaceable per project; the policy file is the
 project-specific configuration. This is closer to the "Tier 1: generic
 harness skeleton" §5 sketched, and the gap from today's mega_loop to
 that abstraction is the §11.5 list.
-

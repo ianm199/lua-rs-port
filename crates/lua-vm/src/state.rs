@@ -458,7 +458,24 @@ impl LuaValueExt for LuaValue {
         }
         None
     }
-    fn full_type_tag(&self) -> u8 { self.type_tag() as u8 }
+    fn full_type_tag(&self) -> u8 {
+        match self {
+            LuaValue::Nil => 0x00,
+            LuaValue::Bool(false) => 0x01,
+            LuaValue::Bool(true) => 0x11,
+            LuaValue::Int(_) => 0x03,
+            LuaValue::Float(_) => 0x13,
+            LuaValue::Str(s) if s.is_short() => 0x04,
+            LuaValue::Str(_) => 0x14,
+            LuaValue::LightUserData(_) => 0x02,
+            LuaValue::Table(_) => 0x05,
+            LuaValue::Function(LuaClosure::Lua(_)) => 0x06,
+            LuaValue::Function(LuaClosure::LightC(_)) => 0x16,
+            LuaValue::Function(LuaClosure::C(_)) => 0x26,
+            LuaValue::UserData(_) => 0x07,
+            LuaValue::Thread(_) => 0x08,
+        }
+    }
 }
 
 /// Extension methods on `lua_types::LuaType`.
@@ -1117,6 +1134,13 @@ pub struct GlobalState {
     /// most of this, but the snapshot still guards values that live only on
     /// the parent's stack (i.e. not yet rooted by any thread node).
     pub suspended_parent_stacks: Vec<Vec<LuaValue>>,
+
+    /// Open-upvalue handles belonging to the same suspended parent windows as
+    /// `suspended_parent_stacks`. Stack snapshots keep the pointed-to values
+    /// alive; this roots the `UpVal` objects themselves so a GC inside the
+    /// child coroutine cannot sweep entries still present in the parent's
+    /// `openupval` list.
+    pub suspended_parent_open_upvals: Vec<Vec<GcRef<UpVal>>>,
 }
 
 impl GlobalState {
@@ -1224,12 +1248,19 @@ impl GlobalState {
     pub fn set_gc_genmajormul(&mut self, p: u8) { self.genmajormul = p; }
     pub fn gc_stop_flags(&self) -> u8 { self.gcstp }
     pub fn set_gc_stop_flags(&mut self, f: u8) { self.gcstp = f; }
+    pub fn stop_gc_internal(&mut self) -> u8 {
+        let old = self.gcstp;
+        self.gcstp |= GCSTPGC;
+        old
+    }
     pub fn set_gc_stop_user(&mut self) {
         // C: g->gcstp = GCSTPUSR;  (lapi.c:1143)
         // GCSTPUSR (lgc.h:155) = 1 — bit set when GC is stopped by user (lua_gc(L, LUA_GCSTOP)).
         self.gcstp = GCSTPUSR;
     }
     pub fn clear_gc_stop(&mut self) { self.gcstp = 0; }
+    /// C: `gcrunning(g)` in `lgc.h`.
+    pub fn is_gc_running(&self) -> bool { self.gcstp == 0 }
     /// True when the GC has been disabled internally (state setup, mid-GC,
     /// or while closing); user-stop via `collectgarbage("stop")` does NOT
     /// set this bit, so `lua_gc` continues to honour Count/Step/etc.
@@ -1611,6 +1642,25 @@ impl LuaState {
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
         self.stack[i.0 as usize].val = v;
+    }
+
+    /// Clear stack slots in `[start, end)` without changing `top`.
+    ///
+    /// Internal call setup reserves space up to `ci.top`; while GC tracing is
+    /// conservative over that range, the unused tail must not retain stale
+    /// collectable values from previous frames.
+    pub fn clear_stack_range(&mut self, start: StackIdx, end: StackIdx) {
+        if end.0 <= start.0 {
+            return;
+        }
+        let end_u = end.0 as usize;
+        if end_u > self.stack.len() {
+            self.stack.resize_with(end_u, StackValue::default);
+        }
+        for i in start.0..end.0 {
+            self.stack[i as usize].val = LuaValue::Nil;
+            self.stack[i as usize].tbc_delta = 0;
+        }
     }
     /// Hot-path accessor: returns `Some(i)` only when the stack slot at `idx`
     /// holds a `LuaValue::Int(i)`. Returns `None` for any other tag (including
@@ -2589,22 +2639,33 @@ impl LuaState {
         crate::do_::hookcall(self, idx)
     }
     pub fn gc_check_step(&mut self) {
-        // Phase-B: drive the __gc finalizer queue from common allocation
-        // sites so loops like `repeat u = {} until finish` make progress
-        // without an explicit `collectgarbage()`. The heap's threshold-based
-        // `check_step` decides whether to mark+sweep; when it does, the
-        // post-mark hook populates `to_be_finalized` with any pending
-        // finalizer whose target was reachable only via the finalizer
-        // registry. We then drain that list. Unlike the older path, this
-        // does NOT force a full collect on every allocation just because
-        // some library has long-lived finalizable userdata (stdin/stdout/
-        // stderr) pinned in `pending_finalizers`.
+        if !self.allowhook {
+            return;
+        }
+        // C: `luaC_step` starts with `if (!gcrunning(g)) ... else collect`.
+        // Automatic allocation-triggered GC must respect
+        // `collectgarbage("stop")`; explicit `collectgarbage("step")`
+        // temporarily clears the stop flag in `api::gc`, matching lapi.c.
+        if !self.global().is_gc_running() {
+            return;
+        }
+        // Let the heap's debt/threshold-driven check decide whether this
+        // allocation point should collect. Pending finalizers are discovered
+        // by the post-mark hook when a real collection runs; merely having a
+        // pending-finalizer registry is not itself a reason to force a full
+        // collection on every allocation.
         self.gc().check_step();
         if !self.global().to_be_finalized.is_empty() {
             crate::api::run_pending_finalizers(self);
         }
     }
     pub fn gc_cond_step(&mut self) {
+        if !self.allowhook {
+            return;
+        }
+        if !self.global().is_gc_running() {
+            return;
+        }
         self.gc().check_step();
         if !self.global().to_be_finalized.is_empty() {
             crate::api::run_pending_finalizers(self);
@@ -2680,7 +2741,7 @@ impl<'a> lua_gc::Trace for CollectRoots<'a> {
 
 fn trace_reachable_threads(
     global: &GlobalState,
-    current_thread_id: u64,
+    _current_thread_id: u64,
     marker: &mut lua_gc::Marker,
 ) {
     use lua_gc::Trace;
@@ -2688,10 +2749,7 @@ fn trace_reachable_threads(
     loop {
         let visited_before = marker.visited_count();
         for (id, entry) in global.threads.iter() {
-            if *id == current_thread_id {
-                continue;
-            }
-            if marker.is_visited(entry.value.identity()) {
+            if thread_entry_marked_alive(marker, *id, entry) {
                 if let Ok(thread) = entry.state.try_borrow() {
                     thread.trace(marker);
                 }
@@ -2704,6 +2762,52 @@ fn trace_reachable_threads(
     }
 }
 
+fn thread_entry_marked_alive(
+    marker: &lua_gc::Marker,
+    id: u64,
+    entry: &ThreadRegistryEntry,
+) -> bool {
+    marker.is_visited(entry.value.identity()) && entry.value.id == id
+}
+
+fn close_open_upvalues_for_unreachable_threads(
+    global: &GlobalState,
+    marker: &mut lua_gc::Marker,
+) {
+    use lua_gc::Trace;
+
+    let mut closed_values = Vec::<LuaValue>::new();
+    for (id, entry) in global.threads.iter() {
+        if entry.value.id != *id {
+            continue;
+        }
+        if thread_entry_marked_alive(marker, *id, entry) {
+            continue;
+        }
+        let Ok(thread) = entry.state.try_borrow() else {
+            continue;
+        };
+        for uv in thread.openupval.iter() {
+            if !marker.is_visited(uv.identity()) {
+                continue;
+            }
+            let Some((thread_id, idx)) = uv.try_open_payload() else {
+                continue;
+            };
+            if thread_id as u64 != *id {
+                continue;
+            }
+            let value = thread.get_at(idx);
+            uv.close_with(value.clone());
+            closed_values.push(value);
+        }
+    }
+    for value in closed_values {
+        value.trace(marker);
+    }
+    marker.drain_gray_queue();
+}
+
 impl<'a> GcHandle<'a> {
     /// C: `luaC_checkGC(L)` — conditional GC step.
     /// macros.tsv: `luaC_checkGC → state.gc().check_step()`
@@ -2713,6 +2817,9 @@ impl<'a> GcHandle<'a> {
     /// explicit `collectgarbage()` call (e.g. `closure.lua`'s
     /// `while x[1] do local a = A..A end` GC-driven loop) never settle.
     pub fn check_step(&self) {
+        if !self._state.global().is_gc_running() {
+            return;
+        }
         self.collect_via_heap(/* force = */ false);
     }
 
@@ -2788,6 +2895,8 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(Vec::new());
         let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
+        let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
         let collect_ran = std::cell::Cell::new(false);
 
         {
@@ -2797,6 +2906,7 @@ impl<'a> GcHandle<'a> {
             let hook = |marker: &mut lua_gc::Marker| {
                 collect_ran.set(true);
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
+                close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot {
@@ -2868,6 +2978,14 @@ impl<'a> GcHandle<'a> {
                         }
                     }
                 }
+                {
+                    let mut alive = alive_thread_ids.borrow_mut();
+                    for (id, entry) in global.threads.iter() {
+                        if thread_entry_marked_alive(marker, *id, entry) {
+                            alive.insert(*id);
+                        }
+                    }
+                }
             };
             if force {
                 global.heap.full_collect_with_post_mark(&roots, hook);
@@ -2891,9 +3009,14 @@ impl<'a> GcHandle<'a> {
         let promote_ids: std::collections::HashSet<usize> =
             promote.iter().map(|t| t.identity()).collect();
         let dead_ls_ids = dead_long_strings.into_inner();
+        let alive_thread_ids = alive_thread_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
         g.weak_tables_registry
             .retain(|w| alive_set.contains(&w.0.identity()));
+        let main_thread_id = g.main_thread_id;
+        g.threads.retain(|id, _| alive_thread_ids.contains(id));
+        g.cross_thread_upvals
+            .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
         // Move newly-unreachable finalizables from `pending_finalizers` to
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
@@ -2967,6 +3090,8 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(Vec::new());
         let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
+        let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
         let atomic_ran = std::cell::Cell::new(false);
 
         let outcome = {
@@ -2975,6 +3100,8 @@ impl<'a> GcHandle<'a> {
             let roots = CollectRoots { global: &*global, thread: state_ref };
             let hook = |marker: &mut lua_gc::Marker| {
                 atomic_ran.set(true);
+                trace_reachable_threads(&*global, global.current_thread_id, marker);
+                close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot {
@@ -3039,6 +3166,14 @@ impl<'a> GcHandle<'a> {
                         }
                     }
                 }
+                {
+                    let mut alive = alive_thread_ids.borrow_mut();
+                    for (id, entry) in global.threads.iter() {
+                        if thread_entry_marked_alive(marker, *id, entry) {
+                            alive.insert(*id);
+                        }
+                    }
+                }
             };
             let budget = StepBudget::from_work(work_units);
             global.heap.incremental_step_with_post_mark(&roots, budget, hook)
@@ -3051,9 +3186,14 @@ impl<'a> GcHandle<'a> {
             let promote_ids: std::collections::HashSet<usize> =
                 promote.iter().map(|t| t.identity()).collect();
             let dead_ls_ids = dead_long_strings.into_inner();
+            let alive_thread_ids = alive_thread_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
             g.weak_tables_registry
                 .retain(|w| alive_set.contains(&w.0.identity()));
+            let main_thread_id = g.main_thread_id;
+            g.threads.retain(|id, _| alive_thread_ids.contains(id));
+            g.cross_thread_upvals
+                .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
             g.pending_finalizers
                 .retain(|t| !promote_ids.contains(&t.identity()));
             g.to_be_finalized.extend(promote);
@@ -3072,6 +3212,62 @@ impl<'a> GcHandle<'a> {
         }
 
         matches!(outcome, StepOutcome::Paused)
+    }
+
+    /// Run only the weak-table atomic cleanup used by a generational step.
+    ///
+    /// C-Lua's `genstep` performs young/full generational work and includes
+    /// weak-table clearing at the atomic boundary. This heap does not model
+    /// ages yet; this mark-only pass gives explicit generational steps the
+    /// weak cleanup they need without sweeping objects from suspended threads.
+    pub fn prune_weak_tables_mark_only(&self) {
+        use lua_gc::Trace;
+        let state_ref: &LuaState = &*self._state;
+
+        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+            let g = state_ref.global.borrow();
+            let mut seen = std::collections::HashSet::<usize>::new();
+            g.weak_tables_registry
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .filter(|t| seen.insert(t.identity()))
+                .collect()
+        };
+
+        let global = state_ref.global.borrow();
+        global.heap.unpause();
+        let roots = CollectRoots { global: &*global, thread: state_ref };
+        let hook = |marker: &mut lua_gc::Marker| {
+            trace_reachable_threads(&*global, global.current_thread_id, marker);
+            loop {
+                let visited_before = marker.visited_count();
+                for t in &weak_tables_snapshot {
+                    let t_id = t.identity();
+                    if !marker.is_visited(t_id) {
+                        continue;
+                    }
+                    let to_mark = t.ephemeron_values_to_mark(
+                        &|id| marker.is_visited(id),
+                    );
+                    for v in &to_mark {
+                        v.trace(marker);
+                    }
+                }
+                marker.drain_gray_queue();
+                if marker.visited_count() == visited_before {
+                    break;
+                }
+            }
+            for t in &weak_tables_snapshot {
+                if marker.is_visited(t.identity()) {
+                    let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
+                    for v in &to_mark {
+                        v.trace(marker);
+                    }
+                }
+            }
+        };
+        global.heap.mark_only_with_post_mark(&roots, hook);
     }
 
     /// Set the GC kind (incremental/generational).
@@ -4045,6 +4241,7 @@ pub fn new_state() -> Option<LuaState> {
         heap: lua_gc::Heap::new(),
         cross_thread_upvals: std::collections::HashMap::new(),
         suspended_parent_stacks: Vec::new(),
+        suspended_parent_open_upvals: Vec::new(),
     };
 
     let global_rc = Rc::new(RefCell::new(global));

@@ -1546,6 +1546,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
 
                 debug_assert!(base == state.ci_base(ci));
 
+                // C: `lua_assert(isIT(i) || (cast_void(L->top.p = base), 1));`
+                //
+                // Most Lua instructions do not consume the previous dynamic
+                // stack top. Resetting it at dispatch time keeps temporary
+                // registers from being traced as live GC roots after their
+                // expression has finished. CALL/RETURN/VARARG instructions
+                // with B == 0 are IT-mode and intentionally preserve `top`.
+                if !i.is_in_top() {
+                    state.set_top(base);
+                }
+
                 // C: vmdispatch(GET_OPCODE(i))
                 match i.opcode() {
                     // ── OP_MOVE ──────────────────────────────────────────────

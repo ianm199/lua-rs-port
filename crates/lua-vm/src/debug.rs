@@ -571,19 +571,18 @@ fn upval_name(p: &LuaProto, uv: usize) -> &[u8] {
 ///
 /// PORT NOTE: C sets `*pos` as an out-parameter. Rust returns an Option of the
 /// stack index alongside the name.
-fn find_vararg(ci: &CallInfo, n: i32) -> Option<(StackIdx, &'static [u8])> {
+fn find_vararg(state: &LuaState, ci: &CallInfo, n: i32) -> Option<(StackIdx, &'static [u8])> {
     // C: if (clLvalue(s2v(ci->func.p))->p->is_vararg)
-    // TODO(port): accessing proto from ci requires LuaState; restructured to take
-    // nextraargs and is_vararg directly. Phase B will wire this properly.
-    if ci.is_vararg_func() {
+    let proto = ci_lua_proto(ci, state);
+    if proto.is_vararg {
         let nextra = ci.nextra_args();
         // C: if (n >= -nextra)  — 'n' is negative
         if n >= -(nextra as i32) {
             // C: *pos = ci->func.p - nextra - (n + 1);
             // PORT NOTE: pointer arithmetic converted to index arithmetic.
             // ci->func.p is the function slot; varargs are at func - nextra - 1 .. func - 1
-            let pos = ci.func.wrapping_sub((nextra as i32 + n + 1) as u32);
-            return Some((StackIdx(pos), b"(vararg)" as &[u8]));
+            let pos = ci.func - (nextra + n + 1);
+            return Some((pos, b"(vararg)" as &[u8]));
         }
     }
     None
@@ -604,10 +603,11 @@ fn find_vararg(ci: &CallInfo, n: i32) -> Option<(StackIdx, &'static [u8])> {
 /// the slice could be tied to. Cloning the name is cheap (a handful of bytes).
 pub(crate) fn find_local(
     state: &LuaState,
-    ci: &CallInfo,
+    ci_idx: CallInfoIdx,
     n: i32,
     pos: Option<&mut StackIdx>,
 ) -> Option<Vec<u8>> {
+    let ci = state.get_ci(ci_idx);
     // C: StkId base = ci->func.p + 1;
     let base = ci.func + 1;
     // C: const char *name = NULL;
@@ -616,7 +616,7 @@ pub(crate) fn find_local(
     if ci.is_lua() {
         if n < 0 {
             // C: if (n < 0) return findvararg(ci, n, pos);
-            if let Some((vpos, vname)) = find_vararg(ci, n) {
+            if let Some((vpos, vname)) = find_vararg(state, ci, n) {
                 if let Some(out_pos) = pos {
                     *out_pos = vpos;
                 }
@@ -633,10 +633,13 @@ pub(crate) fn find_local(
 
     if name.is_none() {
         // C: StkId limit = (ci == L->ci) ? L->top.p : ci->next->func.p;
-        // TODO(phase-b): replace pointer-equality check with index-based once
-        // ci becomes a CallInfoIdx end-to-end.
-        let limit: u32 = state.top_idx().0;
-        let _ = ci.next;
+        let limit: u32 = if ci_idx == state.current_ci_idx() {
+            state.top_idx().0
+        } else {
+            ci.next
+                .map(|next| state.get_ci(next).func.0)
+                .unwrap_or_else(|| state.top_idx().0)
+        };
         // C: if (limit - base >= n && n > 0)
         if n > 0 && limit.saturating_sub(base.0) >= n as u32 {
             // C: name = isLua(ci) ? "(temporary)" : "(C temporary)";
@@ -684,11 +687,10 @@ pub fn get_local(state: &mut LuaState, ar: Option<&LuaDebug>, n: i32) -> Option<
     // C: else { StkId pos = NULL; name = luaG_findlocal(L, ar->i_ci, n, &pos); ... }
     let ar = ar.unwrap();
     let ci_idx = ar.i_ci?;
-    let ci = state.get_ci(ci_idx).clone();
     let mut pos = StackIdx(0);
     // PORT NOTE: reshaped for borrowck — clone name to an owned Vec<u8> so the
     // immutable borrow of `state` ends before the mutable push below.
-    let name_owned: Option<Vec<u8>> = find_local(state, &ci, n, Some(&mut pos));
+    let name_owned: Option<Vec<u8>> = find_local(state, ci_idx, n, Some(&mut pos));
 
     if name_owned.is_some() {
         // C: setobjs2s(L, L->top.p, pos); api_incr_top(L);
@@ -706,10 +708,9 @@ pub fn get_local(state: &mut LuaState, ar: Option<&LuaDebug>, n: i32) -> Option<
 pub fn set_local(state: &mut LuaState, ar: &LuaDebug, n: i32) -> Option<Vec<u8>> {
     // C: StkId pos = NULL; lua_lock(L);
     let ci_idx = ar.i_ci?;
-    let ci = state.get_ci(ci_idx).clone();
     let mut pos = StackIdx(0);
     // PORT NOTE: reshaped for borrowck — clone name before mutably borrowing state.
-    let name_owned: Option<Vec<u8>> = find_local(state, &ci, n, Some(&mut pos));
+    let name_owned: Option<Vec<u8>> = find_local(state, ci_idx, n, Some(&mut pos));
     if name_owned.is_some() {
         // C: setobjs2s(L, pos, L->top.p - 1); L->top.p--;
         let val = state.get_at(state.top_idx() - 1).clone();
@@ -742,11 +743,15 @@ fn func_info(ar: &mut LuaDebug, cl: Option<&LuaClosure>) {
         // C: const Proto *p = cl->l.p;
         // TODO(port): access proto via GcRef<LuaProto>
         let proto: &LuaProto = &lua_cl.proto;
-        // C: if (p->source) { ar->source = getstr(p->source); ar->srclen = tsslen(...); }
-        // macros.tsv: getstr(ts) → ts.as_bytes(); tsslen(ts) → ts.len()
-        // TODO(port): LuaProto.source is GcRef<LuaString>; call .as_bytes() properly
-        ar.source = Some(proto.source_bytes().to_vec());
-        ar.srclen = proto.source_bytes().len();
+        // C: if (p->source) use it; otherwise use "=?", which chunkid
+        // renders as "?". Stripped binary chunks commonly have no source.
+        if let Some(src) = proto.source_string() {
+            ar.source = Some(src.as_bytes().to_vec());
+            ar.srclen = src.as_bytes().len();
+        } else {
+            ar.source = Some(b"=?".to_vec());
+            ar.srclen = b"=?".len();
+        }
         ar.linedefined = proto.linedefined;
         ar.lastlinedefined = proto.lastlinedefined;
         // C: ar->what = (ar->linedefined == 0) ? "main" : "Lua";
@@ -1881,6 +1886,10 @@ pub(crate) fn trace_exec(state: &mut LuaState, pc: u32) -> Result<i32, LuaError>
 
     // C: lu_byte mask = L->hookmask;
     let mask = state.hook_mask();
+
+    if !state.allowhook {
+        return Ok(1);
+    }
 
     // C: if (!(mask & (LUA_MASKLINE | LUA_MASKCOUNT)))
     if mask & (LUA_MASKLINE | LUA_MASKCOUNT) == 0 {

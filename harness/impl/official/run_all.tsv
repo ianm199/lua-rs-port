@@ -1,4 +1,4 @@
-all	TIMEOUT	-
+all	PASS	-
 api	PASS	-
 attrib	PASS	-
 big	PASS	-
@@ -10,21 +10,21 @@ calls_isolated_tmp	PASS	-
 closure	PASS	-
 code	PASS	-
 constructs	PASS	-
-coroutine	FAIL	lua: pcall_k failed: Runtime: ...riments/lua-rs-port/reference/lua-c/testes/coroutine.lua:352: asser
-cstack	FAIL	testing stack overflow detection
-db	FAIL	lua: pcall_k failed: Runtime: ...ustExperiments/lua-rs-port/reference/lua-c/testes/db.lua:28: assert
+coroutine	PASS	-
+cstack	PASS	-
+db	PASS	-
 errors	PASS	-
 events	PASS	-
 files-debug	PASS	-
 files	PASS	-
-gc	FAIL	lua: pcall_k failed: Runtime: ...ustExperiments/lua-rs-port/reference/lua-c/testes/gc.lua:469: asser
+gc	PASS	-
 gc_part	PASS	-
 gctmp	PASS	-
-gengc	FAIL	lua: pcall_k failed: Runtime: ...Experiments/lua-rs-port/reference/lua-c/testes/gengc.lua:122: asser
+gengc	PASS	-
 goto	PASS	-
 heavy	PASS	-
 literals	PASS	-
-locals	FAIL	lua: pcall_k failed: Runtime: ...xperiments/lua-rs-port/reference/lua-c/testes/locals.lua:974: asser
+locals	PASS	-
 main	PASS	-
 math	PASS	-
 nextvar	PASS	-

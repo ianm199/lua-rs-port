@@ -170,9 +170,11 @@ pub fn check_stack(state: &mut LuaState, n: i32) -> bool {
     if res {
         // C: if (res && ci->top.p < L->top.p + n) ci->top.p = L->top.p + n;
         let needed_top = state.top_idx() + n as i32;
-        let ci = state.current_call_info_mut();
-        if ci.top.0 < needed_top.0 {
-            ci.top = needed_top;
+        let ci_idx = state.current_ci_idx();
+        if state.get_ci(ci_idx).top.0 < needed_top.0 {
+            let live_top = state.top_idx();
+            state.get_ci_mut(ci_idx).top = needed_top;
+            state.clear_stack_range(live_top, needed_top);
         }
     }
     res
@@ -1681,9 +1683,35 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
             continue;
         }
         did_run = true;
+        let saved_top = state.top_idx();
+        let ci_top = state.current_call_info().top;
+        if saved_top.0 < ci_top.0 {
+            state.clear_stack_range(saved_top, ci_top);
+            state.set_top(ci_top);
+        }
         state.push(gc_fn);
         state.push(LuaValue::Table(tbl));
-        let _ = pcall_k(state, 1, 0, 0, 0, None);
+        let func_idx = state.top_idx() - 2;
+        let _heap_guard = {
+            let g = state.global.borrow();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+        let old_allowhook = state.allowhook;
+        let old_gcstp = state.global_mut().stop_gc_internal();
+        state.allowhook = false;
+        let caller_ci = state.ci;
+        let caller_status = state.get_ci(caller_ci).callstatus;
+        state.get_ci_mut(caller_ci).callstatus = caller_status | crate::state::CIST_FIN;
+        let _ = crate::do_::pcall(
+            state,
+            |s| s.call_no_yield(func_idx, 0),
+            func_idx,
+            0,
+        );
+        state.get_ci_mut(caller_ci).callstatus = caller_status;
+        state.allowhook = old_allowhook;
+        state.global_mut().set_gc_stop_flags(old_gcstp);
+        state.set_top(saved_top);
     }
     // Post-finalizer weak sweep is also obsolete: any weak entries newly
     // exposed by the finalizer pass will be cleared on the NEXT
@@ -1885,19 +1913,15 @@ pub fn pcall_k(
         state.adjust_results(nresults);
         return Ok(LuaStatus::Ok);
     }
-    // Yieldable continuation path: arrange for an interrupted call (yield) to
-    // be resumable. Register the continuation on the active C frame so that
-    // on resume, `finishCcall` → `finishpcallk` → the continuation `k` will
-    // run, then call the inner function. A real error is caught and handled
-    // exactly like a conventional `protected_call_raw`; a yield propagates
-    // up as `LuaError::Yield` so `pcall_fn` can re-throw it to `lua_resume`.
+    // Yieldable continuation path: arrange for an interrupted call (yield or
+    // recoverable error) to be resumable. The call is already protected by
+    // `lua_resume`; real errors must propagate with CIST_YPCALL still set so
+    // `precover` can run `finish_pcallk`.
     //
     // C: lapi.c:1066-1080 — yieldable-pcall branch.
     let ci_idx = state.ci;
     let allow = state.allowhook;
     let saved_errfunc = state.errfunc;
-    let old_ci = state.ci;
-    let old_allowhook = state.allowhook;
     {
         let ci = state.get_ci_mut(ci_idx);
         // C: ci->u.c.k = k; ci->u.c.ctx = ctx;
@@ -1914,9 +1938,7 @@ pub fn pcall_k(
     }
     state.errfunc = err_handler_idx;
     // C: luaD_call(L, c.func, nresults) — yieldable call (NOT call_no_yield).
-    let call_result = crate::do_::raw_run_protected(state, |s| {
-        crate::do_::call(s, func_idx, nresults)
-    });
+    let call_result = crate::do_::call(state, func_idx, nresults);
     match call_result {
         Ok(()) => {
             // C: ci->callstatus &= ~CIST_YPCALL;
@@ -1934,44 +1956,10 @@ pub fn pcall_k(
             Err(crate::state::LuaError::Yield)
         }
         Err(e) => {
-            // Real error: mirror `do_::pcall`'s error path — push the err,
-            // invoke the error handler (if any), then close + seterror +
-            // shrink. Clear the YPCALL prep so the assertion in `poscall`
-            // doesn't fire on the outer C-frame.
-            let mut status = e.to_status();
-            state.push(e.into_value());
-            // C: if (ef != 0 && error_status(s) && s != LUA_ERRERR) ...
-            if err_handler_idx != 0
-                && (status as i32) > (LuaStatus::Yield as i32)
-                && status != LuaStatus::ErrErr
-            {
-                let errfunc_stk = StackIdx(err_handler_idx as u32);
-                let arg = state.get_at(state.top_idx() - 1);
-                state.push(arg);
-                let handler = state.get_at(errfunc_stk);
-                state.set_at(state.top_idx() - 2, handler);
-                status = match state.call_no_yield(state.top_idx() - 2, 1) {
-                    Ok(()) => status,
-                    Err(_) => LuaStatus::ErrErr,
-                };
-            }
-            // C: L->ci = old_ci; L->allowhook = old_allowhooks;
-            state.ci = old_ci;
-            state.allowhook = old_allowhook;
-            // Clear the recovery prep — pcall_fn will catch the Err return and
-            // synthesise (false, msg) for the Lua caller.
-            state.get_ci_mut(ci_idx).callstatus &= !crate::state::CIST_YPCALL;
-            // C: status = luaD_closeprotected(L, old_top, status)
-            let status = crate::do_::close_protected(state, func_idx, status);
-            // C: luaD_seterrorobj(L, status, restorestack(L, old_top))
-            crate::do_::set_error_obj(state, status, func_idx);
-            // C: luaD_shrinkstack(L)
-            crate::do_::shrink_stack(state);
-            // C: L->errfunc = old_errfunc
-            state.errfunc = saved_errfunc;
-            let err_val = state.get_at(func_idx);
-            state.set_top(func_idx);
-            Err(crate::state::LuaError::Runtime(err_val))
+            // Real errors take the same path as C longjmp: they unwind to
+            // lua_resume's protected runner, which calls precover and then
+            // finish_pcallk while this C frame still advertises CIST_YPCALL.
+            Err(e)
         }
     }
 }
@@ -2085,6 +2073,9 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
         }
         // C: case LUA_GCCOLLECT: luaC_fullgc(L, 0);
         GcArgs::Collect => {
+            if !state.allowhook {
+                return 0;
+            }
             // Under D-2, weak-table sweep happens INSIDE the heap's
             // post-mark hook (see GcHandle::full_collect), driven by
             // reachability rather than strong_count. The standalone weak
@@ -2176,6 +2167,9 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                 crate::state::set_debt(&mut *g, debt);
             }
             let cycle_complete = state.gc().incremental_step(work_units);
+            if state.global().is_gen_mode() {
+                state.gc().prune_weak_tables_mark_only();
+            }
             state.global_mut().set_gc_stop_flags(old_stp);
             // Phase-B byte accounting: real allocation isn't tracked, so
             // simulate C-Lua's post-sweep totalbytes drop here. Halving
@@ -2384,6 +2378,7 @@ pub fn new_userdata_uv(
 // is returned as an owned Vec<u8> because Lua upvalue names live in the proto's
 // LuaString table (GC heap), not in static storage.
 fn aux_upvalue(
+    state: &LuaState,
     fi: &LuaValue,
     n: i32,
 ) -> Option<(Vec<u8>, LuaValue)> {
@@ -2406,25 +2401,18 @@ fn aux_upvalue(
                 return None;
             }
             // C: *val = f->upvals[n-1]->v.p;
-            let upval = lcl.upval((n - 1) as usize);
-            let val = match &*upval.slot() {
-                lua_types::UpValState::Closed(v) => v.clone(),
-                lua_types::UpValState::Open { .. } => {
-                    LuaValue::Nil
-                }
-            };
+            let val = state.upvalue_get(lcl, (n - 1) as usize);
             // C: name = p->upvalues[n-1].name;
             // The proto records the static name of each upvalue (e.g. "_ENV"
-            // for the main chunk's environment upvalue). Fall back to an
-            // empty byte-string when the slot exists but has no recorded name
-            // (matches C-Lua's behaviour for anonymous upvalues).
+            // for the main chunk's environment upvalue). Stripped chunks have
+            // no upvalue-name debug info; Lua reports those as "(no name)".
             let name: Vec<u8> = lcl
                 .proto
                 .upvalues
                 .get((n - 1) as usize)
                 .and_then(|ud| ud.name.as_ref())
                 .map(|s| s.as_bytes().to_vec())
-                .unwrap_or_default();
+                .unwrap_or_else(|| b"(no name)".to_vec());
             Some((name, val))
         }
         _ => None,
@@ -2435,7 +2423,7 @@ fn aux_upvalue(
 pub fn get_upvalue(state: &mut LuaState, funcindex: i32, n: i32) -> Option<Vec<u8>> {
     // C: name = aux_upvalue(index2value(L, funcindex), n, &val, NULL);
     let fi = index_to_value(state, funcindex);
-    if let Some((name, val)) = aux_upvalue(&fi, n) {
+    if let Some((name, val)) = aux_upvalue(state, &fi, n) {
         // C: setobj2s(L, L->top.p, val); api_incr_top(L);
         state.push(val);
         Some(name)
@@ -2449,25 +2437,12 @@ pub fn setup_value(state: &mut LuaState, funcindex: i32, n: i32) -> Option<Vec<u
     // C: fi = index2value(L, funcindex); api_checknelems(L, 1);
     let fi = index_to_value(state, funcindex);
     // C: name = aux_upvalue(fi, n, &val, &owner);
-    let (name, _) = aux_upvalue(&fi, n)?;
+    let (name, _) = aux_upvalue(state, &fi, n)?;
     // C: L->top.p--; setobj(L, val, s2v(L->top.p)); luaC_barrier(L, owner, val);
     let new_val = state.pop();
     match &fi {
         LuaValue::Function(LuaClosure::Lua(lcl)) => {
-            let upval = lcl.upval((n - 1) as usize);
-            let open_loc = match &*upval.slot() {
-                lua_types::UpValState::Open { thread_id, idx } => Some((*thread_id, *idx)),
-                lua_types::UpValState::Closed(_) => None,
-            };
-            match open_loc {
-                Some((_thread_id, idx)) => {
-                    // TODO(port): cross-thread open upvalue writes (Phase E coroutines)
-                    // need to dispatch to the owning thread's stack; for now assume the
-                    // current thread.
-                    state.set_at(idx, new_val);
-                }
-                None => upval.set_closed_value(new_val),
-            }
+            state.upvalue_set(lcl, (n - 1) as usize, new_val).ok()?;
         }
         LuaValue::Function(LuaClosure::C(_ccl)) => {
             // TODO(port): C-closure upvalue writes need interior mutability on

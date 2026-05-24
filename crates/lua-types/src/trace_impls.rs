@@ -72,9 +72,22 @@ impl Trace for LuaString {
 /// points at is traced through the owning thread's stack walk.
 impl Trace for UpVal {
     fn trace(&self, m: &mut Marker) {
-        match &*self.state.borrow() {
-            UpValState::Open { .. } => {}
-            UpValState::Closed(v) => v.trace(m),
+        let state = self.state.try_borrow();
+        if let Ok(state) = state {
+            match &*state {
+                UpValState::Open { .. } => {}
+                UpValState::Closed(v) => v.trace(m),
+            }
+            return;
+        }
+
+        // GC runs can happen while an upvalue is mutably borrowed in
+        // coroutine/close machinery. In that case a fallible borrow keeps
+        // the collector from panicking with a hard abort; open upvalues do not
+        // need tracing, and closed values may already be represented by
+        // stronger references while the mutable borrow is active.
+        if let Some(v) = self.try_closed_value() {
+            v.trace(m);
         }
     }
 }

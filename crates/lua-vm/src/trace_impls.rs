@@ -19,6 +19,7 @@
 use lua_gc::{Marker, Trace};
 use crate::state::{LuaState, GlobalState};
 use crate::string::{LuaStringImpl, LuaUserDataImpl};
+use lua_types::{LuaClosure, LuaValue};
 
 /// Phase-B internal richer LuaString. The byte buffer is a Rust `Rc<[u8]>`
 /// (not GC-managed); no fields to mark.
@@ -36,12 +37,45 @@ impl Trace for LuaUserDataImpl {
 impl Trace for LuaState {
     fn trace(&self, m: &mut Marker) {
         // C: `traversethread` in lgc.c walks the live portion of the stack
-        // (`stack..top`) and the open-upvalue list. Slots past `top` are
-        // dead and must not be visited.
-        let top = self.top.0 as usize;
-        let end = top.min(self.stack.len());
-        for slot in &self.stack[..end] {
-            slot.val.trace(m);
+        // and the open-upvalue list. Trace frame-bounded live ranges instead of
+        // every slot up to `ci.top`: that reserved tail can contain stale values
+        // from previous calls. Lua locals that sit above the transient `top` are
+        // added explicitly from debug local metadata.
+        let trace_debug_locals = self.cached_thread_id == self.global.borrow().current_thread_id;
+        let mut ci_idx = Some(self.ci);
+        while let Some(idx) = ci_idx {
+            let ci = &self.call_info[idx.as_usize()];
+            let start = ci.func.0 as usize;
+            let end_idx = if idx == self.ci {
+                self.top.0 as usize
+            } else if let Some(next) = ci.next {
+                self.call_info[next.as_usize()].func.0 as usize
+            } else {
+                self.top.0 as usize
+            };
+            let end = end_idx.min(self.stack.len());
+            if start < end {
+                for slot in &self.stack[start..end] {
+                    slot.val.trace(m);
+                }
+            }
+            if trace_debug_locals && ci.is_lua() {
+                if let Some(slot) = self.stack.get(ci.func.0 as usize) {
+                    if let LuaValue::Function(LuaClosure::Lua(cl)) = &slot.val {
+                        let pc = ci.saved_pc().saturating_sub(1) as i32;
+                        let base = ci.func.0 as usize + 1;
+                        let mut n = 1i32;
+                        while crate::func::get_local_name(&cl.proto, n, pc).is_some() {
+                            let idx = base + (n as usize - 1);
+                            if let Some(local_slot) = self.stack.get(idx) {
+                                local_slot.val.trace(m);
+                            }
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            ci_idx = ci.previous;
         }
 
         for uv in self.openupval.iter() {
@@ -90,14 +124,10 @@ impl Trace for GlobalState {
             }
         }
 
-        // PORT NOTE: `threads` entries are NOT traced unconditionally here.
-        // Tracing every registered coroutine as a root pinned it forever,
-        // breaking finalizer-on-unreachable-coroutine tests (gc.lua line 544).
-        // Instead, `collect_via_heap`'s post-mark hook runs a fixed-point
-        // loop that traces only the threads whose `GcRef<LuaThread>` was
-        // reached from some other root (e.g. a `LuaValue::Thread` on a live
-        // stack, or via `current_thread_id`). Entries whose `GcRef` was
-        // never visited are removed from `threads` after the collect.
+        // Registered coroutines are not roots by registration alone. The
+        // post-mark hook traces stacks only for thread handles that were
+        // reached from a real root, matching Lua's collectable coroutine
+        // semantics.
 
         for slot in self.mt.iter() {
             if let Some(t) = slot {
@@ -131,6 +161,14 @@ impl Trace for GlobalState {
             }
         }
 
+        // Do not trace `gc_tracked_long_strings` here. That vector is memory
+        // accounting metadata, not an owning root. Lua C treats strings as
+        // non-weak only when they are reached through a surviving table entry
+        // (`iscleared` marks them during weak cleanup); our post-mark weak pass
+        // mirrors that by marking string keys/values returned from
+        // `prune_weak_dead`. Rooting the whole accounting list would keep dead
+        // long strings alive and break gc.lua's weak-string-key checks.
+
         // Pending finalizers are NOT traced here — that's what lets the mark
         // phase distinguish "still reachable from the user program" from
         // "only kept alive by the finalizer registry". `collect_via_heap`'s
@@ -155,6 +193,11 @@ impl Trace for GlobalState {
         for stack_snapshot in self.suspended_parent_stacks.iter() {
             for v in stack_snapshot.iter() {
                 v.trace(m);
+            }
+        }
+        for upval_snapshot in self.suspended_parent_open_upvals.iter() {
+            for uv in upval_snapshot.iter() {
+                uv.trace(m);
             }
         }
 

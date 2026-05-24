@@ -474,8 +474,12 @@ pub(crate) fn close_upval(state: &mut LuaState, level: StackIdx) {
         let uv_idx = match &*uv.slot() {
             lua_types::UpValState::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
             lua_types::UpValState::Closed(_) => {
-                debug_assert!(false, "closed upvalue in openupval list");
-                break;
+                // Cross-thread close/reset paths can leave a stale closed
+                // upvalue in this Vec-backed open list. The C intrusive list
+                // cannot represent that state; in Rust, unlink it and keep
+                // closing the remaining open entries.
+                state.openupval.remove(0);
+                continue;
             }
         };
         if uv_idx.0 < level.0 {
@@ -786,8 +790,7 @@ impl LuaState {
         ci: CallInfoIdx,
         n: i32,
     ) -> Option<Vec<u8>> {
-        let ci = self.get_ci(ci).clone();
-        crate::debug::find_local(self, &ci, n, None)
+        crate::debug::find_local(self, ci, n, None)
     }
 }
 

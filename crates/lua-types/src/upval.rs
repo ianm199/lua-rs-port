@@ -102,6 +102,14 @@ impl UpVal {
         *self.closed_value.borrow_mut() = v.clone();
         *self.state.borrow_mut() = UpValState::Closed(v);
     }
+
+    pub fn try_closed_value(&self) -> Option<std::cell::Ref<'_, LuaValue>> {
+        if self.is_closed() {
+            self.closed_value.try_borrow().ok()
+        } else {
+            None
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

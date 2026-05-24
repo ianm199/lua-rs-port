@@ -203,11 +203,48 @@ fn push_global_func_name(
     }
 }
 
+fn push_global_func_name_from_target(
+    state: &mut LuaState,
+    target: &mut LuaState,
+    ar: &mut LuaDebug,
+) -> Result<bool, LuaError> {
+    let top = state.top_count();
+    target.get_info(b"f", ar)?;
+    let func = target.get_at(target.top_idx() - 1);
+    target.pop_n(1);
+    state.push(func);
+    state.get_field(LUA_REGISTRYINDEX, LUA_LOADED_TABLE)?;
+    check_stack(state, 6, Some(b"not enough stack"))?;
+    if find_field(state, top + 1, 2)? {
+        if state.peek_bytes(-1).map_or(false, |n| n.starts_with(b"_G.")) {
+            let suffix = state.peek_bytes(-1)
+                .map(|n| n[3..].to_vec())
+                .unwrap_or_default();
+            state.push_bytes(&suffix)?;
+            state.remove(-2)?;
+        }
+        state.copy_value(-1, top + 1)?;
+        lua_vm::api::set_top(state, top + 1)?;
+        Ok(true)
+    } else {
+        lua_vm::api::set_top(state, top)?;
+        Ok(false)
+    }
+}
+
 /// Push a human-readable name for the function described by `ar`.
 ///
 /// C: `static void pushfuncname(lua_State *L, lua_Debug *ar)`
-fn push_func_name(state: &mut LuaState, ar: &mut LuaDebug) -> Result<(), LuaError> {
-    if push_global_func_name(state, ar)? {
+fn push_func_name(
+    state: &mut LuaState,
+    ar: &mut LuaDebug,
+    global_lookup_target: Option<&mut LuaState>,
+) -> Result<(), LuaError> {
+    let found_global = match global_lookup_target {
+        Some(target) => push_global_func_name_from_target(state, target, ar)?,
+        None => push_global_func_name(state, ar)?,
+    };
+    if found_global {
         // C: lua_pushfstring(L, "function '%s'", lua_tostring(L, -1));
         let name = state.peek_bytes(-1).unwrap_or_else(|| b"?".to_vec());
         state.push_fstring(format_args!("function '{}'", BStr(&name)))?;
@@ -304,9 +341,10 @@ pub fn traceback(
             state.push_fstring(format_args!("\n\t...\t(skipping {} levels)", n))?;
             add_value(state, &mut b)?;
             level += n;
+            limit2show = LEVELS2;
         } else {
             limit2show -= 1;
-            // C: lua_getinfo(L1, "Slnt", &ar);
+            // C: lua_getinfo(L1, "Slnt", &ar).
             match &mut other {
                 Some(o) => o.get_info(b"Slnt", &mut ar)?,
                 None => state.get_info(b"Slnt", &mut ar)?,
@@ -322,7 +360,10 @@ pub fn traceback(
                 state.push_fstring(format_args!("\n\t{}:{}: in ", BStr(&src), line))?;
             }
             add_value(state, &mut b)?;
-            push_func_name(state, &mut ar)?;
+            match &mut other {
+                Some(o) => push_func_name(state, &mut ar, Some(&mut **o))?,
+                None => push_func_name(state, &mut ar, None)?,
+            }
             add_value(state, &mut b)?;
             if ar.istailcall {
                 add_lstring(&mut b, b"\n\t(...tail calls...)");

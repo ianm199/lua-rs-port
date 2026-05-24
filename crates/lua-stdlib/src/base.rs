@@ -890,11 +890,13 @@ pub(crate) fn pcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // C: status = lua_pcallk(L, lua_gettop(L) - 2, LUA_MULTRET, 0, 0, finishpcall);
     // nargs = gettop - 2 (subtract the sentinel `true` and the function).
     let nargs = state.top() as i32 - 2;
+    let yieldable = state.is_yieldable();
     let ok = match state.protected_call_k(nargs, LUA_MULTRET, 0, 0, Some(finish_pcall_k)) {
         Ok(()) => true,
         // `LuaError::Yield` must bubble up to `lua_resume` so the continuation
         // saved on this frame can be invoked on resume.
         Err(LuaError::Yield) => return Err(LuaError::Yield),
+        Err(e) if yieldable => return Err(e),
         Err(e) => {
             state.push(e.into_value());
             false
@@ -932,9 +934,11 @@ pub(crate) fn xpcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.rotate(3, 2);
     // C: status = lua_pcallk(L, n - 2, LUA_MULTRET, 2, 2, finishpcall);
     // errfunc is at stack index 2; extra=2 means finishpcall skips 2 values.
+    let yieldable = state.is_yieldable();
     let ok = match state.protected_call_k(n - 2, LUA_MULTRET, 2, 2, Some(finish_pcall_k)) {
         Ok(()) => true,
         Err(LuaError::Yield) => return Err(LuaError::Yield),
+        Err(e) if yieldable => return Err(e),
         Err(e) => {
             state.push(e.into_value());
             false

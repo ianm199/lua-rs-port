@@ -1345,11 +1345,10 @@ impl LuaStateStubExt for LuaState {
         lua_vm::debug::get_hook_mask(self) != 0
     }
 
-    /// The port has no internal Lua-managed hook trampoline yet — any
-    /// installed hook is treated as external. Mirrors what `debug.gethook`
-    /// reports when the user installs their own `lua_Hook`.
+    /// Hooks installed through the debug library use the Lua hook trampoline
+    /// and store the real Lua callback in registry[HOOKKEY].
     fn hook_is_internal_lua_hook(&mut self) -> bool {
-        false
+        lua_vm::debug::get_hook_mask(self) != 0
     }
 
     fn set_c_stack_limit(&mut self, limit: i32) -> Result<i32, LuaError> {

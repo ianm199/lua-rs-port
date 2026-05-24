@@ -724,7 +724,13 @@ fn cg_posfix_fold(
     e2: &mut ExprDesc,
     line: i32,
 ) -> Result<(), LuaError> {
-    cg_discharge_vars(fs, line, e2)?;
+    // Lua C records line info at emit time from `ls->lastline`. By the time
+    // postfix code runs, the RHS has already been parsed, so discharging RHS
+    // indexed expressions must use the current token line, not the saved
+    // operator line. The operator line is still used below for the binop/MMBIN
+    // instructions themselves.
+    let rhs_line = fs.last_token_line;
+    cg_discharge_vars(fs, rhs_line, e2)?;
 
     let promote = |k: ExprKind, u: &ExprPayload| -> Option<f64> {
         match k {

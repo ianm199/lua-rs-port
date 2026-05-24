@@ -1,6 +1,6 @@
 # Official-test failure investigations
 
-Living document tracking the deep-dive into each failing test in `harness/run_official_all.sh`'s 44-test suite. Last honest measurement (2026-05-24): **37/44 (84%)**.
+Living document tracking the deep-dive into each failing test in `harness/run_official_all.sh`'s 44-test suite. Latest completed all-suite measurement (2026-05-24, `RUSTFLAGS='-Awarnings' TEST_TIMEOUT_S=90 ./harness/run_official_all.sh`): **44/44 (100%)** — 44 pass, 0 fail, 0 timeout.
 
 Each section records: what the test exercises, the precise failure, upstream (lua-c) data flow for the same source, our current behavior, the divergence, attempted fixes, and what's still required.
 
@@ -18,9 +18,30 @@ Each section records: what the test exercises, the precise failure, upstream (lu
 
 ---
 
-## `db.lua` — line-hook attribution
+## `db.lua` — debug library, hooks, coroutine traceback, finalizers
 
-**Status**: PARTIAL — db.lua internally progresses (simple test() cases pass) but the gap-test loop at line 207 still fails.
+**Status**: FIXED — `RUSTFLAGS='-Awarnings' TEST_TIMEOUT_S=45 ./harness/run_official_test.sh reference/lua-c/testes/db.lua` passes, and `db.lua` passes through the `all.lua` bytecode dump/load path.
+
+### Resolution summary
+
+The final successful path was not one bug; it was a layered official-test ladder:
+
+1. Fixed stale line attribution for the large-gap hook traces by using the RHS/current token line where the bytecode emission had been pinned to an earlier operator line.
+2. Fixed debug local/upvalue semantics: varargs, non-current temporaries, open upvalue access, count-hook multi-return preservation, and cross-thread coroutine debug APIs.
+3. Reduced the heap abort to `harness/repro/db_hook_getlocal_coroutine_traceback_repro.lua`, then used ASan. The visible crash was traceback string allocation, but the real UAF was a parent-thread open `UpVal` swept during `coroutine.resume`. The fix roots suspended parent open-upvalue handles alongside the existing suspended parent stack-value snapshots.
+4. Fixed finalizer debug naming: finalizer calls temporarily mark the caller frame with `CIST_FIN`, so `debug.getinfo(1)` inside `__gc` reports `namewhat="metamethod"` and `name="__gc"`.
+5. Fixed traceback truncation: after emitting the `"... (skipping N levels)"` line, the traceback builder must switch from the first display window to `LEVELS2`; otherwise deep tracebacks can loop.
+6. Fixed stripped debug-info behavior: absent Lua upvalue names report `"(no name)"`, and absent proto source reports as `"=?"`, whose short source is `"?"`.
+7. Fixed the `all.lua` dump/load-only failure: `LuaValue::full_type_tag()` must write variant tags, not base tags. Otherwise `string.dump` writes floats as integer constants and `2^24 - 1` reloads as the raw f64 bit pattern.
+8. Fixed the final `all.lua` weak-table panic by unlinking weak-pruned hash nodes from table collision chains. Clearing a hash key to `nil` without repairing `next` offsets makes a chained node look reusable and can also make `next(t, k)` repeatedly match stale equal long strings.
+
+Reusable instructions and the full case study are saved in `docs/DEBUGGING_STRATEGIES.md` under "Official-Test Crash/Hang Ladder".
+
+### Historical line-hook investigation notes
+
+The notes below are retained because they explain the earlier line-attribution
+work that became one layer of the final `db.lua` fix. Some phrasing refers to
+the state before the later GC/finalizer/traceback fixes.
 
 ### What it tests
 
@@ -30,7 +51,7 @@ Each section records: what the test exercises, the precise failure, upstream (lu
 
 `db.lua:28` — `assert(l == line, "wrong trace!!")` inside the test() helper.
 
-The helper is called many times; the failure is whichever test() invocation hits a trace mismatch first. After our surgical fixes, only the **gap-test loop at line 207** still fails. That loop generates 256 test() invocations with `\n×i / \n×j` injections inside `a = b[1] + b[1]` to stress line attribution across large source gaps.
+The helper is called many times; the failure was whichever test() invocation hit a trace mismatch first. Before the later `db.lua` fixes, only the **gap-test loop at line 207** still failed. That loop generates 256 test() invocations with `\n×i / \n×j` injections inside `a = b[1] + b[1]` to stress line attribution across large source gaps.
 
 ### Root cause (the systemic finding)
 
@@ -83,7 +104,7 @@ These three flipped these patterns to pass:
 
 All simple test() cases (lines 124–188 in db.lua) pass standalone.
 
-### What's still required
+### What was still required at that point
 
 The gap-test loop needs lua-c's dynamic-lastline-at-emit behavior. Either:
 
@@ -99,15 +120,18 @@ The gap-test loop needs lua-c's dynamic-lastline-at-emit behavior. Either:
 
 ## `gc.lua:469` — weak-table-of-long-strings sweep
 
-**Status**: OPEN — collectgarbage("count") returns honest values; need to find what gc.lua's preconditions look like at the failing assertion.
+**Status**: FIXED — `RUSTFLAGS='-Awarnings' TEST_TIMEOUT_S=60 ./harness/run_official_test.sh reference/lua-c/testes/gc.lua` passes.
 
 ### What it tests
 
 Lua 5.4's incremental GC handling of weak tables (`__mode = "kv"`) holding long-string keys mapped to mixed values (numbers, tables). After collect, only entries with non-collectable values should survive.
 
-### Failure point
+### Failure points
 
-`gc.lua:469` — `assert(collectgarbage("count") >= m + 2^12 and collectgarbage("count") < m + 2^13)` — expects post-collect count to be between 4 MB and 8 MB above baseline.
+This block exposed two distinct bugs:
+
+- `gc.lua:465` expects post-collect memory to keep exactly one 4 MB long-string key alive.
+- `gc.lua:469` expects `next(a, k) == nil` after the surviving long-string key is returned.
 
 ### Standalone repro behaves correctly
 
@@ -130,29 +154,46 @@ after collect: diff = 4096.68 KB (passes assert 4096 ≤ ... < 8192)
 surviving entries in a: { key=4194304-char string, val=25 }
 ```
 
-**Standalone behavior is correct**. So gc.lua's failure must come from accumulated state from earlier tests in the file — `m = collectgarbage("count")` at the test's start might be a value where `+2^13` overflows our actual heap delta.
+### Resolution
 
-### Next investigation step (UPDATED)
+The final fix was table-shape correctness, not memory accounting:
 
-**Surprise: gc.lua's actual failure mode is TIMEOUT, not the assertion.** Running gc.lua with even a 5-minute budget doesn't reach line 469. The instrumented probe printed `long strings → steps → steps (2)` (gc.lua:183) and then never advanced. So our `gc` failures in the suite are happening during gc.lua's GC-torture-test loops (`steps (2)` at line 183+), and the "line 469 assertion failed" we see in some runs is from variance when the loops happen to complete fast enough.
+- Weak-table pruning must clear entries whose weak key or weak value was not marked.
+- If a hash node is removed, its collision chain must be repaired. A node with a stale `next` offset cannot simply be marked free by setting `key = nil`.
+- Removing a chain node now either patches the predecessor's `next`, or moves the successor into the removed head slot and rewrites the successor's relative `next` offset.
+- This also prevents `next(a, k)` from re-finding a stale equal long-string key and returning the same live entry again.
 
-The underlying issue is GC performance on the "steps (2)" test: gc.lua executes ~1000 `collectgarbage("step", N)` calls and expects each to do bounded work. Our incremental-step implementation is doing far more work per step than reference's, blowing the time budget.
+### Verification
 
-**Next**: profile gc.lua up to line 200 (the steps loop), find what's slow. May be the unpause-the-heap fix from this session making auto-collect fire too aggressively. Park for now — needs perf investigation, not a correctness fix.
+The focused weak-table toy now returns only the `"a"` long-string key, `next(a, k)` returns nil, lookup of the cleared `"b"` key returns nil, and the final collect empties the table.
+
+`gc.lua` passes standalone and inside `all.lua`.
 
 ---
 
-## `gengc.lua:122` — generational GC
+## `gengc.lua:122` — generational weak-table cleanup
 
-**Status**: PARKED — needs real generational-GC implementation, out of scope for this session.
+**Status**: FIXED — `RUSTFLAGS='-Awarnings' TEST_TIMEOUT_S=60 ./harness/run_official_test.sh reference/lua-c/testes/gengc.lua` passes.
 
-The test calls `collectgarbage("step", 0)` after entering generational mode and asserts `T.gcage(t) == "old"` etc. Our `change_mode(Generational)` is essentially a no-op; we don't have a separate young/old chain or barrier-back mechanism. ~500–1000 LOC of GC work.
+### Root cause
+
+`collectgarbage("generational")` followed by explicit `collectgarbage("step", 0)` must still perform the atomic weak-table cleanup that removes all-weak entries whose targets were not marked. Our generational mode does not model object ages yet, and the initial shortcut of doing a full collect on every gen step was too aggressive: it collected suspended coroutine/open-upvalue state that should survive.
+
+### Fix landed
+
+Added a mark-only weak cleanup for generational steps:
+
+- `lua-gc::Heap::mark_only_with_post_mark` traces roots and runs the post-mark hook without sweeping objects.
+- `GcHandle::prune_weak_tables_mark_only` snapshots weak tables, traces reachable threads, converges ephemerons, and prunes dead weak entries.
+- `collectgarbage("step", ...)` invokes this cleanup in generational mode after the incremental step.
+
+This gives `gengc.lua` the weak-table semantics it needs without pretending we have a complete age/barrier implementation.
 
 ---
 
 ## `coroutine.lua:319` — xpcall + yield + error
 
-**Status**: FIXED for this specific test (coroutine.lua now fails at line 352, a different per-coroutine-hook test).
+**Status**: FIXED — `coroutine.lua` now passes in the full official sweep.
 
 ### Root cause
 
@@ -168,15 +209,15 @@ Our Rust error propagation uses `Result::Err` and has no equivalent chokepoint a
 
 Standalone repro `/tmp/coro_repro.lua` returns `r=false, msg=240` (was `msg=table`). errors.lua's xpcall-based `checkerror` cases unaffected (verified via Tier 2 regression check).
 
-### Next failure surface in coroutine.lua
+### Follow-up result
 
-Line 352: `assert(#trace == #correcttrace)` — the per-coroutine hook test (`debug.sethook(co, fn, "clr")`). Our `debug_lib::set_hook` has a TODO for the `!target_is_self` path — we don't install hooks on a different coroutine's state. Naive fix (borrow_mut the target's `Rc<RefCell<LuaState>>` and install) was attempted but introduces borrow conflicts when the target is later resumed and its own `coroutine.status` check tries to borrow. Proper fix likely needs the hook closure stored in `GlobalState` keyed by `thread_id`, looked up at hook-fire time. ~100–200 LOC of careful refactoring.
+The later per-coroutine hook failure also cleared after the coroutine close/recovery fixes below; `coroutine.lua` passes as of the 40/44 run.
 
 ---
 
 ## `locals.lua:974` — `<close>` across coroutine exit paths
 
-**Status**: DIAGNOSED — close-order is correct without yields; `coroutine.yield` from inside `__close` is the failure mode. Park for deep fix.
+**Status**: FIXED — `locals.lua` passes standalone and in the full 44-test sweep.
 
 ### What it tests
 
@@ -211,39 +252,54 @@ z close: msg=30, err=10   <- z fires last with the updated error
 final: false, 30
 ```
 
-### What breaks
+### What broke
 
 With yields inside __close (the actual test), our impl reports z firing FIRST (wrong order) on the third foo case (`pcall(foo, 10)`). The first `co()` call after entering this scenario returns `false, "...assertion failed!"` where the failing assert is z's `assert(msg == nil or msg == err + 20)` — z saw `msg=10` (the original error), not `msg=30` (the y-substituted error). This means z fired before y had a chance to run and substitute.
 
-### Root cause (hypothesis)
+### Actual root cause
 
-When `__close` yields, our impl pauses x's close mid-execution. On resume, control should resume INSIDE x's close (just past the yield), let it return, then proceed to y. Instead it seems the close-list is re-walked from the top after resume, hitting z (or whatever is currently at the top of `tbclist`). The yield interrupts the close-list walk and our recovery path doesn't preserve "which entry is mid-flight."
+The close-list cursor hypothesis was wrong. Lua C does not need an extra cursor: `luaF_close` pops each `tbclist` entry before calling its `__close`, and that popped list is the continuation state.
 
-### Fix shape
+The real divergence was in the yieldable `lua_pcallk` path. Our Rust `pcall_k` wrapped the yieldable call in `raw_run_protected`, caught body errors locally, cleared `CIST_YPCALL`, and ran `close_protected` as a conventional non-yieldable pcall. Lua C does the opposite: yieldable `lua_pcallk` calls `luaD_call` directly because `lua_resume` is already the protected boundary. Real errors must unwind to `precover`, with `CIST_YPCALL` still set, so `finishpcallk` can close pending `<close>` variables yieldably and preserve close-error substitution.
 
-The `close` function in `crates/lua-vm/src/func.rs:530` is a simple `while state.tbclist.last() >= level { pop; prep_call_close_mth(...) }` loop. If `prep_call_close_mth` yields, the iteration state is lost. lua-c handles this via `CIST_CLSRET` CallInfo flag — the resumed __close call has CIST_CLSRET set, signalling to poscall that this is a close-method return and the list-walk should continue from where it left off (not be restarted).
+### Fix landed
 
-Look for our handling of CIST_CLSRET (we have the constant; we may not handle it correctly in the yield-resume path). Likely fix: store the "currently being closed" tbc index on the CallInfo, restore on resume, continue from there instead of re-popping.
+- `crates/lua-vm/src/api.rs`: yieldable `pcall_k` now calls `do_::call` directly and leaves `CIST_YPCALL` installed on real errors.
+- `crates/lua-stdlib/src/base.rs`: `pcall`/`xpcall` now rethrow yieldable protected-call errors instead of converting them to `(false, err)` at the wrong stack boundary.
+- `crates/lua-stdlib/src/coro_lib.rs`: `coroutine.wrap` now closes an errored wrapped coroutine via the existing reset/close path, matching `luaB_auxwrap`'s `lua_closethread`.
+- `crates/lua-vm/src/func.rs`: stale closed upvalues in the Rust Vec-backed open-upvalue list are unlinked during close instead of panicking.
 
-Estimated effort: 100-200 LOC, plus a chunk of yield-from-C state-machine work. Higher risk than coroutine.lua's fix because the bug spans VM + close-list + yield interaction.
-
----
+Verification:
+- `harness/repro/locals_close_yield_repro.lua` covers the exact 12-resume close-yield sequence plus wrapped-coroutine close-on-error.
+- Focused verification for the close/yield path passed; the final full sweep also passes `locals`.
 
 ---
 
 ## `cstack` — Rust stack overflow during 1000-coroutine close cascade
 
-**Status**: PARTIAL — chain cascade bound via `co_close` `inc_c_stack` works standalone; cstack.lua still SIGSEGVs due to a tracegc `__gc` interaction with the cascade.
+**Status**: FIXED — `cstack.lua` passes standalone and in the full 44-test sweep.
 
-`coro_lib.rs:486` `co_close` now calls `inc_c_stack` so cascading closes hit `LUAI_MAXCCALLS` (200) and return `"C stack overflow"` cleanly. Verified standalone with a 1000-coroutine chain. But `cstack.lua` enables `tracegc` (a `__gc` finalizer that writes `.` to stderr and re-marks the object for next-cycle finalization) which somehow interacts badly with the close cascade — SIGSEGV before the bound trips.
+`coro_lib.rs` `co_close` now bounds Rust stack via `inc_c_stack`, and the wrapped-coroutine/error-close fixes addressed the earlier cascade instability.
 
-Hypothesis: an automatic GC fires during the cascade (now that the heap auto-collector is unpaused), and the `__gc` invocation enters Rust code that recurses through the active coroutine chain.
+---
+
+## `calls`, `calls_head313`, `calls_isolated_tmp` — call semantics timeout bucket
+
+**Status**: FIXED — all three pass in the full 44-test sweep.
+
+The timeout bucket disappeared after the coroutine/error-recovery, GC, and weak-table fixes; no separate call-semantics patch was needed for these targets.
 
 ---
 
 ## `all` — meta-runner
 
-**Status**: AUTO — wraps every other test, fails because subtests fail. Will pass automatically when the other 6 pass.
+**Status**: FIXED — `all.lua` passes in the aggregate.
+
+The last `all.lua`-only blockers were:
+
+- `string.dump`/`load` numeric corruption from writing base type tags instead of variant tags.
+- A weak-table hash-chain panic after `db.lua` advanced through stripped-debug-info checks.
+- A `gc.lua:469` repeat-entry failure from weak-pruned long-string tombstones, fixed by unlinking removed hash nodes.
 
 ---
 
@@ -265,13 +321,23 @@ Estimated effort: 4–6 hours of careful work + extensive testing.
 
 ---
 
-## Honest progress today
+## Latest full-sweep checkpoint
 
-Started the session at **38/44** (variance-inflated). Ended at **37/44** (deterministic). Net pass-count unchanged but:
+Final 2026-05-24 sweep is **44/44**:
 
-- `gc_count` / `gc_count_b` now report real `heap.bytes_used` plus tracked long-string bytes
-- `co_close` now bounds Rust stack via `inc_c_stack` (cascade works standalone)
-- Three lua-c-faithful line-attribution fixes (`adjust_assign`, `leave_block` OP_CLOSE, while back-jump)
-- Crystallized understanding of the lua-c vs lua-rs line-attribution divergence (this document)
+- 44 pass.
+- 0 fail.
+- 0 timeout.
+- Command: `RUSTFLAGS='-Awarnings' TEST_TIMEOUT_S=90 ./harness/run_official_all.sh`.
+- Evidence: `harness/impl/official/run_all.tsv`.
 
-The gap-test fix for db.lua is a known structural change away. The remaining failures are now well-characterized.
+## Earlier progress checkpoint
+
+Started the session at **37/44** deterministic. Ended at **40/44**:
+
+- `locals.lua` passes.
+- `coroutine.lua` passes.
+- `cstack.lua` passes.
+- Full sweep: 40 pass, 3 fail (`all`, `db`, `gengc`), 1 timeout (`gc`).
+
+Later work took the suite from 40/44 to 44/44 by fixing `db`, `gc`, `gengc`, and the `all.lua` dump/load path.
