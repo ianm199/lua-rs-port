@@ -14,3 +14,7 @@
 {"ts": "2026-05-23T15:05:30", "suite": "official", "pass": 0, "fail": 0, "other": 0, "total": 0, "tsv_mtime": "2026-05-23T15:05:22"}
 {"ts": "2026-05-23T15:07:06", "suite": "official", "pass": 16, "fail": 3, "other": 0, "total": 19, "tsv_mtime": "2026-05-23T15:07:02"}
 {"ts": "2026-05-23T15:09:05", "suite": "official", "pass": 18, "fail": 3, "other": 1, "total": 22, "tsv_mtime": "2026-05-23T15:07:11"}
+{"ts": "2026-05-24T00:00:26", "suite": "official", "pass": 36, "fail": 8, "other": 0, "total": 44, "tsv_mtime": "2026-05-24T00:00:05"}
+{"ts": "2026-05-24T00:11:53", "suite": "official", "pass": 37, "fail": 5, "other": 2, "total": 44, "tsv_mtime": "2026-05-24T00:06:10"}
+{"ts": "2026-05-24T00:14:25", "suite": "official", "pass": 15, "fail": 4, "other": 0, "total": 19, "tsv_mtime": "2026-05-24T00:14:19"}
+{"ts": "2026-05-24T10:17:27", "suite": "official", "pass": 37, "fail": 6, "other": 1, "total": 44, "tsv_mtime": "2026-05-24T10:12:32"}

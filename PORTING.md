@@ -8,6 +8,51 @@ it compile crate-by-crate. **Phase C+** makes the corresponding tests pass.
 If you are an agent: every rule below is binding. **Flag and TODO over guess.**
 Hooks enforce the hard rules; you will be stopped if you violate them.
 
+## 0. Literal first, idiomatic later
+
+**The default is the most literal Rust translation that compiles within
+the rules of this document.** Idiomatic restructuring is a *later phase*,
+not Phase A's job. If you're tempted to "improve" the C while porting it,
+you are doing the wrong job. Literal-first preserves the oracle's signal:
+when a literal port passes a test, the behavior is correct. When an
+idiomatic port passes, you have to trust that none of the "improvements"
+silently changed semantics — and most of them did, you just don't know
+which.
+
+### 0.1 Preservation rules
+
+- **Control flow.** `for (;;)` → `loop { }`, not an iterator chain. A
+  `switch` → `match` with the same arms in the same order. A `goto retry`
+  → labelled `loop` / `continue 'retry`, not a recursive call or a
+  restructured state machine. `while (cond)` stays `while cond`.
+- **Arithmetic.** Use `wrapping_add` / `wrapping_sub` / explicit `as`
+  casts where C relied on wrap or implicit narrowing. Do not "fix"
+  overflow paths the C code depended on.
+- **Function decomposition.** One C function = one Rust function, same
+  arguments in the same order. No inlining a helper into its caller; no
+  extracting a helper out of a large function. The Rust file should have
+  the same `fn` count as the C file's top-level functions (± merged
+  headers).
+- **Order of operations.** Statements stay in C order. Local declarations
+  stay at the C declaration site, even if Rust idiom would defer them.
+- **Diff-size smell test.** If your `.rs` has more non-blank, non-trailer
+  lines than the source `.c`, you've gone idiomatic. Revert the expansion.
+
+### 0.2 Sanctioned idiomatic departures
+
+Idiomatic departures are permitted *only* where the literal form won't
+compile or violates §2's load-bearing design decisions. Those eight, plus
+the per-construct mappings in §3–§4, are the entire list. If you want a
+departure not on those lists, emit `// TODO(port): considered idiomatic
+rewrite of <X> because <why>` and stop. A human sanctions it.
+
+### 0.3 Minimal-diff rule (Compiler-fixer / Test-fixer)
+
+When modifying an existing `.rs`, the change must be the smallest one
+that resolves the failure. No opportunistic refactoring, no "while I'm
+here" cleanups, no renaming for clarity. If the file is bad, emit
+`// TODO(port)` and stop — do not rewrite.
+
 ## 1. Ground rules
 
 - **File location.** For a C file `src/lparser.c`, the Rust port lives at
@@ -30,10 +75,11 @@ Hooks enforce the hard rules; you will be stopped if you violate them.
   `unsafe` block. A human raises the ceiling.
 - **`anyhow`, `Box<dyn Error>`, `String` error messages — banned for Lua errors.**
   Use `LuaError`. See §6.
-- **Match the C file's logical structure, not its line-by-line shape.** We
-  are not Bun. Renaming for idiom, regrouping, and splitting are encouraged
-  where they clarify intent. Reviewers diff *behavior* (via the oracle), not
-  diff text.
+- **Match the C file's structure.** See §0 for preservation rules.
+  Renaming per §7 (prefix-stripping) is required; other restructuring is
+  permitted only when literal won't compile or §2's load-bearing decisions
+  force it. A passing oracle is necessary but not sufficient — reviewers
+  also compare shape and line count against the C source.
 - **Don't guess. Flag.** Use `TODO(port)`, `PORT NOTE`, `PERF(port)`. See §11.
 - **Output trailer required.** Every `.rs` you produce ends with a `PORT STATUS`
   block. See §12. A missing trailer fails the `trailer-required.sh` hook.

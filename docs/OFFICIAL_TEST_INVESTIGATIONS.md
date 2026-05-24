@@ -1,0 +1,223 @@
+# Official-test failure investigations
+
+Living document tracking the deep-dive into each failing test in `harness/run_official_all.sh`'s 44-test suite. Last honest measurement (2026-05-24): **37/44 (84%)**.
+
+Each section records: what the test exercises, the precise failure, upstream (lua-c) data flow for the same source, our current behavior, the divergence, attempted fixes, and what's still required.
+
+---
+
+## Tracking convention
+
+| status | meaning |
+|---|---|
+| **OPEN** | actively investigating |
+| **DIAGNOSED** | root cause understood; fix not yet attempted |
+| **PARTIAL** | some fixes landed but test still fails |
+| **FIXED** | test passes in HEAD |
+| **PARKED** | known-cause but out of scope (e.g. needs a different subsystem) |
+
+---
+
+## `db.lua` — line-hook attribution
+
+**Status**: PARTIAL — db.lua internally progresses (simple test() cases pass) but the gap-test loop at line 207 still fails.
+
+### What it tests
+
+`debug.sethook(f, "l")` fires `f` on every line executed. The test compares the fired-line sequence against a hand-written expected list. Each test() invocation runs a small Lua chunk and asserts the trace matches.
+
+### Failure point
+
+`db.lua:28` — `assert(l == line, "wrong trace!!")` inside the test() helper.
+
+The helper is called many times; the failure is whichever test() invocation hits a trace mismatch first. After our surgical fixes, only the **gap-test loop at line 207** still fails. That loop generates 256 test() invocations with `\n×i / \n×j` injections inside `a = b[1] + b[1]` to stress line attribution across large source gaps.
+
+### Root cause (the systemic finding)
+
+**lua-c attributes every instruction's line via `savelineinfo(fs, f, fs->ls->lastline)` at emit time**, called from `luaK_code` (lcode.c:388). The line is read DYNAMICALLY at the moment the instruction is added to the proto.
+
+**Our parser threads a `line` parameter through 30+ codegen call sites**, captured at various points before the actual emission. For simple statements this matches lua-c. For nested expressions where emit happens many tokens after capture, the saved `line` is stale.
+
+### lua-c data flow for `a = b[1] + b[1]`
+
+`luac -l -l` dump:
+```
+1 [1] VARARGPREP   0       ; line 1
+2 [1] NEWTABLE     0 0 1   ; line 1
+3 [1] EXTRAARG     0       ; line 1
+4 [1] LOADI        1 10    ; line 1
+5 [1] SETLIST      0 1 0   ; line 1
+6 [3] GETI         1 0 1   ; line 3 — first b[1]
+7 [4] GETI         2 0 1   ; line 4 — second b[1]
+8 [3] ADD          1 1 2   ; line 3 — operator
+9 [3] MMBIN        1 2 6   ; line 3
+10 [4] SETTABUP    0 0 1   ; line 4 — store back to a
+11 [5] LOADI       0 4     ; line 5 — b = 4
+12 [5] RETURN      1 1 1   ; line 5
+```
+
+Key dynamic behavior:
+- The first GETI is emitted AFTER `+` is consumed → `lastline = 3` → instruction at line 3
+- The second GETI is emitted AFTER second `b[1]` is parsed → `lastline = 4` → instruction at line 4
+- ADD/MMBIN emit at current `lastline = 4`, but lua-c calls `luaK_fixline(fs, line)` after emission to OVERRIDE the line to the saved operator line (3)
+- SETTABUP emits at current `lastline = 4`
+
+### Our data flow
+
+We capture `let line = ls.linenumber;` BEFORE `lex_next` consumes the operator → `line = 3` (operator line). This is correct for the operator-line capture but is then passed all the way down to `cg_discharge_vars` for both operands.
+
+Result: our second GETI also emits at line 3, missing the line-4 hook fire.
+
+### Surgical fixes that landed
+
+| commit | site | from | to |
+|---|---|---|---|
+| `deacc5e` | `adjust_assign` (lib.rs:2443) | `linenumber` | `lastline` |
+| `deacc5e` | `leave_block` OP_CLOSE (lib.rs:2898) | `linenumber` | `lastline` |
+| `deacc5e` | `whilestat` back-jump (lib.rs:3895) | `linenumber` | `lastline` |
+
+These three flipped these patterns to pass:
+- `local a` (with no initializer) now fires hook for line 1
+- While-loop back-jump no longer fires the END line on every iteration
+- `do...end` blocks attribute their OP_CLOSE to the END's line, not the next-statement's line
+
+All simple test() cases (lines 124–188 in db.lua) pass standalone.
+
+### What's still required
+
+The gap-test loop needs lua-c's dynamic-lastline-at-emit behavior. Either:
+
+1. **Structural emit_inst refactor**: change `emit_inst(fs, line, inst)` to ignore the threaded `line` and read `fs.last_token_line` (mirrored from `ls.lastline` on every `sync_from_lex`). Plus add a `luaK_fixline`-equivalent to override the line of just-emitted instructions for binop tag-method line attribution.
+2. **Per-site audit**: walk every `cg_discharge_vars` / `cg_exp_to_*` callsite and change it to use the *current* `ls.lastline` instead of the threaded `line`. ~30 sites.
+
+### Attempted but reverted
+
+- **Bulk `linenumber → lastline` replace (2026-05-24)**: regressed `errors.lua` from PASS→FAIL on `lineerror` cases that depend on operator-line capture for binop tag-method attribution. Specifically the binop site in `subexpr` (lib.rs:3645) needs `linenumber` (operator's line, captured BEFORE consuming) — bulk replace got the line of the LEFT OPERAND instead.
+- **Add `fs.last_token_line` field + read from `emit_inst`**: introduced a deep crash (`internal: execute called on non-Lua frame`) in db.lua. Not yet diagnosed; probably caused a wrong abslineinfo offset that mis-set CallInfo state somewhere.
+
+---
+
+## `gc.lua:469` — weak-table-of-long-strings sweep
+
+**Status**: OPEN — collectgarbage("count") returns honest values; need to find what gc.lua's preconditions look like at the failing assertion.
+
+### What it tests
+
+Lua 5.4's incremental GC handling of weak tables (`__mode = "kv"`) holding long-string keys mapped to mixed values (numbers, tables). After collect, only entries with non-collectable values should survive.
+
+### Failure point
+
+`gc.lua:469` — `assert(collectgarbage("count") >= m + 2^12 and collectgarbage("count") < m + 2^13)` — expects post-collect count to be between 4 MB and 8 MB above baseline.
+
+### Standalone repro behaves correctly
+
+```lua
+local m = collectgarbage("count")              -- ≈ 0.3 KB
+local a = setmetatable({}, {__mode = "kv"})
+a[string.rep("a", 2^22)] = 25                  -- long string -> number
+a[string.rep("b", 2^22)] = {}                  -- long string -> table
+a[{}] = 14                                      -- table -> number
+-- check post-insert count > m + 8192 ✓ (8192.8 KB)
+collectgarbage()
+-- check post-collect 4096 ≤ count < 8192 ✓ (4096.7 KB)
+```
+
+Our output:
+```
+baseline m = 0.3017578125 KB
+after insert: diff = 8192.81 KB (passes assert > 8192)
+after collect: diff = 4096.68 KB (passes assert 4096 ≤ ... < 8192)
+surviving entries in a: { key=4194304-char string, val=25 }
+```
+
+**Standalone behavior is correct**. So gc.lua's failure must come from accumulated state from earlier tests in the file — `m = collectgarbage("count")` at the test's start might be a value where `+2^13` overflows our actual heap delta.
+
+### Next investigation step (UPDATED)
+
+**Surprise: gc.lua's actual failure mode is TIMEOUT, not the assertion.** Running gc.lua with even a 5-minute budget doesn't reach line 469. The instrumented probe printed `long strings → steps → steps (2)` (gc.lua:183) and then never advanced. So our `gc` failures in the suite are happening during gc.lua's GC-torture-test loops (`steps (2)` at line 183+), and the "line 469 assertion failed" we see in some runs is from variance when the loops happen to complete fast enough.
+
+The underlying issue is GC performance on the "steps (2)" test: gc.lua executes ~1000 `collectgarbage("step", N)` calls and expects each to do bounded work. Our incremental-step implementation is doing far more work per step than reference's, blowing the time budget.
+
+**Next**: profile gc.lua up to line 200 (the steps loop), find what's slow. May be the unpause-the-heap fix from this session making auto-collect fire too aggressively. Park for now — needs perf investigation, not a correctness fix.
+
+---
+
+## `gengc.lua:122` — generational GC
+
+**Status**: PARKED — needs real generational-GC implementation, out of scope for this session.
+
+The test calls `collectgarbage("step", 0)` after entering generational mode and asserts `T.gcage(t) == "old"` etc. Our `change_mode(Generational)` is essentially a no-op; we don't have a separate young/old chain or barrier-back mechanism. ~500–1000 LOC of GC work.
+
+---
+
+## `coroutine.lua:319` — xpcall + yield + error
+
+**Status**: OPEN — not yet investigated this session.
+
+```lua
+local function f (a, b) a = coroutine.yield(a); error{a + b} end
+local function g (x) return x[1] * 2 end
+co = coroutine.wrap(function ()
+       coroutine.yield(xpcall(f, g, 10, 20))
+     end)
+assert(co() == 10)
+local r, msg = co(100)
+assert(not r and msg == 240)  -- ← fails here
+```
+
+Expected: `r=false, msg=240`. Investigate xpcall's message-handler invocation when the protected function errors AFTER a yield/resume cycle.
+
+---
+
+## `locals.lua:974` — `<close>` across coroutine exit paths
+
+**Status**: OPEN — not yet investigated.
+
+`local x <close> = ...` semantics when scope exits via `coroutine.close` or error propagation. Audit OP_TBC / OP_CLOSE handling around coroutine boundaries.
+
+---
+
+## `cstack` — Rust stack overflow during 1000-coroutine close cascade
+
+**Status**: PARTIAL — chain cascade bound via `co_close` `inc_c_stack` works standalone; cstack.lua still SIGSEGVs due to a tracegc `__gc` interaction with the cascade.
+
+`coro_lib.rs:486` `co_close` now calls `inc_c_stack` so cascading closes hit `LUAI_MAXCCALLS` (200) and return `"C stack overflow"` cleanly. Verified standalone with a 1000-coroutine chain. But `cstack.lua` enables `tracegc` (a `__gc` finalizer that writes `.` to stderr and re-marks the object for next-cycle finalization) which somehow interacts badly with the close cascade — SIGSEGV before the bound trips.
+
+Hypothesis: an automatic GC fires during the cascade (now that the heap auto-collector is unpaused), and the `__gc` invocation enters Rust code that recurses through the active coroutine chain.
+
+---
+
+## `all` — meta-runner
+
+**Status**: AUTO — wraps every other test, fails because subtests fail. Will pass automatically when the other 6 pass.
+
+---
+
+## The structural emit_inst design (what would actually fix this layer)
+
+For a future session, the right systemic fix:
+
+1. Add `fs.last_token_line: i32` field, mirrored from `ls.lastline` in `sync_from_lex` and in each `lex_next` / `lex_lookahead` call site (currently `sync_from_lex` already runs after both).
+
+2. Change `emit_inst` to use `fs.last_token_line` for the line attribution, completely ignoring the threaded `line` parameter (or using it only as an override hint).
+
+3. Add a `cg_fixline(fs, line)` helper that overrides the line of the just-emitted instruction (the latest entry in `f.lineinfo` / `f.abslineinfo`). Mirrors lua-c's `luaK_fixline`.
+
+4. In `cg_posfix_fold`'s binop emission and a few other sites where lua-c explicitly fixlines, call `cg_fixline` after the emission.
+
+When attempted naively (just changing emit_inst), this introduced a deep crash because the `abslineinfo` records were mis-aligned vs the threaded line — needs careful audit of `previousline` updates and `iwthabs` accounting against the new effective_line.
+
+Estimated effort: 4–6 hours of careful work + extensive testing.
+
+---
+
+## Honest progress today
+
+Started the session at **38/44** (variance-inflated). Ended at **37/44** (deterministic). Net pass-count unchanged but:
+
+- `gc_count` / `gc_count_b` now report real `heap.bytes_used` plus tracked long-string bytes
+- `co_close` now bounds Rust stack via `inc_c_stack` (cascade works standalone)
+- Three lua-c-faithful line-attribution fixes (`adjust_assign`, `leave_block` OP_CLOSE, while back-jump)
+- Crystallized understanding of the lua-c vs lua-rs line-attribution divergence (this document)
+
+The gap-test fix for db.lua is a known structural change away. The remaining failures are now well-characterized.

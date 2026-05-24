@@ -1,4 +1,4 @@
-all	TIMEOUT	-
+all	FAIL	.....lua: pcall_k failed: Runtime: gc.lua:469: assertion failed!
 api	PASS	-
 attrib	PASS	-
 big	PASS	-
@@ -12,7 +12,7 @@ code	PASS	-
 constructs	PASS	-
 coroutine	FAIL	lua: pcall_k failed: Runtime: ...riments/lua-rs-port/reference/lua-c/testes/coroutine.lua:319: asser
 cstack	FAIL	testing stack overflow detection
-db	FAIL	lua: pcall_k failed: Runtime: ...ustExperiments/lua-rs-port/reference/lua-c/testes/db.lua:45: assert
+db	FAIL	lua: pcall_k failed: Runtime: ...ustExperiments/lua-rs-port/reference/lua-c/testes/db.lua:28: assert
 errors	PASS	-
 events	PASS	-
 files-debug	PASS	-
