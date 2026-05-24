@@ -254,6 +254,17 @@ Inlining stack index arithmetic, stack accessors, CallInfo accessors, and
 `precall`/`poscall` wrappers moved `fibonacci` from 3.04x to 2.41x and
 overall from 1.71x to 1.45x, while keeping 44/44 official tests green.
 
+The same rule applies to assertion macros with side effects. C-Lua spells
+the VM stack-top invalidation as
+`lua_assert(isIT(i) || (cast_void(L->top.p = base), 1))`; in normal builds
+`lua_assert` is `((void)0)`, so the opcode-mode lookup and `top` write do
+not exist. The Rust port initially ran that expression unconditionally on
+every dispatch tick. Commit `7e32098` made it debug-only, keeping dev/release
+official tests at 44/44 and moving the matrix overall from 1.39x to 1.33x
+(`fibonacci` 2.26x -> 2.10x). Audit rule: when a C macro contains side
+effects, check whether the macro is compiled out before preserving those side
+effects in release Rust.
+
 **The negative-result variant: clones aren't always the cost.** Example
 (lua, da9401e): we suspected `LuaValue::Clone` in the arith opcodes
 was a real cost — every `OP_ADD` cloned two operands to satisfy the

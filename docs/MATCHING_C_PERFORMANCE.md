@@ -306,6 +306,16 @@ map to C-Lua macros / `l_sinline` helpers. `fibonacci` moved 3.04x -> 2.41x
 and the separate `precall`, `prep_call_info`, `set_ci_previous`, and `set_top`
 frames vanished from the profile.
 
+Assertion macros need the same audit. C-Lua's dispatch loop contains
+`lua_assert(isIT(i) || (cast_void(L->top.p = base), 1))`; because normal
+upstream builds compile `lua_assert` to `((void)0)`, that side-effectful
+expression is debug-only. Porting it as unconditional Rust release work added
+an opcode-mode lookup and stack-top write to every dispatch tick. `7e32098`
+moved that invalidation behind `#[cfg(debug_assertions)]`; dev and release
+official suites stayed 44/44, and the matrix moved overall 1.39x -> 1.33x
+(`fibonacci` 2.26x -> 2.10x). If a hot C macro is an assertion/check macro,
+first determine whether the side effect exists in the upstream release build.
+
 ### Pattern 6: Wall-clock sampling beats hypothesizing
 
 Every meaningful win in this session came from a `/usr/bin/sample` profile
@@ -525,11 +535,16 @@ performance parity (or close), the lessons from this one in priority order:
    should compile away too. If profiling shows it as a frame, audit the
    abstraction boundary before looking for a bigger algorithmic rewrite.
 
-8. **"Cache the precondition" is the second.** Features that short-circuit
+8. **Do not preserve debug-only macro side effects in release.** C assertion
+   macros can hide assignments used only for invariant checking. Before
+   translating that expression literally, verify whether upstream release
+   builds compile it out.
+
+9. **"Cache the precondition" is the second.** Features that short-circuit
    on inactive cases need the short-circuit at the outer layer, not
    inside.
 
-9. **Every commit cites its evidence.** Profile artifact path in the
+10. **Every commit cites its evidence.** Profile artifact path in the
    commit body. Dashboard row showing before/after. 44/44 oracle test
    gate. No exceptions, even on "obvious" fixes — the GC fix looked
    obvious AFTER the profile said so.
