@@ -36,19 +36,23 @@ pub struct StackIdxConv(pub StackIdx);
 /// TODO(phase-b): expressions like `state.top_idx().0 as i32` should become
 /// `state.top_idx().raw() as i32`. The non-primitive-cast error is silenced
 /// here by promoting the StackIdx through a free-function conversion.
-#[inline]
+#[inline(always)]
 pub fn stack_idx_to_i32(i: StackIdx) -> i32 { i.0 as i32 }
 
 impl From<u32> for StackIdxConv {
+    #[inline(always)]
     fn from(v: u32) -> Self { StackIdxConv(StackIdx(v)) }
 }
 impl From<i32> for StackIdxConv {
+    #[inline(always)]
     fn from(v: i32) -> Self { StackIdxConv(StackIdx(v.max(0) as u32)) }
 }
 impl From<usize> for StackIdxConv {
+    #[inline(always)]
     fn from(v: usize) -> Self { StackIdxConv(StackIdx(v as u32)) }
 }
 impl From<StackIdx> for StackIdxConv {
+    #[inline(always)]
     fn from(v: StackIdx) -> Self { StackIdxConv(v) }
 }
 pub use lua_types::value::{LuaTable, LuaValue, F2Imod};
@@ -510,8 +514,11 @@ pub trait StackIdxExt {
     fn raw(self) -> u32;
 }
 impl StackIdxExt for StackIdx {
+    #[inline(always)]
     fn saturating_sub(self, n: impl Into<StackIdxConv>) -> u32 { self.0.saturating_sub(n.into().0.0) }
+    #[inline(always)]
     fn wrapping_sub(self, n: impl Into<StackIdxConv>) -> u32 { self.0.wrapping_sub(n.into().0.0) }
+    #[inline(always)]
     fn raw(self) -> u32 { self.0 }
 }
 
@@ -1518,6 +1525,7 @@ impl LuaState {
     ///
     /// C: `*L->top++ = val` (various push patterns)
     /// macros.tsv: `api_incr_top → gone — state.push() already increments`
+    #[inline(always)]
     pub fn push(&mut self, val: LuaValue) {
         let top = self.top.0 as usize;
         if top < self.stack.len() {
@@ -1531,6 +1539,7 @@ impl LuaState {
     /// Pop the top value from the stack, decrementing `top`.
     ///
     /// C: `L->top--` + dereference.
+    #[inline(always)]
     pub fn pop(&mut self) -> LuaValue {
         if self.top.0 == 0 {
             return LuaValue::Nil;
@@ -1543,11 +1552,13 @@ impl LuaState {
     ///
     /// C: `s2v(L->stack.p + idx)` / stack slot access.
     /// macros.tsv: `s2v → state.stack_at(idx)` → returns `&LuaValue`
+    #[inline(always)]
     pub fn stack_val(&self, idx: StackIdx) -> &LuaValue {
         &self.stack[idx.0 as usize].val
     }
 
     /// Write a value to a specific stack slot.
+    #[inline(always)]
     pub fn set_stack_val(&mut self, idx: StackIdx, val: LuaValue) {
         self.stack[idx.0 as usize].val = val;
     }
@@ -1618,6 +1629,7 @@ impl LuaState {
     }
 
     /// Returns the current CallInfo index (the active call frame).
+    #[inline(always)]
     pub fn top_idx(&self) -> StackIdx {
         self.top
     }
@@ -1632,6 +1644,7 @@ impl LuaState {
 // and should be treated as Phase-B-grade approximations.
 
 impl LuaState {
+    #[inline(always)]
     pub fn get_at(&self, idx: impl Into<StackIdxConv>) -> LuaValue {
         let i: StackIdx = idx.into().0;
         match self.stack.get(i.0 as usize) {
@@ -1639,6 +1652,7 @@ impl LuaState {
             None => LuaValue::Nil,
         }
     }
+    #[inline(always)]
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
         self.stack[i.0 as usize].val = v;
@@ -1758,6 +1772,7 @@ impl LuaState {
     /// PORT NOTE: callers pass an absolute `StackIdx`, not the relative `idx`
     /// of the public `lua_settop`. The to-be-closed (`tbclist`) close path
     /// is Phase E and not handled here.
+    #[inline(always)]
     pub fn set_top(&mut self, idx: impl Into<StackIdxConv>) {
         let new_top: StackIdx = idx.into().0;
         let new_top_u = new_top.0 as usize;
@@ -1772,6 +1787,7 @@ impl LuaState {
     /// PORT NOTE: callers (`api.rs::set_top`, `raw_set`, etc.) pre-nil-fill or
     /// only shrink, so this routine intentionally does no clearing or resizing.
     /// The to-be-closed (`tbclist`) close path is Phase E.
+    #[inline(always)]
     pub fn set_top_idx(&mut self, idx: impl Into<StackIdxConv>) {
         let new_top: StackIdx = idx.into().0;
         self.top = new_top;
@@ -1779,11 +1795,13 @@ impl LuaState {
     /// Decrement `top` by 1 (saturating at zero).
     ///
     /// C: `L->top.p--` — drop one slot from the stack without reading it.
+    #[inline(always)]
     pub fn dec_top(&mut self) {
         if self.top.0 > 0 {
             self.top = StackIdx(self.top.0 - 1);
         }
     }
+    #[inline(always)]
     pub fn pop_n(&mut self, n: usize) {
         let cur = self.top.0 as usize;
         let new = cur.saturating_sub(n);
@@ -1792,6 +1810,7 @@ impl LuaState {
     /// Returns the value at the given stack index without removing it.
     ///
     /// C: `s2v(L->stack.p + idx)` for a fixed absolute index.
+    #[inline(always)]
     pub fn peek_at(&mut self, idx: impl Into<StackIdxConv>) -> LuaValue {
         let i: StackIdx = idx.into().0;
         match self.stack.get(i.0 as usize) {
@@ -1803,6 +1822,7 @@ impl LuaState {
     /// removing it.
     ///
     /// C: `s2v(L->top.p - 1)`.
+    #[inline(always)]
     pub fn peek_top(&mut self) -> LuaValue {
         if self.top.0 == 0 {
             return LuaValue::Nil;
@@ -1872,25 +1892,34 @@ impl LuaState {
         crate::do_::grow_stack(self, n, raise_error).map(|_| ())
     }
 
+    #[inline(always)]
     pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo { &self.call_info[idx.as_usize()] }
+    #[inline(always)]
     pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo { &mut self.call_info[idx.as_usize()] }
+    #[inline(always)]
     pub fn current_call_info(&self) -> &CallInfo { &self.call_info[self.ci.as_usize()] }
+    #[inline(always)]
     pub fn current_call_info_mut(&mut self) -> &mut CallInfo { let i = self.ci.as_usize(); &mut self.call_info[i] }
+    #[inline(always)]
     pub fn current_ci_idx(&self) -> CallInfoIdx { self.ci }
     pub fn call_stack_mut(&mut self) -> &mut Vec<CallInfo> { &mut self.call_info }
+    #[inline(always)]
     pub fn next_ci(&mut self) -> Result<CallInfoIdx, LuaError> {
         match self.call_info[self.ci.as_usize()].next {
             Some(idx) => Ok(idx),
             None => Ok(extend_ci(self)),
         }
     }
+    #[inline(always)]
     pub fn prev_ci(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
     pub fn get_prev_ci(&self, idx: CallInfoIdx) -> Option<&CallInfo> {
         self.call_info[idx.as_usize()]
             .previous
             .map(|p| &self.call_info[p.as_usize()])
     }
+    #[inline(always)]
     pub fn is_base_ci(&self, idx: CallInfoIdx) -> bool { idx.as_usize() == 0 }
+    #[inline(always)]
     pub fn is_current_ci(&self, idx: CallInfoIdx) -> bool { idx == self.ci }
     pub fn ci_next_func(&self, idx: CallInfoIdx) -> StackIdx {
         let next = self.call_info[idx.as_usize()]
@@ -1898,7 +1927,9 @@ impl LuaState {
             .expect("ci_next_func: no next CallInfo");
         self.call_info[next.as_usize()].func
     }
+    #[inline(always)]
     pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].top }
+    #[inline(always)]
     pub fn ci_trap(&mut self, idx: CallInfoIdx) -> bool {
         if let CallInfoFrame::Lua { trap, .. } = self.call_info[idx.as_usize()].u {
             trap
@@ -1906,24 +1937,32 @@ impl LuaState {
             false
         }
     }
+    #[inline(always)]
     pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 { self.call_info[idx.as_usize()].saved_pc() }
+    #[inline(always)]
     pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
         self.call_info[idx.as_usize()].set_saved_pc(pc);
     }
+    #[inline(always)]
     pub fn set_ci_previous(&mut self, idx: CallInfoIdx) {
         self.ci = self.call_info[idx.as_usize()]
             .previous
             .expect("set_ci_previous: returning frame has no previous CallInfo");
     }
+    #[inline(always)]
     pub fn ci_previous(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
+    #[inline(always)]
     pub fn ci_adjust_func(&mut self, idx: CallInfoIdx, delta: i32) {
         let ci = &mut self.call_info[idx.as_usize()];
         ci.func = StackIdx((ci.func.0 as i32 - delta) as u32);
     }
+    #[inline(always)]
     pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].func + 1 }
+    #[inline(always)]
     pub fn ci_is_fresh(&self, idx: CallInfoIdx) -> bool {
         (self.call_info[idx.as_usize()].callstatus & CIST_FRESH) != 0
     }
+    #[inline(always)]
     pub fn ci_lua_closure(&self, idx: CallInfoIdx) -> Option<GcRef<lua_types::closure::LuaLClosure>> {
         let func_idx = self.call_info[idx.as_usize()].func;
         match self.get_at(func_idx) {
@@ -1931,15 +1970,19 @@ impl LuaState {
             _ => None,
         }
     }
+    #[inline(always)]
     pub fn ci_nextraargs(&self, idx: CallInfoIdx) -> i32 {
         self.call_info[idx.as_usize()].nextra_args()
     }
+    #[inline(always)]
     pub fn ci_nres(&self, idx: CallInfoIdx) -> i32 {
         self.call_info[idx.as_usize()].u2.value
     }
+    #[inline(always)]
     pub fn ci_nres_set(&mut self, idx: CallInfoIdx, n: i32) {
         self.call_info[idx.as_usize()].u2.value = n;
     }
+    #[inline(always)]
     pub fn ci_nresults(&self, idx: CallInfoIdx) -> i32 { self.call_info[idx.as_usize()].nresults as i32 }
     pub fn ci_prev_instruction(&self, idx: CallInfoIdx) -> lua_types::opcode::Instruction {
         let pc = self.call_info[idx.as_usize()].saved_pc();
@@ -2242,9 +2285,11 @@ impl LuaState {
     pub fn call_at(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
         crate::do_::call(self, func, nresults)
     }
+    #[inline(always)]
     pub fn precall(&mut self, func: StackIdx, nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> {
         crate::do_::precall(self, func, nresults)
     }
+    #[inline(always)]
     pub fn pretailcall(
         &mut self,
         ci: CallInfoIdx,
@@ -2254,6 +2299,7 @@ impl LuaState {
     ) -> Result<i32, LuaError> {
         crate::do_::pretailcall(self, ci, func, narg1, delta)
     }
+    #[inline(always)]
     pub fn poscall<N: TryInto<i32>>(&mut self, ci: CallInfoIdx, nres: N) -> Result<(), LuaError>
     where
         <N as TryInto<i32>>::Error: std::fmt::Debug,
@@ -2584,11 +2630,11 @@ impl LuaState {
         crate::tagmethods::call_orderi_tm(self, p1, v2 as i32, flip, isfloat, event)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn proto_code(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
         cl.proto.code[pc as usize]
     }
-    #[inline]
+    #[inline(always)]
     pub fn proto_const(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> LuaValue {
         cl.proto.k[idx].clone()
     }
@@ -2598,7 +2644,7 @@ impl LuaState {
     ///
     /// C: `ttisinteger(&k[idx]) ? ivalue(&k[idx]) : 0` inside the K-form
     /// arithmetic opcode macros (`op_arithK`).
-    #[inline]
+    #[inline(always)]
     pub fn proto_const_int(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<i64> {
         match &cl.proto.k[idx] {
             LuaValue::Int(v) => Some(*v),
@@ -2608,7 +2654,7 @@ impl LuaState {
     /// Hot-path accessor: returns `Some(f)` for `Float(f)` or `Int(i)` (coerced)
     /// constants. Avoids the full `LuaValue` clone. Used by the float fast
     /// path of `OP_ADDK`/`OP_SUBK`/`OP_MULK`/`OP_DIVK`/`OP_POWK`.
-    #[inline]
+    #[inline(always)]
     pub fn proto_const_num(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<f64> {
         match &cl.proto.k[idx] {
             LuaValue::Float(f) => Some(*f),

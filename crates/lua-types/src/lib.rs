@@ -45,20 +45,25 @@ pub struct StackIdx(pub u32);
 
 impl StackIdx {
     pub const ZERO: Self = StackIdx(0);
+    #[inline(always)]
     pub fn get(self) -> u32 { self.0 }
+    #[inline(always)]
     pub fn as_usize(self) -> usize { self.0 as usize }
 }
 
 impl std::ops::Add<i32> for StackIdx {
     type Output = Self;
+    #[inline(always)]
     fn add(self, rhs: i32) -> Self { StackIdx((self.0 as i32 + rhs) as u32) }
 }
 impl std::ops::Sub<i32> for StackIdx {
     type Output = Self;
+    #[inline(always)]
     fn sub(self, rhs: i32) -> Self { StackIdx((self.0 as i32 - rhs) as u32) }
 }
 impl std::ops::Sub<StackIdx> for StackIdx {
     type Output = i32;
+    #[inline(always)]
     fn sub(self, rhs: StackIdx) -> i32 { self.0 as i32 - rhs.0 as i32 }
 }
 
@@ -68,7 +73,9 @@ pub struct CallInfoIdx(pub u32);
 
 impl CallInfoIdx {
     pub const ZERO: Self = CallInfoIdx(0);
+    #[inline(always)]
     pub fn get(self) -> u32 { self.0 }
+    #[inline(always)]
     pub fn as_usize(self) -> usize { self.0 as usize }
 }
 

@@ -607,7 +607,7 @@ fn try_func_tm(state: &mut LuaState, func_idx: StackIdx) -> Result<StackIdx, Lua
 /// extras if more are present.
 ///
 /// C: `l_sinline void moveresults(lua_State *L, StkId res, int nres, int wanted)`
-#[inline]
+#[inline(always)]
 fn move_results(
     state: &mut LuaState,
     res_idx: StackIdx,
@@ -709,6 +709,7 @@ fn move_results(
 /// and pops the current call frame.
 ///
 /// C: `void luaD_poscall(lua_State *L, CallInfo *ci, int nres)`
+#[inline(always)]
 pub(crate) fn poscall(
     state: &mut LuaState,
     ci_idx: CallInfoIdx,
@@ -746,7 +747,7 @@ pub(crate) fn poscall(
 /// Sets `state.ci` to the new frame and fills its fields.
 ///
 /// C: `l_sinline CallInfo *prepCallInfo(lua_State *L, StkId func, int nret, int mask, StkId top)`
-#[inline]
+#[inline(always)]
 fn prep_call_info(
     state: &mut LuaState,
     func_idx: StackIdx,
@@ -780,7 +781,7 @@ fn prep_call_info(
 /// Returns the number of values returned by the C function.
 ///
 /// C: `l_sinline int precallC(lua_State *L, StkId func, int nresults, lua_CFunction f)`
-#[inline]
+#[inline(always)]
 fn precall_c(
     state: &mut LuaState,
     func_idx: StackIdx,
