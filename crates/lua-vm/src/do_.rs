@@ -1111,6 +1111,37 @@ fn finish_pcallk(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<LuaStatus,
         let _func_idx = func::close(state, func_idx, status as i32, true)?;
         // C: luaD_seterrorobj(L, status, func)
         set_error_obj(state, status, func_idx);
+
+        // PORT NOTE: lua-c invokes the message handler at error-raise time via
+        // `luaG_errormsg`, BEFORE the longjmp propagates the error. Our error
+        // propagation rides on Rust `Result::Err` and has no equivalent
+        // chokepoint at raise time, so we run the handler here at the
+        // recover/catch site — semantically equivalent. Only fires on the
+        // yield-then-error path (the sync-error path in `pcall_k`/api.rs
+        // calls the handler inline and clears CIST_YPCALL before we'd reach
+        // this function). Fixes coroutine.lua:319 (xpcall + yield + error).
+        if state.errfunc != 0 && error_status(status) && status != LuaStatus::ErrErr {
+            let errfunc_stk = StackIdx(state.errfunc as u32);
+            // Mirror the stack manipulation lua-c does in luaG_errormsg
+            // (and the inline path in pcall_k api.rs:1944):
+            //   stack: [..., err]  (top = func_idx + 1, err at func_idx)
+            //   -> push duplicate of err -> [..., err, err]
+            //   -> overwrite the first err slot with handler -> [..., handler, err]
+            //   -> call_no_yield(handler_pos, 1 result) -> [..., result]
+            //   -> result lands at func_idx, which is where the error was.
+            let err_val = state.get_at(func_idx);
+            state.push(err_val);
+            let handler = state.get_at(errfunc_stk);
+            state.set_at(state.top_idx() - 2, handler);
+            if let Err(_) = state.call_no_yield(state.top_idx() - 2, 1) {
+                status = LuaStatus::ErrErr;
+                if let Ok(s) = state.intern_str(b"error in error handling") {
+                    state.set_at(func_idx, lua_types::value::LuaValue::Str(s));
+                }
+                state.set_top(func_idx + 1);
+            }
+        }
+
         // C: luaD_shrinkstack(L)
         shrink_stack(state);
         // C: setcistrecst(ci, LUA_OK)

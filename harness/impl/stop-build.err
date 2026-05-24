@@ -111,9 +111,9 @@ warning: unused variable: `state`
     |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
-    --> crates/lua-vm/src/do_.rs:1656:5
+    --> crates/lua-vm/src/do_.rs:1687:5
      |
-1656 |     state: &mut LuaState,
+1687 |     state: &mut LuaState,
      |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unused variable: `state`
@@ -1185,51 +1185,51 @@ help: use `let _ = ...` to ignore the resulting value
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/debug_lib.rs:811:9
+   --> crates/lua-stdlib/src/debug_lib.rs:822:9
     |
-811 |         state.push_fail();
+822 |         state.push_fail();
     |         ^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-811 |         let _ = state.push_fail();
+822 |         let _ = state.push_fail();
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/debug_lib.rs:838:13
+   --> crates/lua-stdlib/src/debug_lib.rs:849:13
     |
-838 |             state.push_thread();
+849 |             state.push_thread();
     |             ^^^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-838 |             let _ = state.push_thread();
+849 |             let _ = state.push_thread();
     |             +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/debug_lib.rs:843:9
+   --> crates/lua-stdlib/src/debug_lib.rs:854:9
     |
-843 |         state.raw_get(-2);
+854 |         state.raw_get(-2);
     |         ^^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-843 |         let _ = state.raw_get(-2);
+854 |         let _ = state.raw_get(-2);
     |         +++++++
 
 warning: unused `Result` that must be used
-   --> crates/lua-stdlib/src/debug_lib.rs:845:9
+   --> crates/lua-stdlib/src/debug_lib.rs:856:9
     |
-845 |         state.remove(-2);
+856 |         state.remove(-2);
     |         ^^^^^^^^^^^^^^^^
     |
     = note: this `Result` may be an `Err` variant, which should be handled
 help: use `let _ = ...` to ignore the resulting value
     |
-845 |         let _ = state.remove(-2);
+856 |         let _ = state.remove(-2);
     |         +++++++
 
 warning: unused `Result` that must be used

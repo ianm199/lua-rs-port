@@ -755,8 +755,14 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
     if target_is_self {
         state.push_thread()?;
     } else {
-        // TODO(port): push L1 as a thread value and move it to the current stack
-        // for use as the hook-table key. Requires cross-thread borrow.
+        // Push the target thread (captured via getthread) as the key. The C
+        // `lua_pushthread(L1); lua_xmove(L1, L, 1)` dance is necessary because
+        // C uses two distinct lua_State pointers; in our impl the GcRef is
+        // already a global reference so we can push it directly on the parent
+        // stack as a Thread value. Without this push, raw_set below operates
+        // on a stack that's missing its key slot and panics in get_table_value.
+        let thr = other_thread.clone().expect("other_thread is Some when target_is_self is false");
+        state.push(lua_types::value::LuaValue::Thread(thr));
     }
     // C: lua_pushvalue(L, arg + 1);  /* value = hook function (or nil) */
     state.push_value_at(arg + 1)?;
@@ -775,7 +781,12 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
         lua_vm::debug::set_hook(state, hook_box, mask as i32, count);
     } else {
         // TODO(port): set hook on another thread — requires &mut LuaState for
-        // the target concurrently with the current state.
+        // the target concurrently with the current state. Attempted via
+        // borrow_mut on the target's Rc<RefCell<LuaState>> but produced
+        // borrow conflicts when the target thread is later resumed (its
+        // own coroutine.status check panics). Needs deeper refactor —
+        // probably store the hook closure in GlobalState keyed by thread_id
+        // and have the VM look it up when hooks fire.
     }
 
     Ok(0)

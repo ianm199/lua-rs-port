@@ -152,28 +152,82 @@ The test calls `collectgarbage("step", 0)` after entering generational mode and 
 
 ## `coroutine.lua:319` — xpcall + yield + error
 
-**Status**: OPEN — not yet investigated this session.
+**Status**: FIXED for this specific test (coroutine.lua now fails at line 352, a different per-coroutine-hook test).
 
-```lua
-local function f (a, b) a = coroutine.yield(a); error{a + b} end
-local function g (x) return x[1] * 2 end
-co = coroutine.wrap(function ()
-       coroutine.yield(xpcall(f, g, 10, 20))
-     end)
-assert(co() == 10)
-local r, msg = co(100)
-assert(not r and msg == 240)  -- ← fails here
-```
+### Root cause
 
-Expected: `r=false, msg=240`. Investigate xpcall's message-handler invocation when the protected function errors AFTER a yield/resume cycle.
+lua-c's `luaG_errormsg` invokes the message handler at the error-RAISE site (inside the longjmp path), so by the time `finishpcallk` sees the error during recovery, the message has already been transformed to `handler(err)`.
+
+Our Rust error propagation uses `Result::Err` and has no equivalent chokepoint at raise. The synchronous-error path in `pcall_k` (api.rs:1944) handles the handler call inline. But the yield-then-error path (`pcall_k` Err(Yield) at api.rs:1930) propagates Yield without restoring state and the eventual resume-time error skips the handler entirely — `msg` reaches the test as the raw error table instead of `g(err)`.
+
+### Fix landed
+
+`crates/lua-vm/src/do_.rs` `finish_pcallk` — after `set_error_obj` writes the error to `func_idx`, invoke the handler (via `state.errfunc`, which is preserved across yield since the Yield path never restored it) and replace the error value. Mirrors lua-c's `luaG_errormsg` semantically — different timing (recover instead of raise), equivalent post-condition. The synchronous-error path clears `CIST_YPCALL` before returning so it never reaches `finish_pcallk` — no double-invoke.
+
+### Verification
+
+Standalone repro `/tmp/coro_repro.lua` returns `r=false, msg=240` (was `msg=table`). errors.lua's xpcall-based `checkerror` cases unaffected (verified via Tier 2 regression check).
+
+### Next failure surface in coroutine.lua
+
+Line 352: `assert(#trace == #correcttrace)` — the per-coroutine hook test (`debug.sethook(co, fn, "clr")`). Our `debug_lib::set_hook` has a TODO for the `!target_is_self` path — we don't install hooks on a different coroutine's state. Naive fix (borrow_mut the target's `Rc<RefCell<LuaState>>` and install) was attempted but introduces borrow conflicts when the target is later resumed and its own `coroutine.status` check tries to borrow. Proper fix likely needs the hook closure stored in `GlobalState` keyed by `thread_id`, looked up at hook-fire time. ~100–200 LOC of careful refactoring.
 
 ---
 
 ## `locals.lua:974` — `<close>` across coroutine exit paths
 
-**Status**: OPEN — not yet investigated.
+**Status**: DIAGNOSED — close-order is correct without yields; `coroutine.yield` from inside `__close` is the failure mode. Park for deep fix.
 
-`local x <close> = ...` semantics when scope exits via `coroutine.close` or error propagation. Audit OP_TBC / OP_CLOSE handling around coroutine boundaries.
+### What it tests
+
+Lua 5.4's `local x <close> = ...` semantics: when scope exits (normally OR via error), each `<close>` variable's `__close` metamethod fires in LIFO order. The test stresses the case where each `__close` itself contains `coroutine.yield(...)`.
+
+```lua
+local function foo (err)
+  local z <close> = func2close(function(_, msg)
+    assert(...)
+    coroutine.yield("z")     -- yield from inside __close
+  end)
+  local y <close> = func2close(function(_, msg)
+    coroutine.yield("y")
+    if err then error(err + 20) end
+  end)
+  local x <close> = func2close(function(_, msg)
+    coroutine.yield("x")
+  end)
+  if err == 10 then error(err) else return 10, 20 end
+end
+```
+
+### What works
+
+Without yields, our `<close>` ordering is correct:
+
+```
+foo raising error(10)
+x close: msg=10, err=10   <- x fires first (LIFO ✓)
+y close: msg=10, err=10   <- y fires second; raises error(30)
+z close: msg=30, err=10   <- z fires last with the updated error
+final: false, 30
+```
+
+### What breaks
+
+With yields inside __close (the actual test), our impl reports z firing FIRST (wrong order) on the third foo case (`pcall(foo, 10)`). The first `co()` call after entering this scenario returns `false, "...assertion failed!"` where the failing assert is z's `assert(msg == nil or msg == err + 20)` — z saw `msg=10` (the original error), not `msg=30` (the y-substituted error). This means z fired before y had a chance to run and substitute.
+
+### Root cause (hypothesis)
+
+When `__close` yields, our impl pauses x's close mid-execution. On resume, control should resume INSIDE x's close (just past the yield), let it return, then proceed to y. Instead it seems the close-list is re-walked from the top after resume, hitting z (or whatever is currently at the top of `tbclist`). The yield interrupts the close-list walk and our recovery path doesn't preserve "which entry is mid-flight."
+
+### Fix shape
+
+The `close` function in `crates/lua-vm/src/func.rs:530` is a simple `while state.tbclist.last() >= level { pop; prep_call_close_mth(...) }` loop. If `prep_call_close_mth` yields, the iteration state is lost. lua-c handles this via `CIST_CLSRET` CallInfo flag — the resumed __close call has CIST_CLSRET set, signalling to poscall that this is a close-method return and the list-walk should continue from where it left off (not be restarted).
+
+Look for our handling of CIST_CLSRET (we have the constant; we may not handle it correctly in the yield-resume path). Likely fix: store the "currently being closed" tbc index on the CallInfo, restore on resume, continue from there instead of re-popping.
+
+Estimated effort: 100-200 LOC, plus a chunk of yield-from-C state-machine work. Higher risk than coroutine.lua's fix because the bug spans VM + close-list + yield interaction.
+
+---
 
 ---
 
