@@ -4,6 +4,30 @@ The PORT_STRATEGY.md §8 "this is real software" demo. After Phase F lands us at
 
 This doc captures the strategic choice (Rust-native modules vs. C ABI compat) and the concrete path to a working demo.
 
+For a less technical explanation of why this matters, see
+`docs/LUAROCKS_SIGNIFICANCE.md`.
+
+## Plain-English significance
+
+LuaRocks is the standard Lua package manager. Running it under `lua-rs` means
+the runtime can do more than pass language conformance tests: it can run a real
+Lua ecosystem tool, install a real pure-Lua package, rebuild the installed
+package manifest, and load that package through `require`.
+
+That is cool because it proves a real workflow. LuaRocks exercises script
+arguments, `os.exit`, subprocess execution, file I/O, package paths, directory
+traversal, install-tree locks, network-backed package metadata, and module
+loading together. Small tests rarely cover all of that at once.
+
+The honest claim is:
+
+> `lua-rs` can run LuaRocks 3.11.1 well enough to install and use pure-Lua rocks
+> such as `inspect`.
+
+The honest boundary is also important: stock native C rocks are not supported
+today. They need either targeted Rust-native module replacements or a real
+PUC-Rio Lua C API/ABI compatibility layer.
+
 ## Current verified status: LuaRocks works for pure-Lua rocks
 
 LuaRocks 3.11.1 now runs far enough under `lua-rs` to install and use pure-Lua

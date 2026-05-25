@@ -150,6 +150,35 @@ Useful links:
 - `docs/PUBLISH_READINESS.md`
 - `docs/LUA_SYSTEM_DEEP_DIVE.md`
 
+## LuaRocks Meaning
+
+Plain-English framing:
+
+> LuaRocks is the standard Lua package manager. Running it under `lua-rs` means
+> the runtime can do more than pass language conformance tests: it can run a real
+> Lua ecosystem tool, install a real pure-Lua package, rebuild the installed
+> package manifest, and load that package through `require`.
+
+Why it matters:
+
+- It proves a real ecosystem workflow, not just isolated semantics.
+- It exercises filesystem, subprocess, package loading, script arguments,
+  `os.exit`, and LuaFileSystem behavior together.
+- It gives a clear honest boundary: pure-Lua rocks can work; stock native C
+  rocks still need Rust-native replacements or a Lua C API/ABI layer.
+
+Good README-sized wording:
+
+> LuaRocks self-hosting is in progress. `lua-rs` can run LuaRocks 3.11.1 well
+> enough to search, install, list, show, and use pure-Lua rocks such as
+> `inspect`. Native C rocks remain out of scope until the project has either
+> targeted Rust-native module replacements or a PUC-Rio Lua C API/ABI
+> compatibility layer.
+
+Detailed explainer:
+
+- `docs/LUAROCKS_SIGNIFICANCE.md`
+
 ## LuaRocks Status
 
 LuaRocks is now a credible in-progress feature, but still not a broad ecosystem
@@ -192,5 +221,6 @@ See `docs/PHASE_G_LUAROCKS_PLAN.md`.
 - `docs/PERFORMANCE_PRINCIPLES.md`: benchmark method and performance policy.
 - `docs/MATCHING_C_PERFORMANCE.md`: deeper performance analysis.
 - `harness/bench/README.md`: benchmark runner and dashboard usage.
+- `docs/LUAROCKS_SIGNIFICANCE.md`: plain-English meaning of the LuaRocks result.
 - `docs/PHASE_G_LUAROCKS_PLAN.md`: LuaRocks plan and current status.
 - `docs/LUA_SYSTEM_DEEP_DIVE.md`: architecture, GC, unsafe model, gaps.
