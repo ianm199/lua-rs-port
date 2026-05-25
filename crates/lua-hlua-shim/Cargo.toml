@@ -1,0 +1,22 @@
+[package]
+name = "lua-rs-hlua-shim"
+version.workspace = true
+description = "Drop-in replacement for the `hlua` 0.4 embedding API, backed by the pure-Rust lua-rs VM. Lets hlua-based consumers (authoscope, sn0int) run on lua-rs behind a feature flag."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "lua_rs_hlua_shim"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+lua-types = { path = "../lua-types", version = "0.0.4" }
+lua-vm = { path = "../lua-vm", version = "0.0.4" }
+lua-stdlib = { path = "../lua-stdlib", version = "0.0.4" }
+lua-parse = { path = "../lua-parse", version = "0.0.4" }
