@@ -33,6 +33,64 @@ The natural next public API target is a Rust-native embedding interface:
 This should be designed for Rust users first. It does not need to mimic `lua.h`
 exactly to be useful.
 
+## Why a Pure-Rust Lua for Embedding
+
+The Rust-native embedding API is not just an ergonomics nicety. A pure-Rust Lua
+has two clusters of advantages over today's C-backed bindings — bindings that
+link PUC-Rio Lua and expose a Rust wrapper around the C interpreter.
+
+### 1. Build and deployment
+
+Linking C Lua drags the entire C build model along with it:
+
+- The build needs a C toolchain, and cross-compilation inherits all of C's
+  cross-compilation pain.
+- A pure-Rust Lua is just a crate: `cargo build` everywhere, trivial
+  cross-compilation, no `cc` or `make`, clean reproducible builds.
+- The sharpest version is **WASM and embedded targets**. Pure Rust compiles to
+  `wasm32` cleanly, whereas getting C Lua into a WASM module is genuinely
+  painful. If the deployment target is unusual, that is a concrete win.
+
+### 2. Safety and sandboxing of untrusted scripts
+
+This is the real differentiator, and it is two distinct things.
+
+**Memory safety of the implementation, not just the wrapper.** A C-backed
+binding can give a safe *API*, but the interpreter underneath is still C — so a
+bug in the Lua core is a memory-safety bug in the host process. A
+mostly-safe-Rust VM means the *implementation* is memory-safe, not only the
+wrapper around it.
+
+**Real resource sandboxing.** C Lua lets you bolt on instruction hooks and a
+custom allocator, but it is bolted on and sharp-edged. Crucially, C Lua's error
+model is `longjmp`, and bridging `longjmp` with Rust's stack unwinding and
+destructors is one of the hardest, most soundness-sensitive parts of any
+Lua-in-Rust binding — existing bindings work hard to contain it. A pure-Rust Lua
+built **stackless with a fuel system** gives, by construction:
+
+- bounded CPU and memory;
+- guaranteed return-to-caller (no runaway native frames);
+- a native `Result` error model;
+- no `longjmp` hazard at all.
+
+For multi-tenant "run untrusted user scripts" workloads, that is a qualitative
+difference, not a marginal one.
+
+### Smaller wins that ride along
+
+- A stackless design makes Lua-coroutine / Rust-async interleaving natural, where
+  C Lua fights you.
+- A native implementation can let Rust values participate in Lua's GC more
+  seamlessly than a C binding's lifetime-juggling allows.
+
+### Honest status
+
+None of the sandboxing guarantees above exist yet. `lua-rs` today is a runtime
+and CLI, not a hardened embedding sandbox, and its current incremental
+mark-and-sweep GC is not the stackless + fuel design this argument assumes. This
+section is the *destination* that justifies the Rust-native embedding API — not a
+description of what ships today.
+
 ## Possible Long-Term Goal: C API Compatibility
 
 C API compatibility would mean C code can embed `lua-rs` through functions shaped
