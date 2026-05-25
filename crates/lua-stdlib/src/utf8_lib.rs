@@ -11,9 +11,7 @@
 
 use lua_types::error::LuaError;
 use lua_types::value::LuaValue;
-use lua_types::closure::LuaClosure;
-use lua_types::{LuaType, LuaStatus};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 const MAX_UNICODE: u32 = 0x10_FFFF;
 

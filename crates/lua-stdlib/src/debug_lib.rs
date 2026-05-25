@@ -13,8 +13,8 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::rc::Rc;
 
-use lua_types::{GcRef, LuaError, LuaString, LuaType, LuaValue, LuaStatus};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug as DebugInfo};
+use lua_types::{GcRef, LuaError, LuaString, LuaType, LuaValue};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, LuaDebug as DebugInfo};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ pub(crate) type LibFn = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// PORT NOTE: The Rust hook receives the event code and current line directly
 /// rather than a lua_Debug pointer, since the lua-stdlib `DebugInfo` and the
 /// canonical `lua_vm::debug::LuaDebug` are distinct types during Phase B.
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 pub(crate) type HookFn = fn(&mut LuaState, i32, i32) -> Result<(), LuaError>;
 
 /// Opaque identity handle for an upvalue.
@@ -270,7 +271,7 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
 
     // Build the effective options string, prepending '>' when the subject is a function.
     let options: Vec<u8>;
-    let mut info_target_owner: Option<Rc<RefCell<LuaState>>> = None;
+    let info_target_owner: Option<Rc<RefCell<LuaState>>>;
     let mut info_target: Option<std::cell::RefMut<'_, LuaState>> = None;
     let mut info_target_is_self = target_is_self;
 

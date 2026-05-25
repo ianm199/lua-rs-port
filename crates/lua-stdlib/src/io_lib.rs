@@ -26,7 +26,7 @@ use std::io::{self, SeekFrom};
 use std::rc::Rc;
 
 use lua_types::{LuaError, LuaFileHandle, LuaType, LuaValue};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 thread_local! {
     /// Side-table mapping userdata identity (the `Rc` pointer address from
@@ -743,6 +743,7 @@ pub fn io_tmpfile(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// TODO(port): borrow split — returns `&mut dyn LuaFileHandle` while caller also
 /// needs `&mut LuaState`. Phase B: use `RefCell` inside `LStream`.
+#[expect(dead_code, unreachable_code, unused_variables, reason = "io default-file helper: not yet wired; pending LStream-from-registry port")]
 fn get_io_file<'a>(
     state: &'a mut LuaState,
     key: &[u8],
@@ -850,7 +851,7 @@ fn test_eof(file: &mut dyn LuaFileHandle) -> bool {
 /// per-byte allocation; Rust's Vec grows here, which is slightly slower.
 fn read_line(file: &mut dyn LuaFileHandle, chop: bool) -> (Vec<u8>, bool) {
     let mut buf: Vec<u8> = Vec::new();
-    let mut c: i32 = EOF_SENTINEL;
+    let mut c: i32;
 
     //          while (i < LUAL_BUFFERSIZE && (c = l_getc(f)) != EOF && c != '\n')
     //            buff[i++] = c;
@@ -1106,6 +1107,7 @@ pub fn f_read(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Dispatch one or more write values. C: `g_write(L, f, arg)`.
 ///
 /// TODO(port): borrow split — same issue as g_read.
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 fn g_write(
     state: &mut LuaState,
     file: &mut dyn LuaFileHandle,

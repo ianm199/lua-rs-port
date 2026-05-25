@@ -19,11 +19,10 @@
 use std::env;
 
 use lua_types::{
-    GcRef, LuaClosure, LuaError, LuaString, LuaType, LuaValue, StackIdx, LuaStatus,
+ LuaError, LuaType, LuaValue,
 };
-use lua_types::value::LuaTable;
 use lua_vm::state::{DynLibId, DynamicSymbol};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 

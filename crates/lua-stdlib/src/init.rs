@@ -5,7 +5,7 @@
 //!
 //! Port of `src/linit.c` (66 lines, 1 function).
 
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_types::error::LuaError;
 
 // Matches types.tsv: lua_CFunction → fn(&mut LuaState) -> Result<usize, LuaError>

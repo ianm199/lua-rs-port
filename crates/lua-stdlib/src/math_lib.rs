@@ -13,7 +13,7 @@
 // PORT NOTE: All imports below will be unresolved until Phase B lands the
 // lua-types crate. Expected Phase-A errors: E0432, E0412, E0433, E0425.
 use lua_types::{LuaError, LuaType, LuaValue};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction as LuaCFn, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// `None` is used for placeholder entries whose values are set manually
 /// (e.g. `pi`, `huge`, `maxinteger`, `mininteger`, `random`, `randomseed`).
 /// PORT NOTE: Phase B will unify with `lua_types::LibReg`.
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 struct LibReg {
     name: &'static [u8],
     func: Option<LuaCFunction>,
@@ -578,6 +579,7 @@ fn set_rand_func(state: &mut LuaState) -> Result<(), LuaError> {
 /// Placeholder entries (`None`) are filled in manually by `luaopen_math`
 /// (`pi`, `huge`, `maxinteger`, `mininteger`) or by `set_rand_func`
 /// (`random`, `randomseed`).
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 static MATHLIB: &[LibReg] = &[
     LibReg { name: b"abs",        func: Some(math_abs)    },
     LibReg { name: b"acos",       func: Some(math_acos)   },

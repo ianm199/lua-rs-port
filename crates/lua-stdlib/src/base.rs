@@ -5,15 +5,13 @@
 
 // TODO(port): LuaState and related types live in lua-vm; imports resolved in Phase B.
 use lua_types::{
-    closure::LuaClosure,
+
     error::LuaError,
     value::LuaValue,
     LuaType,
     LuaStatus,
-    arith::ArithOp,
-    gc::GcRef,
 };
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 
@@ -45,6 +43,7 @@ enum GcOp {
     Restart    = 1,
     Collect    = 2,
     Count      = 3,
+    #[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
     CountB     = 4,
     Step       = 5,
     SetPause   = 6,

@@ -13,11 +13,9 @@
 use lua_types::error::LuaError;
 use lua_types::value::LuaValue;
 use lua_types::arith::ArithOp;
-use lua_types::gc::GcRef;
-use lua_types::string::LuaString;
-use lua_types::{LuaType, LuaStatus};
+use lua_types::{LuaType};
 use lua_vm::state::LuaTableRefExt as _;
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -35,10 +33,13 @@ const CAP_UNFINISHED: isize = -1;
 
 const CAP_POSITION: isize = -2;
 
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 const MAX_ITEM: usize = 120;
 
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 const MAX_ITEM_F: usize = 418;
 
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 const MAX_FORMAT: usize = 32;
 
 const MAX_INT_SIZE: usize = 16;
@@ -119,6 +120,7 @@ impl<'a> MatchState<'a> {
 /// TODO(port): In the real port, this needs to live in a Lua userdata object
 /// so that Lua GC can see it. For now it's a plain struct passed by
 /// `state.to_userdata()`.
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 struct GMatchState {
     /// Current position in `src` (index into the source slice).
     src_pos: usize,
@@ -1071,7 +1073,7 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
     } else {
         let mut ms = MatchState::new(s, p);
         let anchor = p.first() == Some(&b'^');
-        let (p_start, p_slice) = if anchor {
+        let (_p_start, p_slice) = if anchor {
             (0, &p[1..])
         } else {
             (0, p)
@@ -1514,7 +1516,7 @@ fn quotefloat(n: f64) -> Vec<u8> {
         return b"(0/0)".to_vec();
     }
     // hex float, ensuring dot separator
-    let mut buf = num2straux(n);
+    let buf = num2straux(n);
     if !buf.contains(&b'.') && !buf.contains(&b'p') {
         // try to find locale decimal point and replace with '.'
         // PORT NOTE: We always produce '.' so this branch is not taken.
@@ -2260,7 +2262,7 @@ fn copywithendian(dest: &mut [u8], src: &[u8], is_little: bool) {
 
 /// Unpack a (possibly signed) integer from `data[0..size]`.
 ///
-fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_signed: bool) -> Result<i64, LuaError> {
+fn unpackint(_state: &LuaState, data: &[u8], is_little: bool, size: usize, is_signed: bool) -> Result<i64, LuaError> {
     let limit = size.min(SZINT);
     let mut res: u64 = 0;
     for i in (0..limit).rev() {

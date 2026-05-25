@@ -14,7 +14,7 @@
 //! flagged with `TODO(port)` and the stubs use a zero-initialised `TmFields`.
 
 use lua_types::{LuaError, LuaExit, LuaType, LuaValue};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_vm::state::OsExecuteReason;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ fn get_field(
 /// increments `oplen` from 1 to 2 (and the following advance jumps past the `||`
 /// sentinel), enabling 2-char specifiers like `%EC`.
 fn check_strftime_option<'a>(
-    state: &mut LuaState,
+    _state: &mut LuaState,
     conv: &'a [u8],
     cc: &mut [u8; 4],
 ) -> Result<&'a [u8], LuaError> {

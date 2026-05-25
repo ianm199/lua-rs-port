@@ -29,9 +29,9 @@ use lua_types::{
     userdata::LuaUserData,
     LuaType,
     LuaStatus,
-    arith::ArithOp,
+
 };
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
+use crate::state_stub::{LuaState, LuaStateStubExt as _, LuaDebug};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +70,7 @@ pub const LUA_FILE_HANDLE: &[u8] = b"FILE*";
 const LUA_REGISTRYINDEX: i32 = -1_001_000;
 
 /// Minimum number of extra stack slots `lua_checkstack` guarantees per call.
+#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
 const LUA_MINSTACK: i32 = 20;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -793,7 +794,7 @@ pub fn add_char(buf: &mut LuaBuffer, c: u8) {
 
 /// Append `sz` to the length counter (used after writing directly into the buffer).
 ///
-pub fn add_size(buf: &mut LuaBuffer, sz: usize) {
+pub fn add_size(_buf: &mut LuaBuffer, sz: usize) {
     // PORT NOTE: In C this is a direct `n += sz` on the inline length field.
     // With Vec, length is implicit; this is a no-op unless caller wrote past len.
     // TODO(port): if direct-write into spare capacity is needed, switch to `unsafe`
@@ -1273,7 +1274,7 @@ fn warn_on(state: &mut LuaState, message: &[u8], tocont: bool) -> Result<(), Lua
 
 /// Warning function: continue writing a previous warning message.
 ///
-fn warn_cont(state: &mut LuaState, message: &[u8], tocont: bool) -> Result<(), LuaError> {
+fn warn_cont(_state: &mut LuaState, message: &[u8], tocont: bool) -> Result<(), LuaError> {
     eprint!("{}", BStr(message));
     // TODO(phase-b): set_warn_fn expects lua_CFunction in state_stub; warn_cont/warn_on take (msg, tocont). Wire after warn-fn API lands in lua-vm.
     if tocont {
