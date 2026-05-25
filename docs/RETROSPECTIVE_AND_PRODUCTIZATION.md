@@ -750,3 +750,74 @@ Each function is replaceable per project; the policy file is the
 project-specific configuration. This is closer to the "Tier 1: generic
 harness skeleton" §5 sketched, and the gap from today's mega_loop to
 that abstraction is the §11.5 list.
+
+## 12. v2 large-wave lane — first real adoption (2026-05-25, nginx)
+
+`port-harness/v2` (the `Source → Map → Wave → Prove` front door) had been built
+but never adopted by a real port — only the `minimal-port` example used it. The
+nginx connection-event-loop lane was its first genuine run: a cross-cutting
+runtime subsystem (migrate HTTP/1 serving from blocking thread-per-connection
+onto the existing mio event loop). Six waves authored in `WAVES.toml`; outcome
+was **3 proven, 3 blocked** with an honest append-only ledger.
+
+### 12.1 What v2 got right
+
+- **The architecture-map contract forced early discovery.** The rule "if a
+  source concept has no target owner, record a blocker instead of inventing a
+  parallel object" is what made the agent trace both serving paths and find they
+  *already converge* on the shared phase engine (`run_current_http_phase_engine`).
+  Without it the likely failure mode was building a second, forked phase pipeline
+  for the event loop. The map turned a 4671-line-`proxy.rs`-adjacent subsystem
+  into "plumb context + lifecycle around the shared entry," which is much smaller.
+- **The gap list (G0–G8) became the work-breakdown and the scope-cut tool.** The
+  agent used its own gap numbers to decide which gaps were which wave, and to say
+  "G7 is the proxy lane, not mine" instead of scope-creeping.
+- **Dependency-ordered waves + per-wave proof/record ledger** gave an unfakeable,
+  resumable trail. `next` correctly refused to offer wave 6 once 4/5 were blocked.
+
+### 12.2 The load-bearing finding: v2's proof model can record a false "pass"
+
+v2 runs a wave's declared proof gates and writes `pass`/`fail`/`blocked`. The
+default `source_wave` gate was `cargo test --workspace` — which **cannot observe
+the behavior the wave is about** (real `$remote_addr` in logs, keepalive counts,
+pipelining, limit_conn holds). Two concrete catches, both invisible to units:
+
+1. Wave 3 unit tests were green the *entire* time while the event-loop oracle
+   went config-parse-fail → 11 → 8 → 1 → 0 failing assertions as features landed.
+   Unit-green was never sufficient signal.
+2. Wave 5's oracle returned **PASS for the wrong reason** — the held connection
+   closed because SIGHUP *kills* the (signal-handler-less) process, not because of
+   graceful drain. The agent caught it only by manually asking "why did this pass"
+   and recorded the wave BLOCKED instead of claiming it.
+
+This is the harness's own founding rule — "build success is not signal" — being
+violated one level up, *inside* the tool built to enforce it. The mitigation we
+applied by hand (prefix the oracle proof with `env NGINX_RS_EVENT_LOOP=1` so it
+actually exercises the path under construction, and bake that condition into the
+gate) should be a v2 primitive, not lore.
+
+### 12.3 Concrete v2 additions this lane earned (priority-ordered)
+
+1. **A `source_wave` MUST declare at least one `oracle`/`runner` proof, not only
+   `command: cargo …`.** `validate` should reject a behavioral wave whose only
+   gate is a compile/unit gate. This closes 12.2 structurally.
+2. **An `oracle-deferred(wave-N)` proof state.** Let a wave honestly record
+   "unit-locked now; behavioral parity observed by wave N's oracle" as a
+   first-class ledger state, instead of a bare `pass` (today that deferral only
+   lives in prose, e.g. DECISIONS D8). The ledger should never say `pass` when the
+   meaningful oracle has not spoken.
+3. **Proofs should assert the causal mechanism where feasible, or at minimum the
+   `complete` flow should require a one-line "why did this pass" the agent fills.**
+   Wave 5's false green would have been caught by the gate, not by agent
+   diligence.
+4. **Gate validity conditions belong in the proof command** (the `env …` prefix
+   pattern), so a proof can't pass for the wrong configuration.
+
+### 12.4 Anti-sycophancy held at wave granularity
+
+The most reassuring result: with the proof gates pointed at the real oracle, the
+agent marked 3 of 6 waves BLOCKED with precise root causes (single-listener event
+loop; signal-handling vs zero-unsafe budget; proxy-timing-log regression) rather
+than forcing green. The Verifier-has-no-write-tools principle (§ on structural
+anti-sycophancy) generalizes here: the *oracle*, not the unit suite, must be the
+write-gate for a behavioral wave's `pass`.
