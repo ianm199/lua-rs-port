@@ -69,3 +69,10 @@ If the workflow fails at `npm identity` with `E401 Unauthorized`, the token in
 owner, overwrite the secret with `gh secret set NPM_TOKEN`, and rerun the real
 publish workflow. The workflow checks identity before the package gate on real
 publishes so bad tokens fail quickly.
+
+If the workflow passes `npm identity` but fails at `npm publish` with `E403`
+and a two-factor-authentication requirement, the token identifies the account
+but is not allowed to publish under that account's 2FA policy. Create an npm
+automation token or a granular access token with publish permission and 2FA
+bypass enabled for the intended owner, overwrite `NPM_TOKEN`, and rerun the real
+publish workflow.
