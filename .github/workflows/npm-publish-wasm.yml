@@ -44,16 +44,6 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: verify package gate
-        run: WASM_SKIP_BROWSER=1 ./harness/check_wasm_package.sh
-
-      - name: npm publish dry-run
-        if: ${{ inputs.dry_run }}
-        working-directory: packages/lua-rs-wasm
-        run: npm publish --dry-run --access public --tag "${{ inputs.tag }}"
-
       - name: require npm token
         if: ${{ !inputs.dry_run }}
         env:
@@ -70,6 +60,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm whoami
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: verify package gate
+        run: WASM_SKIP_BROWSER=1 ./harness/check_wasm_package.sh
+
+      - name: npm publish dry-run
+        if: ${{ inputs.dry_run }}
+        working-directory: packages/lua-rs-wasm
+        run: npm publish --dry-run --access public --tag "${{ inputs.tag }}"
 
       - name: npm publish
         if: ${{ !inputs.dry_run }}

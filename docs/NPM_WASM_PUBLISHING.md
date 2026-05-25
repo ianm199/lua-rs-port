@@ -61,3 +61,11 @@ npm also supports trusted publishing from GitHub Actions, which avoids storing
 an npm token and automatically creates provenance attestations. That requires
 configuring the package's trusted publisher settings on npm before publishing.
 Until that is configured, use the `NPM_TOKEN` workflow above.
+
+## Troubleshooting
+
+If the workflow fails at `npm identity` with `E401 Unauthorized`, the token in
+`NPM_TOKEN` is not accepted by npm. Create a new token for the intended package
+owner, overwrite the secret with `gh secret set NPM_TOKEN`, and rerun the real
+publish workflow. The workflow checks identity before the package gate on real
+publishes so bad tokens fail quickly.
