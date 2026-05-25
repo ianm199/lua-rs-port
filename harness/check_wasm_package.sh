@@ -5,6 +5,7 @@
 #   - wasm crates check for wasm32-unknown-unknown
 #   - the npm package builds and packs dist/lua_wasm.wasm
 #   - the package can be installed from a tarball and imported by package name
+#   - the low-level wasm smoke artifact is built from a clean checkout
 #   - Node and browser smokes execute Lua through the package entrypoint
 
 set -euo pipefail
@@ -35,6 +36,9 @@ cargo check --target wasm32-unknown-unknown \
 
 echo "[wasm] building packaged wasm artifact"
 npm run build:wasm --prefix packages/lua-rs-wasm
+
+echo "[wasm] building low-level wasm smoke artifact"
+cargo build --target wasm32-unknown-unknown -p lua-wasm-smoke --release
 
 echo "[wasm] checking generated wasm git hygiene"
 if ! git check-ignore -q packages/lua-rs-wasm/dist/lua_wasm.wasm; then

@@ -18,8 +18,8 @@ lua-rs -e 'print("hello")'
 
 - Passes the full upstream Lua 5.4.7 test suite (44/44).
 - A standalone binary: no `liblua`, no C interpreter, no C toolchain to build it.
-- Mostly safe Rust. The only `unsafe` is a small, audited core in the garbage
-  collector and the optional dynamic-library loader.
+- Mostly safe Rust, with unsafe isolated to audited GC, dynamic-loading, and
+  WASM pointer-ABI boundaries.
 - Competitive with reference C (~1.3× geomean wall time), benchmarked per commit.
 
 ## Usage
@@ -49,10 +49,12 @@ ABI compatibility, and stock Lua C modules that expect `liblua` won't load.
 
 ## Safety
 
-Most crates build under `#![forbid(unsafe_code)]`. The only `unsafe` is in the
-garbage collector (`lua-gc`) and the optional dynamic-library loader (`lua-cli`);
-both are budgeted and audited. It is not 100% safe Rust yet. See
-[docs/LUA_SYSTEM_DEEP_DIVE.md](docs/LUA_SYSTEM_DEEP_DIVE.md).
+Most crates build under `#![forbid(unsafe_code)]`. The trusted unsafe surface is
+budgeted in `lua-gc` for the collector, `lua-cli` for optional dynamic-library
+loading, and the dedicated `lua-wasm` / `lua-wasm-smoke` crates for the
+WebAssembly linear-memory pointer ABI. The core VM, stdlib, parser, runtime
+helper, and package wrapper stay outside that unsafe surface. It is not 100%
+safe Rust yet. See [docs/LUA_SYSTEM_DEEP_DIVE.md](docs/LUA_SYSTEM_DEEP_DIVE.md).
 
 ## Performance
 

@@ -31,13 +31,15 @@ Do not describe the project as "completely safe Rust."
 Describe it as:
 
 > The runtime keeps unsafe code behind explicit budgets. Most crates forbid
-> unsafe code. The trusted unsafe core is currently `lua-gc` plus the
-> `lua-cli` dynamic-library backend.
+> unsafe code. The trusted unsafe surface is currently `lua-gc`, the `lua-cli`
+> dynamic-library backend, and the dedicated WASM ABI crates.
 
 Current budget summary:
 
 - `lua-gc`: 13 counted sites, all in `heap.rs`;
 - `lua-cli`: 5 counted sites for `libloading` / dynamic module loading;
+- `lua-wasm`: 19 counted sites for the import/export pointer ABI;
+- `lua-wasm-smoke`: 17 counted sites in the non-published smoke harness ABI;
 - `lua-coro`: 0, with `unsafe_code = "forbid"` until a concrete stackful
   backend lands;
 - all other runtime crates: expected 0.

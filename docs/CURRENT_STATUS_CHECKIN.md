@@ -134,8 +134,9 @@ Related docs:
 Good public wording:
 
 > `lua-rs` exposes a safe public surface over a small audited unsafe core. Most
-> crates forbid unsafe code. The remaining unsafe surface is budgeted in `lua-gc`
-> and the `lua-cli` dynamic-loading backend.
+> crates forbid unsafe code. The remaining unsafe surface is budgeted in
+> `lua-gc`, the `lua-cli` dynamic-loading backend, and the dedicated WASM ABI
+> crates.
 
 Do not call the project completely safe Rust.
 

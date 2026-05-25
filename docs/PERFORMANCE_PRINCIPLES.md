@@ -87,10 +87,11 @@ These apply to *every* perf-shaped commit:
   no skipped GC barriers, no skipped error checks. The fix is always
   "do less work when the work is provably unnecessary," never "do the
   same work less correctly."
-- **No new `unsafe`** outside `lua-gc` and the existing `lua-cli` FFI backend.
-  `lua-coro` currently has a zero budget; a stackful backend must raise it in
-  the same patch. A hotpath fix that needs raw pointer arithmetic is a
-  different architectural conversation.
+- **No new `unsafe` in core runtime crates.** The current budgeted unsafe
+  surface is `lua-gc`, the existing `lua-cli` FFI backend, and the dedicated
+  WASM pointer ABI crates. `lua-coro` currently has a zero budget; a stackful
+  backend must raise it in the same patch. A hotpath fix that needs raw pointer
+  arithmetic is a different architectural conversation.
 - **No `String` for Lua data.** Use `&[u8]` / `Vec<u8>` / `LuaString`.
   The string library is byte-oriented and our impl must be too.
 - **GC canaries must stay green.** `./harness/canaries/gc/run_canaries.sh`

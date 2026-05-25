@@ -473,7 +473,8 @@ The practical version:
   dispatch boundaries);
 - every live heap reference reachable from the stack, call frames, globals,
   registry, metatables, intern pools, upvalues, and closures must be traced;
-- unsafe stays inside `lua-gc`.
+- core runtime unsafe stays outside `lua-vm`/`lua-stdlib`; today it is budgeted
+  in `lua-gc`, `lua-cli`, and the dedicated WASM ABI crates.
 
 ### Unsafe Audit Snapshot
 
@@ -481,6 +482,8 @@ Current unsafe budgets:
 
 - `lua-gc`: 13 counted sites, all in `heap.rs`;
 - `lua-cli`: 5 counted sites for the `libloading` dynamic-library backend;
+- `lua-wasm`: 19 counted sites for the import/export pointer ABI;
+- `lua-wasm-smoke`: 17 counted sites in the non-published smoke harness ABI;
 - `lua-coro`: 0, with `unsafe_code = "forbid"` until a concrete stackful
   backend lands.
 

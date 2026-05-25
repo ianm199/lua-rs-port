@@ -26,3 +26,9 @@
                     # type annotation rather than an `unsafe { }` scope. The
                     # ceiling tracks the hook's regex count, not a semantic
                     # block count. Each real block carries `// SAFETY: ...`.
+"lua-wasm"   = 19   # WASM import/export pointer ABI only. Host callbacks and
+                    # exported alloc/run/error functions cross linear-memory
+                    # pointer boundaries; the VM/runtime crates stay at zero.
+"lua-wasm-smoke" = 17 # Non-published harness cdylib for the same WASM ABI
+                      # surface. It exists to catch clean-checkout runtime
+                      # regressions and is not a production runtime crate.

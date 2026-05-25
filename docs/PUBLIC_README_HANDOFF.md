@@ -41,8 +41,8 @@ secondary for new users evaluating a Rust Lua runtime.
 - The upstream Lua 5.4.7 official suite passes 44/44 in the repo harness.
 - Normal script execution has no C runtime dependency.
 - Most crates forbid `unsafe`.
-- Remaining unsafe is budgeted in `lua-gc` and the `lua-cli` dynamic-loading
-  backend.
+- Remaining unsafe is budgeted in `lua-gc`, the `lua-cli` dynamic-loading
+  backend, and the dedicated `lua-wasm` / `lua-wasm-smoke` pointer ABI crates.
 - The project is not LuaJIT.
 
 ## Do Not Overclaim
@@ -140,8 +140,9 @@ Current public-link caveat:
 Suggested wording:
 
 > `lua-rs` exposes a safe public surface over a small audited unsafe core. Most
-> crates forbid unsafe code. The remaining unsafe surface is budgeted in `lua-gc`
-> and the `lua-cli` dynamic-library backend.
+> crates forbid unsafe code. The remaining unsafe surface is budgeted in
+> `lua-gc`, the `lua-cli` dynamic-library backend, and the dedicated WASM ABI
+> crates.
 
 Do not call the project "completely safe Rust."
 
