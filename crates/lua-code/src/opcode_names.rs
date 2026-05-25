@@ -3,24 +3,9 @@
 //! Direct port of `src/lopnames.h` from Lua 5.4.7. Order must match the
 //! `OpCode` enum (`src/lopcodes.h`); `ORDER OP` invariant.
 //!
-//! The C source is preserved inline as `// C:` comments for diff-time
+//! The C source is preserved inline as `
 //! review.
 
-// C: /* ORDER OP */
-// C: static const char *const opnames[] = {
-// C:   "MOVE", "LOADI", "LOADF", "LOADK", "LOADKX", "LOADFALSE", "LFALSESKIP",
-// C:   "LOADTRUE", "LOADNIL", "GETUPVAL", "SETUPVAL", "GETTABUP", "GETTABLE",
-// C:   "GETI", "GETFIELD", "SETTABUP", "SETTABLE", "SETI", "SETFIELD",
-// C:   "NEWTABLE", "SELF", "ADDI", "ADDK", "SUBK", "MULK", "MODK", "POWK",
-// C:   "DIVK", "IDIVK", "BANDK", "BORK", "BXORK", "SHRI", "SHLI", "ADD",
-// C:   "SUB", "MUL", "MOD", "POW", "DIV", "IDIV", "BAND", "BOR", "BXOR",
-// C:   "SHL", "SHR", "MMBIN", "MMBINI", "MMBINK", "UNM", "BNOT", "NOT",
-// C:   "LEN", "CONCAT", "CLOSE", "TBC", "JMP", "EQ", "LT", "LE", "EQK",
-// C:   "EQI", "LTI", "LEI", "GTI", "GEI", "TEST", "TESTSET", "CALL",
-// C:   "TAILCALL", "RETURN", "RETURN0", "RETURN1", "FORLOOP", "FORPREP",
-// C:   "TFORPREP", "TFORCALL", "TFORLOOP", "SETLIST", "CLOSURE", "VARARG",
-// C:   "VARARGPREP", "EXTRAARG", NULL
-// C: };
 //
 // PORT NOTE: dropped the trailing NULL sentinel. Length is `OP_COUNT` known
 // at compile time; Rust slice + bounds-check serves the role of the

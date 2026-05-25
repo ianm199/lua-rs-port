@@ -36,7 +36,6 @@ impl Trace for LuaUserDataImpl {
 
 impl Trace for LuaState {
     fn trace(&self, m: &mut Marker) {
-        // C: `traversethread` in lgc.c walks the live portion of the stack
         // and the open-upvalue list. Trace frame-bounded live ranges instead of
         // every slot up to `ci.top`: that reserved tail can contain stale values
         // from previous calls. Lua locals that sit above the transient `top` are
@@ -95,7 +94,6 @@ impl Trace for LuaState {
 
 impl Trace for GlobalState {
     fn trace(&self, m: &mut Marker) {
-        // C: `restartcollection` in lgc.c marks mainthread, l_registry, the
         // per-type metatables, and pending finalizers. We expand the set to
         // include preallocated short strings (memerrmsg, tmname[]) and the
         // open-upvalue thread list, both of which the panic-driven Phase-D

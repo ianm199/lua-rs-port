@@ -27,7 +27,6 @@ use lua_types::{AbsLineInfo, GcRef, LuaError, LuaString, LuaValue, LuaProto, Upv
 // use lua_code::{self, UnOpr, BinOpr, OpCode};
 
 // ── Token kind constants ────────────────────────────────────────────────────
-// C: RESERVED enum from llex.h; FIRST_RESERVED = 257 (UCHAR_MAX + 1).
 // TODO(port): replace with lua_lex::TokenKind enum when lua-lex lands.
 
 pub type TokenKind = i32;
@@ -71,42 +70,30 @@ pub const TK_STRING: TokenKind = 293;
 
 // ── Parser constants ────────────────────────────────────────────────────────
 
-/// C: #define MAXVARS 200
 const MAX_VARS: i32 = 200;
 
-/// C: NO_JUMP from lcode.h
 const NO_JUMP: i32 = -1;
 
-/// C: UNARY_PRIORITY 12
 const UNARY_PRIORITY: i32 = 12;
 
-/// C: LUA_MULTRET from lua.h
 const LUA_MULTRET: i32 = -1;
 
-/// C: MAXUPVAL 255 from lfunc.h
 const MAX_UPVAL: u8 = 255;
 
-/// C: MAXARG_Bx — max value for Bx field in an iABx instruction.
 /// TODO(port): should come from lua_types::opcode constants.
 const MAXARG_BX: i32 = (1 << 17) - 1;
 
-/// C: LFIELDS_PER_FLUSH 50 from lopcodes.h
 const LFIELDS_PER_FLUSH: i32 = 50;
 
 // ── Variable kind constants ─────────────────────────────────────────────────
-// C: VDKREG / RDKCONST / RDKTOCLOSE / RDKCTC from lparser.h
 // macros.tsv maps these to VarKind enum variants.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum VarKind {
-    /// C: VDKREG 0 — regular local variable
     Reg = 0,
-    /// C: RDKCONST 1 — read-only const variable
     Const = 1,
-    /// C: RDKTOCLOSE 2 — to-be-closed variable
     ToBeClosed = 2,
-    /// C: RDKCTC 3 — compile-time constant (no register)
     CompileTimeConst = 3,
 }
 
@@ -125,7 +112,6 @@ impl VarKind {
 
 // ── ExprKind ────────────────────────────────────────────────────────────────
 
-/// C: expkind — the kind of a deferred expression or variable.
 /// Variants correspond exactly to the C enum in lparser.h.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprKind {
@@ -152,13 +138,11 @@ pub enum ExprKind {
 }
 
 impl ExprKind {
-    /// C: hasmultret(k) — ((k) == VCALL || (k) == VVARARG)
     #[inline]
     pub fn has_mult_ret(self) -> bool {
         matches!(self, ExprKind::Call | ExprKind::VarArg)
     }
 
-    /// C: vkisvar(k) — VLOCAL <= k <= VINDEXSTR
     #[inline]
     pub fn is_var(self) -> bool {
         matches!(
@@ -173,7 +157,6 @@ impl ExprKind {
         )
     }
 
-    /// C: vkisindexed(k) — VINDEXED <= k <= VINDEXSTR
     #[inline]
     pub fn is_indexed(self) -> bool {
         matches!(
@@ -185,40 +168,28 @@ impl ExprKind {
 
 // ── ExprPayload ─────────────────────────────────────────────────────────────
 
-/// C: the `u` union inside `expdesc`.
 /// PORT NOTE: C uses a union; all arms share memory. Rust keeps all fields in
 ///   one struct for Phase A simplicity. Phase B may refactor to a proper enum.
 #[derive(Debug, Clone, Default)]
 pub struct ExprPayload {
-    /// C: u.ival — for VKINT
     pub ival: i64,
-    /// C: u.nval — for VKFLT
     pub nval: f64,
-    /// C: u.strval — for VKSTR
     pub strval: Option<GcRef<LuaString>>,
-    /// C: u.info — for VK/VNONRELOC/VUPVAL/VCONST/VJMP/VRELOC/VCALL/VVARARG
     pub info: i32,
-    /// C: u.ind.idx — register or K index for VINDEXED/VINDEXUP/VINDEXI/VINDEXSTR
     pub ind_idx: i16,
-    /// C: u.ind.t — table register or upvalue index
     pub ind_t: u8,
-    /// C: u.var.ridx — register holding the local variable (VLOCAL)
     pub var_ridx: u8,
-    /// C: u.var.vidx — compiler index in actvar.arr (VLOCAL)
     pub var_vidx: u16,
 }
 
 // ── ExprDesc ────────────────────────────────────────────────────────────────
 
-/// C: expdesc — describes a potentially-deferred expression/variable.
 /// Field `t`/`f` are patch-lists for short-circuit boolean evaluation.
 #[derive(Debug, Clone)]
 pub struct ExprDesc {
     pub k: ExprKind,
     pub u: ExprPayload,
-    /// C: e.t — patch list for 'exit when true'; NO_JUMP if none.
     pub t: i32,
-    /// C: e.f — patch list for 'exit when false'; NO_JUMP if none.
     pub f: i32,
 }
 
@@ -230,21 +201,15 @@ impl Default for ExprDesc {
 
 // ── VarDesc ─────────────────────────────────────────────────────────────────
 
-/// C: Vardesc — describes an active local variable during compilation.
 /// PORT NOTE: C uses a union (vd fields + k for const value). Rust keeps all
 ///   fields in a struct. The `const_val` field is only meaningful when
 ///   `kind == VarKind::CompileTimeConst`.
 #[derive(Debug, Clone)]
 pub struct VarDesc {
-    /// C: vd.kind
     pub kind: VarKind,
-    /// C: vd.ridx — register holding the variable
     pub ridx: u8,
-    /// C: vd.pidx — index in Proto.locvars
     pub pidx: i16,
-    /// C: vd.name — variable name
     pub name: Option<GcRef<LuaString>>,
-    /// C: k — compile-time constant value (only valid for CompileTimeConst)
     pub const_val: LuaValue,
 }
 
@@ -262,101 +227,65 @@ impl Default for VarDesc {
 
 // ── LabelDesc ───────────────────────────────────────────────────────────────
 
-/// C: Labeldesc — a pending goto statement or an active label.
 #[derive(Debug, Clone)]
 pub struct LabelDesc {
-    /// C: name — label identifier
     pub name: Option<GcRef<LuaString>>,
-    /// C: pc — bytecode position
     pub pc: i32,
-    /// C: line — source line
     pub line: i32,
-    /// C: nactvar — active variable count at this position
     pub nactvar: u8,
-    /// C: close — whether this goto escapes upvalues
     pub close: bool,
 }
 
 // ── DynData ─────────────────────────────────────────────────────────────────
 
-/// C: Dyndata — parser-local mutable lists (active vars, gotos, labels).
 /// C stored C-style dynamic arrays (arr/n/size); Rust uses Vec.
 #[derive(Debug, Default)]
 pub struct DynData {
-    /// C: actvar — all currently-active local variables
     pub actvar: Vec<VarDesc>,
-    /// C: gt — pending gotos
     pub gt: Vec<LabelDesc>,
-    /// C: label — active labels
     pub label: Vec<LabelDesc>,
 }
 
 // ── BlockCnt ────────────────────────────────────────────────────────────────
 
-/// C: BlockCnt — one nested block scope (defined in lparser.c, not header).
 /// In C: stack-allocated, chained via raw `*previous` pointer.
 /// In Rust: heap-allocated in an `Option<Box<BlockCnt>>` chain on FuncState.
 #[derive(Debug)]
 pub struct BlockCnt {
-    /// C: *previous — enclosing block; None at function top level.
     pub previous: Option<Box<BlockCnt>>,
-    /// C: firstlabel — index of first label in this block (in dyd.label)
     pub firstlabel: i32,
-    /// C: firstgoto — index of first pending goto (in dyd.gt)
     pub firstgoto: i32,
-    /// C: nactvar — active-local count on block entry
     pub nactvar: u8,
-    /// C: upval — true if some variable in block is an upvalue
     pub upval: bool,
-    /// C: isloop — true if this block is a loop body
     pub isloop: bool,
-    /// C: insidetbc — true if inside the scope of a to-be-closed variable
     pub insidetbc: bool,
 }
 
 // ── FuncState ───────────────────────────────────────────────────────────────
 
-/// C: FuncState — per-function compile-time state.
 /// In C: stack-allocated in `body()`, chained via raw `*prev` pointer.
 /// In Rust: heap-allocated via `Option<Box<FuncState>>` in LexState.
 #[derive(Debug)]
 pub struct FuncState {
-    /// C: f — the Proto being built.
     /// PORT NOTE: types.tsv maps this to GcRef<LuaProto>; we use Box<LuaProto>
     ///   during compilation to avoid RefCell overhead. close_func hands it to
     ///   the GC/parent at close time.
     pub f: Box<LuaProto>,
-    /// C: prev — enclosing FuncState (raw pointer in C; owned Box here).
     pub prev: Option<Box<FuncState>>,
-    /// C: bl — innermost active block
     pub bl: Option<Box<BlockCnt>>,
-    /// C: pc — next bytecode position to emit
     pub pc: i32,
-    /// C: lasttarget — pc of last 'jump label'
     pub lasttarget: i32,
-    /// C: previousline — last line saved in lineinfo
     pub previousline: i32,
-    /// C: nk — number of constants emitted
     pub nk: i32,
-    /// C: np — number of nested prototypes emitted
     pub np: i32,
-    /// C: nabslineinfo — number of absolute line-info records
     pub nabslineinfo: i32,
-    /// C: firstlocal — index of first local var in dyd.actvar
     pub firstlocal: i32,
-    /// C: firstlabel — index of first label in dyd.label
     pub firstlabel: i32,
-    /// C: ndebugvars — entries in f.locvars
     pub ndebugvars: i16,
-    /// C: nactvar — number of active locals
     pub nactvar: u8,
-    /// C: nups — number of upvalues
     pub nups: u8,
-    /// C: freereg — next free register
     pub freereg: u8,
-    /// C: iwthabs — instructions since last absolute line info
     pub iwthabs: u8,
-    /// C: needclose — function must close upvalues on return
     pub needclose: bool,
     /// Current `ls.lastline` value, mirrored on every `sync_from_lex`.
     /// Used by `emit_inst` to attribute the line to the just-consumed token
@@ -368,41 +297,30 @@ pub struct FuncState {
 
 // ── ConsControl ─────────────────────────────────────────────────────────────
 
-/// C: ConsControl — state for parsing a table constructor.
 /// PORT NOTE: C stores `expdesc *t` as a pointer to the caller's expdesc.
 ///   Rust stores a copy of the table descriptor; callers must sync back
 ///   if they mutate it. Phase B may restructure.
 #[derive(Debug)]
 pub struct ConsControl {
-    /// C: v — last list item read
     pub v: ExprDesc,
-    /// C: *t — table descriptor (copied; see PORT NOTE above)
     pub t: ExprDesc,
-    /// C: nh — total number of record elements
     pub nh: i32,
-    /// C: na — number of array elements already stored
     pub na: i32,
-    /// C: tostore — array elements pending store
     pub tostore: i32,
 }
 
 // ── LhsAssign ───────────────────────────────────────────────────────────────
 
-/// C: LHS_assign — chain of assignment left-hand-side variables.
 /// In C: stack-allocated, chained via raw `*prev`. In Rust: `Option<Box<...>>`.
 #[derive(Debug)]
 pub struct LhsAssign {
-    /// C: *prev — previous (outer) assignment target; None at head.
     pub prev: Option<Box<LhsAssign>>,
-    /// C: v — the variable being assigned
     pub v: ExprDesc,
 }
 
 // ── Unary / binary operator enums ───────────────────────────────────────────
-// C: UnOpr and BinOpr from lcode.h; defined locally here for Phase A.
 // TODO(port): unify with lua_code::UnOpr / BinOpr when lua-code lands.
 
-/// C: UnOpr
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOpr {
     Minus,    // OPR_MINUS
@@ -412,7 +330,6 @@ pub enum UnOpr {
     NoUnOpr,  // OPR_NOUNOPR
 }
 
-/// C: BinOpr
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOpr {
     Add,     // OPR_ADD
@@ -439,7 +356,6 @@ pub enum BinOpr {
     NoBinOpr, // OPR_NOBINOPR
 }
 
-/// C: priority[] table — (left_priority, right_priority) per BinOpr.
 /// Indexed by BinOpr discriminant (0 = Add, ... 20 = Or).
 const PRIORITY: [(u8, u8); 21] = [
     (10, 10), (10, 10),       // Add, Sub
@@ -463,47 +379,32 @@ pub use lua_code::opcodes::OpCode;
 //   written. Phase B will replace with `lua_lex::LexState` and remove this.
 
 /// Semantic info attached to a token.
-/// C: SemInfo from llex.h; Rust analogue is TokenValue.
 #[derive(Debug, Clone, Default)]
 pub struct TokenValue {
-    /// C: r — float literal value (for TK_FLT)
     pub r: f64,
-    /// C: i — integer literal value (for TK_INT)
     pub i: i64,
-    /// C: ts — string value (for TK_NAME, TK_STRING)
     pub ts: Option<GcRef<LuaString>>,
 }
 
-/// C: Token from llex.h.
 #[derive(Debug, Clone, Default)]
 pub struct LexToken {
     pub token: TokenKind,
     pub seminfo: TokenValue,
 }
 
-/// C: LexState — per-chunk lexer + parser state.
 /// PORT NOTE: This is a Phase A stub. In Phase B, `LexState` lives in
 ///   `lua-lex` and `lua-parse` imports it. `FuncState` will move here
 ///   or be passed separately. The `fs` field creates a circular-crate
 ///   dependency that Phase B must resolve (likely: both live in one crate).
 pub struct LexState {
-    /// C: current — current character (i32; -1 = EOZ)
     pub current: i32,
-    /// C: linenumber
     pub linenumber: i32,
-    /// C: lastline
     pub lastline: i32,
-    /// C: t — current token
     pub t: LexToken,
-    /// C: lookahead — one-token lookahead
     pub lookahead: LexToken,
-    /// C: fs — current FuncState (parser owns this)
     pub fs: Option<Box<FuncState>>,
-    /// C: dyd — parser dynamic data
     pub dyd: DynData,
-    /// C: source — chunk name
     pub source: Option<GcRef<LuaString>>,
-    /// C: envn — cached "_ENV" string
     pub envn: Option<GcRef<LuaString>>,
     /// Underlying lexer state that owns the ZIO stream and lex buffer.
     /// The parser drives the lexer by calling `lex_next` / `lex_lookahead`,
@@ -1508,7 +1409,6 @@ fn cg_discharge_vars(
     Ok(())
 }
 
-/// C: `luaK_setoneret` — adjust a Call/VarArg expression to produce a single
 /// result. For a Call this leaves the already-emitted instruction alone (it
 /// was emitted with `ARG_C = 2`, i.e. exactly one result) and reclassifies
 /// `e` as `NonReloc` pointing at the result register (the Call's `ARG_A`).
@@ -1530,7 +1430,6 @@ fn cg_set_one_ret(fs: &mut FuncState, e: &mut ExprDesc) {
     }
 }
 
-/// C: `luaK_storevar` — emit code to store `ex` into the variable described
 /// by `var`. Handles VLocal (move into register), VUpVal (OP_SETUPVAL),
 /// VIndexUp (OP_SETTABUP), VIndexI/IndexStr/Indexed (OP_SETI/SETFIELD/SETTABLE).
 fn cg_storevar(
@@ -1837,7 +1736,6 @@ fn cg_exp_to_next_reg(
     cg_exp_to_reg(fs, line, e, reg)
 }
 
-/// C: `luaK_setreturns` — patch the call/vararg instruction at `e.u.info` so
 /// it produces `nresults` values (or LUA_MULTRET when `nresults == -1`).
 fn cg_set_returns(fs: &mut FuncState, e: &mut ExprDesc, nresults: i32) {
     let pc_idx = e.u.info as usize;
@@ -1853,7 +1751,6 @@ fn cg_set_returns(fs: &mut FuncState, e: &mut ExprDesc, nresults: i32) {
     fs.f.code[pc_idx] = lua_types::opcode::Instruction::new(lc.0);
 }
 
-/// C: `static int finaltarget(Instruction *code, int i)` — chase consecutive
 /// `OP_JMP` instructions to the final landing pc. Capped at 100 hops to
 /// avoid infinite loops on malformed code.
 fn cg_final_target(fs: &FuncState, mut i: i32) -> i32 {
@@ -1867,7 +1764,6 @@ fn cg_final_target(fs: &FuncState, mut i: i32) -> i32 {
     i
 }
 
-/// C: `luaK_finish` — final pass over the emitted bytecode.
 ///
 /// Patches `OP_RETURN`/`OP_RETURN0`/`OP_RETURN1`/`OP_TAILCALL` to record the
 /// vararg signature (so the VM can roll back `ci->func` on return) and the
@@ -1913,7 +1809,6 @@ fn cg_finish(fs: &mut FuncState) {
     }
 }
 
-/// C: `luaK_ret` — emit the appropriate OP_RETURN / OP_RETURN0 / OP_RETURN1
 /// based on `nret`. `first` is the first result register; `nret` is the
 /// number of values to return (`LUA_MULTRET` for "all values on top").
 fn cg_emit_return(fs: &mut FuncState, line: i32, first: i32, nret: i32) {
@@ -1934,18 +1829,14 @@ fn cg_emit_return(fs: &mut FuncState, line: i32, first: i32, nret: i32) {
 
 // ── Free functions ──────────────────────────────────────────────────────────
 
-// C: static void statement(LexState *ls);  -- forward declaration
-// C: static void expr(LexState *ls, expdesc *v);  -- forward declaration
 // (Both defined later in this file; Rust has no forward declarations.)
 
 // ── §1 Error helpers ────────────────────────────────────────────────────────
 
-/// C: static l_noret error_expected(LexState *ls, int token)
 /// Constructs a syntax error for a missing expected token.
 /// In Rust, `l_noret` becomes returning `LuaError`; callers use
 /// `return Err(error_expected(...))`.
 fn error_expected(ls: &mut LexState, token: TokenKind) -> LuaError {
-    // C: luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "%s expected", luaX_token2str(ls, token)));
     let tok_str = lua_lex::token2str(&ls.lex, token);
     let mut msg: Vec<u8> = Vec::with_capacity(tok_str.len() + 10);
     msg.extend_from_slice(&tok_str);
@@ -1953,10 +1844,8 @@ fn error_expected(ls: &mut LexState, token: TokenKind) -> LuaError {
     lua_lex::syntax_error(&mut ls.lex, &msg)
 }
 
-/// C: static l_noret errorlimit(FuncState *fs, int limit, const char *what)
 /// Constructs a compile-time limit-exceeded syntax error.
 fn error_limit(fs: &FuncState, limit: i32, what: &str) -> LuaError {
-    // C: line == 0 ? "main function" : "function at line %d"
     let line = fs.f.linedefined;
     if line == 0 {
         LuaError::syntax(format_args!(
@@ -1969,7 +1858,6 @@ fn error_limit(fs: &FuncState, limit: i32, what: &str) -> LuaError {
     }
 }
 
-/// C: static void checklimit(FuncState *fs, int v, int l, const char *what)
 fn check_limit(fs: &FuncState, v: i32, l: i32, what: &str) -> Result<(), LuaError> {
     if v > l {
         return Err(error_limit(fs, l, what));
@@ -1979,11 +1867,9 @@ fn check_limit(fs: &FuncState, v: i32, l: i32, what: &str) -> Result<(), LuaErro
 
 // ── §2 Basic parse utilities ─────────────────────────────────────────────────
 
-/// C: static int testnext(LexState *ls, int c)
 /// If the current token matches `c`, consume it and return true.
 fn test_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<bool, LuaError> {
     if ls.t.token == c {
-        // C: luaX_next(ls)
         lex_next(ls, state)?;
         Ok(true)
     } else {
@@ -1991,7 +1877,6 @@ fn test_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<bo
     }
 }
 
-/// C: static void check(LexState *ls, int c)
 fn check(ls: &mut LexState, c: TokenKind) -> Result<(), LuaError> {
     if ls.t.token != c {
         return Err(error_expected(ls, c));
@@ -1999,18 +1884,14 @@ fn check(ls: &mut LexState, c: TokenKind) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void checknext(LexState *ls, int c)
 fn check_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<(), LuaError> {
     check(ls, c)?;
-    // C: luaX_next(ls)
     lex_next(ls, state)?;
     Ok(())
 }
 
-/// C: static TString *str_checkname(LexState *ls)
 /// Expects TK_NAME, returns the name string, advances.
 fn str_check_name(ls: &mut LexState, state: &mut LuaState) -> Result<GcRef<LuaString>, LuaError> {
-    // C: check(ls, TK_NAME); ts = ls->t.seminfo.ts; luaX_next(ls); return ts;
     check(ls, TK_NAME)?;
     let ts = ls.t.seminfo.ts.clone()
         .ok_or_else(|| LuaError::syntax(format_args!("name expected")))?;
@@ -2018,7 +1899,6 @@ fn str_check_name(ls: &mut LexState, state: &mut LuaState) -> Result<GcRef<LuaSt
     Ok(ts)
 }
 
-/// C: static void init_exp(expdesc *e, expkind k, int i)
 fn init_exp(e: &mut ExprDesc, k: ExprKind, i: i32) {
     e.f = NO_JUMP;
     e.t = NO_JUMP;
@@ -2026,7 +1906,6 @@ fn init_exp(e: &mut ExprDesc, k: ExprKind, i: i32) {
     e.u.info = i;
 }
 
-/// C: static void codestring(expdesc *e, TString *s)
 fn codestring(e: &mut ExprDesc, s: GcRef<LuaString>) {
     e.f = NO_JUMP;
     e.t = NO_JUMP;
@@ -2034,9 +1913,7 @@ fn codestring(e: &mut ExprDesc, s: GcRef<LuaString>) {
     e.u.strval = Some(s);
 }
 
-/// C: static void codename(LexState *ls, expdesc *e)
 fn codename(ls: &mut LexState, state: &mut LuaState, e: &mut ExprDesc) -> Result<(), LuaError> {
-    // C: codestring(e, str_checkname(ls));
     let name = str_check_name(ls, state)?;
     codestring(e, name);
     Ok(())
@@ -2044,7 +1921,6 @@ fn codename(ls: &mut LexState, state: &mut LuaState, e: &mut ExprDesc) -> Result
 
 // ── §3 Variable handling ─────────────────────────────────────────────────────
 
-/// C: static int registerlocalvar(LexState *ls, FuncState *fs, TString *varname)
 /// Registers a local variable in the proto's debug-info locvars array.
 /// Returns the index in locvars (= fs->ndebugvars before increment).
 fn register_local_var(
@@ -2053,11 +1929,9 @@ fn register_local_var(
     fs: &mut FuncState,
     varname: GcRef<LuaString>,
 ) -> Result<i32, LuaError> {
-    // C: luaM_growvector(ls->L, f->locvars, fs->ndebugvars, f->sizelocvars, LocVar, SHRT_MAX, ...)
     // In Rust, Vec grows automatically; just push a placeholder if needed.
     let idx = fs.ndebugvars as usize;
     while fs.f.locvars.len() <= idx {
-        // C: f->locvars[oldsize++].varname = NULL
         fs.f.locvars.push(LocalVar {
             varname: varname.clone(), // placeholder; overwritten below
             startpc: 0,
@@ -2066,13 +1940,11 @@ fn register_local_var(
     }
     fs.f.locvars[idx].varname = varname;
     fs.f.locvars[idx].startpc = fs.pc;
-    // C: luaC_objbarrier(ls->L, f, varname) — no-op in Phase A
     let result = fs.ndebugvars as i32;
     fs.ndebugvars += 1;
     Ok(result)
 }
 
-/// C: static int new_localvar(LexState *ls, TString *name)
 /// Creates a new local variable entry in dyd.actvar.
 /// Returns the variable's index relative to fs->firstlocal.
 fn new_local_var(
@@ -2080,14 +1952,11 @@ fn new_local_var(
     state: &mut LuaState,
     name: GcRef<LuaString>,
 ) -> Result<i32, LuaError> {
-    // C: checklimit(fs, dyd->actvar.n + 1 - fs->firstlocal, MAXVARS, "local variables")
     let fs = ls.fs.as_ref().unwrap();
     let n = ls.dyd.actvar.len() as i32;
     let first_local = fs.firstlocal;
     check_limit(fs, n + 1 - first_local, MAX_VARS, "local variables")?;
 
-    // C: luaM_growvector(...) — Vec grows automatically
-    // C: var = &dyd->actvar.arr[dyd->actvar.n++]
     let mut var = VarDesc::default();
     var.kind = VarKind::Reg;
     var.name = Some(name);
@@ -2096,21 +1965,17 @@ fn new_local_var(
     Ok(result)
 }
 
-/// C: static Vardesc *getlocalvardesc(FuncState *fs, int vidx)
 /// Returns a reference to the VarDesc at index `fs->firstlocal + vidx`.
 fn get_local_var_desc<'a>(ls: &'a LexState, fs: &FuncState, vidx: i32) -> &'a VarDesc {
     &ls.dyd.actvar[(fs.firstlocal + vidx) as usize]
 }
 
-/// C: static Vardesc *getlocalvardesc — mutable variant
 fn get_local_var_desc_mut(ls: &mut LexState, first_local: i32, vidx: i32) -> &mut VarDesc {
     &mut ls.dyd.actvar[(first_local + vidx) as usize]
 }
 
-/// C: static int reglevel(FuncState *fs, int nvar)
 /// Converts a compiler-index level to its register number.
 fn reg_level(ls: &LexState, fs: &FuncState, nvar: i32) -> i32 {
-    // C: search backwards for the highest variable in a register
     let mut nvar = nvar;
     while nvar > 0 {
         nvar -= 1;
@@ -2122,20 +1987,18 @@ fn reg_level(ls: &LexState, fs: &FuncState, nvar: i32) -> i32 {
     0
 }
 
-/// C: int luaY_nvarstack(FuncState *fs)
 /// Returns the number of variables currently occupying registers.
 /// LUAI_FUNC visibility.
 pub fn nvarstack(ls: &LexState, fs: &FuncState) -> i32 {
     reg_level(ls, fs, fs.nactvar as i32)
 }
 
-/// C: static LocVar *localdebuginfo(FuncState *fs, int vidx)
 /// Returns a mutable reference to the debug-info entry for variable `vidx`,
 /// or `None` if it is a compile-time constant (no debug info).
 fn local_debug_info<'a>(ls: &LexState, fs: &'a mut FuncState, vidx: i32) -> Option<&'a mut LocalVar> {
     let vd = get_local_var_desc(ls, fs, vidx);
     if vd.kind == VarKind::CompileTimeConst {
-        return None; // C: return NULL
+        return None;
     }
     let idx = vd.pidx as usize;
     debug_assert!((idx as i16) < fs.ndebugvars);
@@ -2143,7 +2006,6 @@ fn local_debug_info<'a>(ls: &LexState, fs: &'a mut FuncState, vidx: i32) -> Opti
     Some(&mut fs.f.locvars[idx])
 }
 
-/// C: static void init_var(FuncState *fs, expdesc *e, int vidx)
 fn init_var(ls: &LexState, fs: &FuncState, e: &mut ExprDesc, vidx: i32) {
     e.f = NO_JUMP;
     e.t = NO_JUMP;
@@ -2152,15 +2014,12 @@ fn init_var(ls: &LexState, fs: &FuncState, e: &mut ExprDesc, vidx: i32) {
     e.u.var_ridx = get_local_var_desc(ls, fs, vidx).ridx;
 }
 
-/// C: static void check_readonly(LexState *ls, expdesc *e)
 /// Raises an error if expression `e` describes a read-only variable.
 fn check_readonly(ls: &mut LexState, state: &mut LuaState, e: &ExprDesc) -> Result<(), LuaError> {
-    // C: FuncState *fs = ls->fs;  TString *varname = NULL;
     let varname: Option<GcRef<LuaString>> = {
         let fs = ls.fs.as_ref().unwrap();
         match e.k {
             ExprKind::Const => {
-                // C: varname = ls->dyd->actvar.arr[e->u.info].vd.name
                 ls.dyd.actvar[e.u.info as usize].name.clone()
             }
             ExprKind::Local => {
@@ -2183,7 +2042,6 @@ fn check_readonly(ls: &mut LexState, state: &mut LuaState, e: &ExprDesc) -> Resu
         }
     };
     if let Some(vname) = varname {
-        // C: luaK_semerror(ls, ...) prepends the `[source]:line:` prefix via
         // luaX_syntaxerror; route through `syntax_error` here for parity so
         // constructs.lua's checkload(":1: attempt to assign...") matches.
         let _ = state;
@@ -2196,7 +2054,6 @@ fn check_readonly(ls: &mut LexState, state: &mut LuaState, e: &ExprDesc) -> Resu
     Ok(())
 }
 
-/// C: static void adjustlocalvars(LexState *ls, int nvars)
 /// Starts the scope for the last `nvars` created variables.
 fn adjust_local_vars(ls: &mut LexState, state: &mut LuaState, nvars: i32) -> Result<(), LuaError> {
     // Extract needed data to avoid borrow conflict with ls.fs and ls.dyd
@@ -2210,7 +2067,6 @@ fn adjust_local_vars(ls: &mut LexState, state: &mut LuaState, nvars: i32) -> Res
     for i in 0..nvars {
         let vidx = nactvar_start + i;
         ls.fs.as_mut().unwrap().nactvar += 1;
-        // C: var->vd.ridx = reglevel++; var->vd.pidx = registerlocalvar(...)
         let var_name = ls.dyd.actvar[(first_local + vidx) as usize].name.clone();
         ls.dyd.actvar[(first_local + vidx) as usize].ridx = reglevel_val as u8;
         reglevel_val += 1;
@@ -2227,10 +2083,8 @@ fn adjust_local_vars(ls: &mut LexState, state: &mut LuaState, nvars: i32) -> Res
     Ok(())
 }
 
-/// C: static void removevars(FuncState *fs, int tolevel)
 /// Closes scope for all variables above `tolevel`, updating their endpc.
 fn remove_vars(ls: &mut LexState, fs: &mut FuncState, tolevel: i32) {
-    // C: fs->ls->dyd->actvar.n -= (fs->nactvar - tolevel)
     //
     // C just decrements a length counter; the underlying array memory is
     // untouched and the subsequent loop reads from it freely. A Rust
@@ -2241,7 +2095,6 @@ fn remove_vars(ls: &mut LexState, fs: &mut FuncState, tolevel: i32) {
     let delta = fs.nactvar as i32 - tolevel;
     while fs.nactvar as i32 > tolevel {
         fs.nactvar -= 1;
-        // C: LocVar *var = localdebuginfo(fs, --fs->nactvar); if (var) var->endpc = fs->pc
         let nactvar = fs.nactvar as i32;
         let vd_kind = {
             let first_local = fs.firstlocal;
@@ -2269,9 +2122,7 @@ fn remove_vars(ls: &mut LexState, fs: &mut FuncState, tolevel: i32) {
 
 // ── §4 Upvalue handling ──────────────────────────────────────────────────────
 
-/// C: static int searchupvalue(FuncState *fs, TString *name)
 /// Returns the index of an upvalue named `name`, or -1 if not found.
-/// C: pointer equality (eqstr) because all strings are interned.
 fn search_upvalue(fs: &FuncState, name: &GcRef<LuaString>) -> i32 {
     for (i, up) in fs.f.upvalues.iter().enumerate() {
         if up.name.as_ref().map_or(false, |n| GcRef::ptr_eq(n, name)) {
@@ -2281,14 +2132,11 @@ fn search_upvalue(fs: &FuncState, name: &GcRef<LuaString>) -> i32 {
     -1
 }
 
-/// C: static Upvaldesc *allocupvalue(FuncState *fs)
 /// Grows upvalues array and returns index of the new slot.
 fn alloc_upvalue(fs: &mut FuncState) -> Result<usize, LuaError> {
-    // C: checklimit(fs, fs->nups + 1, MAXUPVAL, "upvalues")
     if fs.nups as i32 + 1 > MAX_UPVAL as i32 {
         return Err(error_limit(fs, MAX_UPVAL as i32, "upvalues"));
     }
-    // C: luaM_growvector — Vec handles this automatically
     let idx = fs.nups as usize;
     while fs.f.upvalues.len() <= idx {
         fs.f.upvalues.push(UpvalDesc { name: None, instack: false, idx: 0, kind: 0 });
@@ -2297,7 +2145,6 @@ fn alloc_upvalue(fs: &mut FuncState) -> Result<usize, LuaError> {
     Ok(idx)
 }
 
-/// C: static int newupvalue(FuncState *fs, TString *name, expdesc *v)
 /// Adds a new upvalue descriptor and returns its index.
 fn new_upvalue(
     ls: &LexState,
@@ -2307,31 +2154,25 @@ fn new_upvalue(
 ) -> Result<i32, LuaError> {
     let idx = alloc_upvalue(fs)?;
     let kind: u8 = if v.k == ExprKind::Local {
-        // C: kind = getlocalvardesc(prev, v->u.var.vidx)->vd.kind
         let prev = fs.prev.as_deref().expect("upvalue capture requires enclosing FuncState");
         get_local_var_desc(ls, prev, v.u.var_vidx as i32).kind.as_u8()
     } else {
-        // C: kind = prev->f->upvalues[v->u.info].kind
         let prev = fs.prev.as_deref().expect("upvalue chain requires enclosing FuncState");
         prev.f.upvalues[v.u.info as usize].kind
     };
     let up = &mut fs.f.upvalues[idx];
     if v.k == ExprKind::Local {
-        // C: up->instack = 1; up->idx = v->u.var.ridx
         up.instack = true;
         up.idx = v.u.var_ridx;
     } else {
-        // C: up->instack = 0; up->idx = cast_byte(v->u.info)
         up.instack = false;
         up.idx = v.u.info as u8;
     }
     up.kind = kind;
     up.name = Some(name);
-    // C: luaC_objbarrier(fs->ls->L, fs->f, name) — no-op in Phase A
     Ok(fs.nups as i32 - 1)
 }
 
-/// C: static int searchvar(FuncState *fs, TString *n, expdesc *var)
 /// Searches for a local variable named `n`. Returns ExprKind as i32 or -1.
 fn searchvar(
     ls: &LexState,
@@ -2339,13 +2180,11 @@ fn searchvar(
     n: &GcRef<LuaString>,
     var: &mut ExprDesc,
 ) -> i32 {
-    // C: for (i = cast_int(fs->nactvar) - 1; i >= 0; i--)
     let mut i = fs.nactvar as i32 - 1;
     while i >= 0 {
         let vd = get_local_var_desc(ls, fs, i);
         if vd.name.as_ref().map_or(false, |nm| GcRef::ptr_eq(nm, n)) {
             if vd.kind == VarKind::CompileTimeConst {
-                // C: init_exp(var, VCONST, fs->firstlocal + i)
                 init_exp(var, ExprKind::Const, fs.firstlocal + i);
             } else {
                 init_var(ls, fs, var, i);
@@ -2357,10 +2196,8 @@ fn searchvar(
     -1
 }
 
-/// C: static void markupval(FuncState *fs, int level)
 /// Marks the block where the variable at `level` was defined as having an upvalue.
 fn markupval(fs: &mut FuncState, level: i32) {
-    // C: while (bl->nactvar > level) bl = bl->previous;  bl->upval = 1;
     let mut current = fs.bl.as_deref_mut();
     while let Some(b) = current {
         if (b.nactvar as i32) <= level {
@@ -2372,7 +2209,6 @@ fn markupval(fs: &mut FuncState, level: i32) {
     fs.needclose = true;
 }
 
-/// C: static void marktobeclosed(FuncState *fs)
 fn marktobeclosed(fs: &mut FuncState) {
     if let Some(bl) = fs.bl.as_mut() {
         bl.upval = true;
@@ -2383,7 +2219,6 @@ fn marktobeclosed(fs: &mut FuncState) {
 
 // ── §5 Variable resolution ───────────────────────────────────────────────────
 
-/// C: static void singlevaraux(FuncState *fs, TString *n, expdesc *var, int base)
 /// Recursively finds variable `n` in `fs` and its enclosing functions.
 /// If not found at any level, sets var->k = VVOID (global).
 fn singlevaraux(
@@ -2422,7 +2257,6 @@ fn singlevaraux(
     Ok(())
 }
 
-/// C: static void singlevar(LexState *ls, expdesc *var)
 /// Finds the variable named by the next TK_NAME token.
 fn singlevar(ls: &mut LexState, state: &mut LuaState, var: &mut ExprDesc) -> Result<(), LuaError> {
     let varname = str_check_name(ls, state)?;
@@ -2449,7 +2283,6 @@ fn singlevar(ls: &mut LexState, state: &mut LuaState, var: &mut ExprDesc) -> Res
     Ok(())
 }
 
-/// C: static void adjust_assign(LexState *ls, int nvars, int nexps, expdesc *e)
 fn adjust_assign(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -2461,7 +2294,6 @@ fn adjust_assign(
     let line = ls.lastline;
     let fs = ls.fs.as_mut().unwrap();
     if e.k.has_mult_ret() {
-        // C: extra = needed + 1; if (extra < 0) extra = 0; luaK_setreturns(fs, e, extra)
         let extra = if needed + 1 < 0 { 0 } else { needed + 1 };
         cg_set_returns(fs, e, extra);
     } else {
@@ -2602,7 +2434,6 @@ fn cg_fits_int_key(i: i64) -> bool {
     i >= 0 && (i as u32) <= lua_code::opcodes::MAXARG_C
 }
 
-/// C: void luaK_self(FuncState *fs, expdesc *e, expdesc *key)
 /// Emits OP_SELF, converting `e:key(...)` into the equivalent of `(e.key)(e, ...)`.
 /// Leaves `e` as VNONRELOC pointing at the function register (base); the self
 /// register is `base + 1`. `key` must be a string expression (VKStr).
@@ -2670,7 +2501,6 @@ fn cg_emit_nil(fs: &mut FuncState, line: i32, from: i32, n: i32) {
 
 // ── §6 Label / goto management ───────────────────────────────────────────────
 
-/// C: static l_noret jumpscopeerror(LexState *ls, Labeldesc *gt)
 fn jumpscopeerror(ls: &LexState, gt_idx: usize) -> LuaError {
     let gt = &ls.dyd.gt[gt_idx];
     let line = gt.line;
@@ -2693,7 +2523,6 @@ fn jumpscopeerror(ls: &LexState, gt_idx: usize) -> LuaError {
     ))
 }
 
-/// C: static void solvegoto(LexState *ls, int g, Labeldesc *label)
 /// Resolves goto at index `g` to `label`, removing it from pending list.
 fn solvegoto(
     ls: &mut LexState,
@@ -2702,7 +2531,6 @@ fn solvegoto(
     label_pc: i32,
     label_nactvar: u8,
 ) -> Result<(), LuaError> {
-    // C: if (l_unlikely(gt->nactvar < label->nactvar)) jumpscopeerror(ls, gt)
     if ls.dyd.gt[g].nactvar < label_nactvar {
         return Err(jumpscopeerror(ls, g));
     }
@@ -2712,7 +2540,6 @@ fn solvegoto(
     Ok(())
 }
 
-/// C: static Labeldesc *findlabel(LexState *ls, TString *name)
 /// Searches for an active label with the given name in the current function.
 fn findlabel(ls: &LexState, name: &GcRef<LuaString>) -> Option<usize> {
     let first = ls.fs.as_ref().unwrap().firstlabel as usize;
@@ -2725,7 +2552,6 @@ fn findlabel(ls: &LexState, name: &GcRef<LuaString>) -> Option<usize> {
     None
 }
 
-/// C: static int newlabelentry(LexState *ls, Labellist *l, TString *name, int line, int pc)
 /// Adds a new label/goto entry; returns its index.
 fn new_label_entry(
     ls: &mut LexState,
@@ -2738,13 +2564,11 @@ fn new_label_entry(
     let nactvar = ls.fs.as_ref().unwrap().nactvar;
     let entry = LabelDesc { name: Some(name), pc, line, nactvar, close: false };
     let list = if is_goto { &mut ls.dyd.gt } else { &mut ls.dyd.label };
-    // C: luaM_growvector — Vec grows automatically
     let n = list.len();
     list.push(entry);
     Ok(n)
 }
 
-/// C: static int newgotoentry(LexState *ls, TString *name, int line, int pc)
 fn new_goto_entry(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -2755,7 +2579,6 @@ fn new_goto_entry(
     new_label_entry(ls, state, true, name, line, pc)
 }
 
-/// C: static int solvegotos(LexState *ls, Labeldesc *lb)
 /// Resolves all pending gotos that match label `lb`.
 /// Returns true if any goto needed close.
 fn solvegotos(ls: &mut LexState, state: &mut LuaState, lb_idx: usize) -> Result<bool, LuaError> {
@@ -2780,7 +2603,6 @@ fn solvegotos(ls: &mut LexState, state: &mut LuaState, lb_idx: usize) -> Result<
     Ok(needs_close)
 }
 
-/// C: static int createlabel(LexState *ls, TString *name, int line, int last)
 /// Creates a new label; resolves pending gotos. Returns true if CLOSE emitted.
 fn createlabel(
     ls: &mut LexState,
@@ -2792,13 +2614,11 @@ fn createlabel(
     let label_pc = cg_get_label(ls.fs.as_mut().unwrap());
     let l = new_label_entry(ls, state, false, name, line, label_pc)?;
     if last {
-        // C: ll->arr[l].nactvar = fs->bl->nactvar
         let bl_nactvar = ls.fs.as_ref().unwrap().bl.as_ref().map_or(0, |b| b.nactvar);
         ls.dyd.label[l].nactvar = bl_nactvar;
     }
     let needs_close = solvegotos(ls, state, l)?;
     if needs_close {
-        // C: luaK_codeABC(fs, OP_CLOSE, luaY_nvarstack(fs), 0, 0)
         let nstack = nvarstack(ls, ls.fs.as_ref().unwrap()) as u32;
         let inst = lua_code::opcodes::Instruction::abck(
             lua_code::opcodes::OpCode::Close,
@@ -2813,7 +2633,6 @@ fn createlabel(
     Ok(false)
 }
 
-/// C: static void movegotosout(FuncState *fs, BlockCnt *bl)
 /// Adjusts pending gotos to outer block level when leaving a block.
 fn movegotosout(ls: &mut LexState, bl_firstgoto: usize, bl_nactvar: u8, bl_upval: bool) {
     let fs = ls.fs.as_ref().unwrap();
@@ -2823,7 +2642,6 @@ fn movegotosout(ls: &mut LexState, bl_firstgoto: usize, bl_nactvar: u8, bl_upval
 
     for i in first_goto..ls.dyd.gt.len() {
         let gt_nactvar = ls.dyd.gt[i].nactvar;
-        // C: if (reglevel(fs, gt->nactvar) > reglevel(fs, bl->nactvar)) gt->close |= bl->upval
         // TODO(port): compute reg_level properly using ls+fs
         if bl_upval {
             ls.dyd.gt[i].close = true;
@@ -2832,7 +2650,6 @@ fn movegotosout(ls: &mut LexState, bl_firstgoto: usize, bl_nactvar: u8, bl_upval
     }
 }
 
-/// C: static void enterblock(FuncState *fs, BlockCnt *bl, lu_byte isloop)
 /// Pushes a new block scope onto fs->bl.
 fn enter_block(ls: &mut LexState, isloop: bool) {
     let firstlabel = ls.dyd.label.len() as i32;
@@ -2858,7 +2675,6 @@ fn enter_block(ls: &mut LexState, isloop: bool) {
     });
 }
 
-/// C: static l_noret undefgoto(LexState *ls, Labeldesc *gt)
 fn undef_goto(ls: &LexState, gt_idx: usize) -> LuaError {
     let gt = &ls.dyd.gt[gt_idx];
     let line = gt.line;
@@ -2871,7 +2687,6 @@ fn undef_goto(ls: &LexState, gt_idx: usize) -> LuaError {
     }
 }
 
-/// C: static void leaveblock(FuncState *fs)
 /// Pops the innermost block scope, emitting CLOSE if needed.
 fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     // Snapshot block fields without popping; createlabel below relies on
@@ -2895,7 +2710,6 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
     ls.fs = Some(fs_box);
 
     let hasclose = if bl_isloop {
-        // C: createlabel(ls, luaS_newliteral(ls->L, "break"), 0, 0)
         let break_str = state.intern_str(b"break")?;
         createlabel(ls, state, break_str, 0, false)?
     } else {
@@ -2909,7 +2723,6 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
 
     let has_prev_block = ls.fs.as_ref().unwrap().bl.is_some();
     if !hasclose && has_prev_block && bl_upval {
-        // C: luaK_codeABC(fs, OP_CLOSE, stklevel, 0, 0)
         // Use `lastline` so the OP_CLOSE attributes to the block's terminating
         // token (END/UNTIL) rather than whatever the parser has peeked to next.
         // Mirrors lua-c's `savelineinfo(fs, f, fs->ls->lastline)`.
@@ -2925,13 +2738,11 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
     }
     ls.fs.as_mut().unwrap().freereg = stklevel as u8;
 
-    // C: ls->dyd->label.n = bl->firstlabel
     ls.dyd.label.truncate(bl_firstlabel as usize);
 
     if has_prev_block {
         movegotosout(ls, bl_firstgoto as usize, bl_nactvar, bl_upval);
     } else {
-        // C: if (bl->firstgoto < ls->dyd->gt.n) undefgoto(...)
         if (bl_firstgoto as usize) < ls.dyd.gt.len() {
             return Err(undef_goto(ls, bl_firstgoto as usize));
         }
@@ -2941,13 +2752,10 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
 
 // ── §7 Proto management ──────────────────────────────────────────────────────
 
-/// C: static Proto *addprototype(LexState *ls)
 /// Adds a new prototype slot to the current function's proto list.
 /// Returns a mutable reference to the new prototype.
 fn add_prototype(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, LuaError> {
-    // C: luaM_growvector(L, f->p, fs->np, f->sizep, Proto *, MAXARG_Bx, "functions")
     let np = ls.fs.as_ref().unwrap().np as usize;
-    // C: f->p[fs->np++] = clp = luaF_newproto(L)
     // TODO(port): allocate via state.gc().new_proto() in Phase B
     let new_proto = Box::new(LuaProto::placeholder());
     while ls.fs.as_ref().unwrap().f.p.len() <= np {
@@ -2959,11 +2767,9 @@ fn add_prototype(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto
             .push(GcRef::new(LuaProto::placeholder()));
     }
     ls.fs.as_mut().unwrap().np += 1;
-    // C: luaC_objbarrier(L, f, clp) — no-op in Phase A
     Ok(new_proto)
 }
 
-/// C: static void codeclosure(LexState *ls, expdesc *v)
 /// Emits OP_CLOSURE in the parent function and fixes up v.
 fn codeclosure(ls: &mut LexState, _state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     let line = ls.lastline;
@@ -2986,14 +2792,11 @@ fn codeclosure(ls: &mut LexState, _state: &mut LuaState, v: &mut ExprDesc) -> Re
     result
 }
 
-/// C: static void open_func(LexState *ls, FuncState *fs, BlockCnt *bl)
 /// Installs `new_fs` as the current FuncState, pushing old one as `prev`.
 fn open_func(ls: &mut LexState, state: &mut LuaState, mut new_fs: FuncState) -> Result<(), LuaError> {
-    // C: fs->prev = ls->fs; fs->ls = ls; ls->fs = fs;
     new_fs.prev = ls.fs.take();
 
     let f = &mut new_fs.f;
-    // C: fs->pc = 0; fs->previousline = f->linedefined; ...
     new_fs.pc = 0;
     new_fs.previousline = f.linedefined;
     new_fs.iwthabs = 0;
@@ -3007,30 +2810,23 @@ fn open_func(ls: &mut LexState, state: &mut LuaState, mut new_fs: FuncState) -> 
     new_fs.nactvar = 0;
     new_fs.needclose = false;
 
-    // C: fs->firstlocal = ls->dyd->actvar.n
     new_fs.firstlocal = ls.dyd.actvar.len() as i32;
-    // C: fs->firstlabel = ls->dyd->label.n
     new_fs.firstlabel = ls.dyd.label.len() as i32;
     new_fs.bl = None;
 
-    // C: f->source = ls->source; f->maxstacksize = 2
     new_fs.f.source = ls.source.clone();
     new_fs.f.maxstacksize = 2;
 
-    // C: luaC_objbarrier(ls->L, f, f->source) — no-op in Phase A
 
     ls.fs = Some(Box::new(new_fs));
 
-    // C: enterblock(fs, bl, 0)
     enter_block(ls, false);
     Ok(())
 }
 
-/// C: static void close_func(LexState *ls)
 /// Finalizes and pops the current FuncState.
 /// Returns the completed LuaProto.
 fn close_func(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, LuaError> {
-    // C: luaK_ret(fs, luaY_nvarstack(fs), 0)
     {
         let first = {
             let fs = ls.fs.as_ref().unwrap();
@@ -3047,15 +2843,12 @@ fn close_func(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, 
         );
         emit_inst(fs, line, inst);
     }
-    // C: leaveblock(fs)
     leave_block(ls, state)?;
     debug_assert!(ls.fs.as_ref().unwrap().bl.is_none());
 
-    // C: luaK_finish(fs) — patch OP_RETURN/RETURN0/RETURN1/TAILCALL for vararg
     //                     and needclose, and resolve JMP chains to final target.
     cg_finish(ls.fs.as_mut().unwrap());
 
-    // C: luaM_shrinkvector — truncate arrays to actual used size
     {
         let fs = ls.fs.as_mut().unwrap();
         let pc = fs.pc as usize;
@@ -3073,17 +2866,14 @@ fn close_func(ls: &mut LexState, state: &mut LuaState) -> Result<Box<LuaProto>, 
         fs.f.upvalues.truncate(nups);
     }
 
-    // C: ls->fs = fs->prev
     let mut fs_box = ls.fs.take().unwrap();
     ls.fs = fs_box.prev.take();
 
-    // C: luaC_checkGC(L) — no-op in Phase A
     Ok(fs_box.f)
 }
 
 // ── §8 Grammar rules — block / statement lists ───────────────────────────────
 
-/// C: static int block_follow(LexState *ls, int withuntil)
 /// Returns true if the current token can end a block.
 fn block_follow(ls: &LexState, withuntil: bool) -> bool {
     match ls.t.token {
@@ -3093,9 +2883,7 @@ fn block_follow(ls: &LexState, withuntil: bool) -> bool {
     }
 }
 
-/// C: static void statlist(LexState *ls)
 fn statlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
-    // C: while (!block_follow(ls, 1)) { if (TK_RETURN) { statement; return; } statement; }
     while !block_follow(ls, true) {
         if ls.t.token == TK_RETURN {
             statement(ls, state)?;
@@ -3106,10 +2894,8 @@ fn statlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void fieldsel(LexState *ls, expdesc *v)
 /// Handles '.' NAME or ':' NAME field selection.
 fn fieldsel(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
-    // C: luaK_exp2anyregup(fs, v); luaX_next(ls); codename(ls, &key); luaK_indexed(fs, v, &key)
     let line = ls.lastline;
     cg_exp_to_any_reg_up(ls.fs.as_mut().unwrap(), line, v)?;
     lex_next(ls, state)?; // skip '.' or ':'
@@ -3119,10 +2905,8 @@ fn fieldsel(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result
     Ok(())
 }
 
-/// C: static void yindex(LexState *ls, expdesc *v)
 /// Handles '[' expr ']' indexing.
 fn yindex(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
-    // C: luaX_next(ls); expr(ls, v); luaK_exp2val(ls->fs, v); checknext(ls, ']')
     lex_next(ls, state)?;
     expr(ls, state, v)?;
     // TODO(port): lua_code::exp_to_val(ls.fs.as_mut().unwrap(), v)?;
@@ -3132,18 +2916,15 @@ fn yindex(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(
 
 // ── §9 Constructor rules ─────────────────────────────────────────────────────
 
-/// C: static void recfield(LexState *ls, ConsControl *cc)
 fn recfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
     let reg = ls.fs.as_ref().unwrap().freereg as i32;
     let mut key = ExprDesc::default();
     let mut val = ExprDesc::default();
     if ls.t.token == TK_NAME {
-        // C: checklimit(fs, cc->nh, MAX_INT, "items in a constructor")
         let fs = ls.fs.as_ref().unwrap();
         check_limit(fs, cc.nh, i32::MAX, "items in a constructor")?;
         codename(ls, state, &mut key)?;
     } else {
-        // C: yindex(ls, &key)
         yindex(ls, state, &mut key)?;
     }
     cc.nh += 1;
@@ -3157,11 +2938,10 @@ fn recfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Re
     Ok(())
 }
 
-/// C: static void closelistfield(FuncState *fs, ConsControl *cc)
 fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
     let _ = state;
     if cc.v.k == ExprKind::Void {
-        return Ok(()); // C: if (cc->v.k == VVOID) return;
+        return Ok(());
     }
     let line = ls.lastline;
     cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, &mut cc.v)?;
@@ -3175,7 +2955,6 @@ fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl)
     Ok(())
 }
 
-/// C: static void lastlistfield(FuncState *fs, ConsControl *cc)
 fn lastlistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
     let _ = state;
     if cc.tostore == 0 {
@@ -3197,18 +2976,15 @@ fn lastlistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) 
     Ok(())
 }
 
-/// C: static void listfield(LexState *ls, ConsControl *cc)
 fn listfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
     expr(ls, state, &mut cc.v)?;
     cc.tostore += 1;
     Ok(())
 }
 
-/// C: static void field(LexState *ls, ConsControl *cc)
 fn field(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
     match ls.t.token {
         TK_NAME => {
-            // C: if (luaX_lookahead(ls) != '=') listfield else recfield
             let next_is_eq = lex_lookahead(ls, state)? == b'=' as TokenKind;
             if !next_is_eq {
                 listfield(ls, state, cc)?;
@@ -3226,7 +3002,6 @@ fn field(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Resul
     Ok(())
 }
 
-/// C: static void constructor(LexState *ls, expdesc *t)
 fn constructor(ls: &mut LexState, state: &mut LuaState, t: &mut ExprDesc) -> Result<(), LuaError> {
     let line = ls.lastline;
     let pc = cg_emit_newtable(ls.fs.as_mut().unwrap(), line);
@@ -3267,10 +3042,8 @@ fn constructor(ls: &mut LexState, state: &mut LuaState, t: &mut ExprDesc) -> Res
 
 // ── §10 Parameter list and function body ─────────────────────────────────────
 
-/// C: static void setvararg(FuncState *fs, int nparams)
 fn setvararg(fs: &mut FuncState, _state: &mut LuaState, nparams: i32) -> Result<(), LuaError> {
     fs.f.is_vararg = true;
-    // C: luaK_codeABC(fs, OP_VARARGPREP, nparams, 0, 0)
     let inst = lua_code::opcodes::Instruction::abck(
         lua_code::opcodes::OpCode::VarArgPrep,
         nparams as u32,
@@ -3281,7 +3054,6 @@ fn setvararg(fs: &mut FuncState, _state: &mut LuaState, nparams: i32) -> Result<
     Ok(())
 }
 
-/// C: static void parlist(LexState *ls)
 fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut nparams: i32 = 0;
     let mut isvararg = false;
@@ -3312,13 +3084,11 @@ fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     if isvararg {
         setvararg(ls.fs.as_mut().unwrap(), state, numparams as i32)?;
     }
-    // C: luaK_reserveregs(fs, fs->nactvar)
     let nactvar = ls.fs.as_ref().unwrap().nactvar as i32;
     reserve_regs(ls.fs.as_mut().unwrap(), nactvar)?;
     Ok(())
 }
 
-/// C: static void check_match(LexState *ls, int what, int who, int where)
 fn check_match(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -3326,12 +3096,10 @@ fn check_match(
     who: TokenKind,
     where_line: i32,
 ) -> Result<(), LuaError> {
-    // C: if (l_unlikely(!testnext(ls, what)))
     if !test_next(ls, state, what)? {
         if where_line == ls.linenumber {
             return Err(error_expected(ls, what));
         } else {
-            // C: luaX_syntaxerror(ls, luaO_pushfstring(..., "%s expected (to close %s at line %d)", ...))
             let what_str = lua_lex::token2str(&ls.lex, what);
             let who_str = lua_lex::token2str(&ls.lex, who);
             let mut msg: Vec<u8> = Vec::new();
@@ -3346,7 +3114,6 @@ fn check_match(
     Ok(())
 }
 
-/// C: static void body(LexState *ls, expdesc *e, int ismethod, int line)
 fn body(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -3354,7 +3121,6 @@ fn body(
     ismethod: bool,
     line: i32,
 ) -> Result<(), LuaError> {
-    // C: FuncState new_fs; BlockCnt bl; new_fs.f = addprototype(ls); new_fs.f->linedefined = line
     let new_proto = add_prototype(ls, state)?;
     let mut new_fs = FuncState {
         f: new_proto,
@@ -3403,7 +3169,6 @@ fn body(
 
 // ── §11 Expression list and function arguments ────────────────────────────────
 
-/// C: static int explist(LexState *ls, expdesc *v)
 fn explist(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<i32, LuaError> {
     let mut n = 1;
     expr(ls, state, v)?;
@@ -3416,10 +3181,8 @@ fn explist(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<
     Ok(n)
 }
 
-/// C: static void funcargs(LexState *ls, expdesc *f)
 fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result<(), LuaError> {
     let mut args = ExprDesc::default();
-    // C: int line = ls->linenumber;  — line of `(` (or `{` / TK_STRING), captured
     // BEFORE consuming, so the OP_CALL/etc emissions attribute to the call site.
     // errors.lua tests `a\n(\n23)` expects error at line of `(`, not line of `a`.
     let line = ls.linenumber;
@@ -3431,7 +3194,6 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
             } else {
                 explist(ls, state, &mut args)?;
                 if args.k.has_mult_ret() {
-                    // C: luaK_setmultret(fs, &args) — patch the trailing
                     // Call/VarArg to produce LUA_MULTRET so all of its return
                     // values become arguments to the enclosing call.
                     cg_set_returns(ls.fs.as_mut().unwrap(), &mut args, LUA_MULTRET);
@@ -3464,7 +3226,6 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
         }
         ls.fs.as_ref().unwrap().freereg as i32 - (base + 1)
     };
-    // C: init_exp(f, VCALL, luaK_codeABC(fs, OP_CALL, base, nparams+1, 2))
     let call_inst = lua_code::opcodes::Instruction::abck(
         lua_code::opcodes::OpCode::Call,
         base as u32,
@@ -3480,7 +3241,6 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
 
 // ── §12 Expression parsing ────────────────────────────────────────────────────
 
-/// C: static void primaryexp(LexState *ls, expdesc *v)
 fn primaryexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     match ls.t.token {
         c if c == b'(' as TokenKind => {
@@ -3500,7 +3260,6 @@ fn primaryexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resu
     Ok(())
 }
 
-/// C: static void suffixedexp(LexState *ls, expdesc *v)
 fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     primaryexp(ls, state, v)?;
     loop {
@@ -3524,7 +3283,6 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
                 funcargs(ls, state, v)?;
             }
             c if c == b'(' as TokenKind || c == TK_STRING || c == b'{' as TokenKind => {
-                // C: luaK_exp2nextreg(fs, v) — places the callee in a fixed register.
                 let line = ls.lastline;
                 cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, v)?;
                 funcargs(ls, state, v)?;
@@ -3534,7 +3292,6 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
     }
 }
 
-/// C: static void simpleexp(LexState *ls, expdesc *v)
 fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     match ls.t.token {
         TK_FLT => {
@@ -3560,14 +3317,12 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
             init_exp(v, ExprKind::False, 0);
         }
         TK_DOTS => {
-            // C: check_condition(ls, fs->f->is_vararg, "cannot use '...' outside a vararg function")
             let is_vararg = ls.fs.as_ref().unwrap().f.is_vararg;
             if !is_vararg {
                 return Err(LuaError::syntax(format_args!(
                     "cannot use '...' outside a vararg function"
                 )));
             }
-            // C: init_exp(v, VVARARG, luaK_codeABC(fs, OP_VARARG, 0, 0, 1))
             let line = ls.lastline;
             let inst = lua_code::opcodes::Instruction::abck(
                 lua_code::opcodes::OpCode::VarArg,
@@ -3581,25 +3336,23 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
         }
         c if c == b'{' as TokenKind => {
             constructor(ls, state, v)?;
-            return Ok(()); // C: return (no luaX_next)
+            return Ok(());
         }
         TK_FUNCTION => {
             lex_next(ls, state)?;
             let line = ls.lastline;
             body(ls, state, v, false, line)?;
-            return Ok(()); // C: return (no luaX_next)
+            return Ok(());
         }
         _ => {
             suffixedexp(ls, state, v)?;
-            return Ok(()); // C: return (no luaX_next)
+            return Ok(());
         }
     }
-    // C: luaX_next(ls) — for the simple literal cases
     lex_next(ls, state)?;
     Ok(())
 }
 
-/// C: static UnOpr getunopr(int op)
 fn getunopr(op: TokenKind) -> UnOpr {
     match op {
         TK_NOT => UnOpr::Not,
@@ -3610,7 +3363,6 @@ fn getunopr(op: TokenKind) -> UnOpr {
     }
 }
 
-/// C: static BinOpr getbinopr(int op)
 fn getbinopr(op: TokenKind) -> BinOpr {
     match op {
         c if c == b'+' as TokenKind => BinOpr::Add,
@@ -3638,7 +3390,6 @@ fn getbinopr(op: TokenKind) -> BinOpr {
     }
 }
 
-/// C: static BinOpr subexpr(LexState *ls, expdesc *v, int limit)
 /// Parses a sub-expression with operators of priority > `limit`.
 /// Returns the first untreated (lower-priority) operator.
 fn subexpr(
@@ -3647,17 +3398,14 @@ fn subexpr(
     v: &mut ExprDesc,
     limit: i32,
 ) -> Result<BinOpr, LuaError> {
-    // C: enterlevel(ls) — luaE_incCstack(ls->L)
     enter_level(ls)?;
 
     let uop = getunopr(ls.t.token);
     if uop != UnOpr::NoUnOpr {
-        // C: int line = ls->linenumber;  — captured BEFORE consuming the op
         // so this is the operator's own line, not the prior token's.
         let line = ls.linenumber;
         lex_next(ls, state)?; // skip unary operator
         subexpr(ls, state, v, UNARY_PRIORITY)?;
-        // C: luaK_prefix(ls->fs, uop, v, line)
         cg_prefix(ls.fs.as_mut().unwrap(), uop, v, line)?;
     } else {
         simpleexp(ls, state, v)?;
@@ -3666,7 +3414,6 @@ fn subexpr(
     let mut op = getbinopr(ls.t.token);
     while op != BinOpr::NoBinOpr && PRIORITY[op as usize].0 as i32 > limit {
         let mut v2 = ExprDesc::default();
-        // C: int line = ls->linenumber;  — operator's line, captured BEFORE consuming.
         // errors.lua's `lineerror` cases check that runtime arith errors are
         // attributed to the operator's line, not the operand's.
         let line = ls.linenumber;
@@ -3677,12 +3424,10 @@ fn subexpr(
         op = nextop;
     }
 
-    // C: leavelevel(ls) — L->nCcalls--
     leave_level(ls);
     Ok(op)
 }
 
-/// C: static void expr(LexState *ls, expdesc *v)
 fn expr(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(), LuaError> {
     subexpr(ls, state, v, 0)?;
     Ok(())
@@ -3690,7 +3435,6 @@ fn expr(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(),
 
 // ── §13 Statement rules ───────────────────────────────────────────────────────
 
-/// C: static void block(LexState *ls)
 fn block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     enter_block(ls, false);
     statlist(ls, state)?;
@@ -3698,7 +3442,6 @@ fn block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void check_conflict(LexState *ls, struct LHS_assign *lh, expdesc *v)
 /// Checks and fixes register/upvalue conflicts in multi-assignment.
 ///
 /// When a non-indexed LHS variable `v` also appears as the table or key in an
@@ -3769,21 +3512,18 @@ fn check_one_lhs_entry(entry: &mut ExprDesc, v: &ExprDesc, extra: i32) -> bool {
     found
 }
 
-/// C: static void restassign(LexState *ls, struct LHS_assign *lh, int nvars)
 fn restassign(
     ls: &mut LexState,
     state: &mut LuaState,
     lh: &mut LhsAssign,
     nvars: i32,
 ) -> Result<(), LuaError> {
-    // C: check_condition(ls, vkisvar(lh->v.k), "syntax error")
     if !lh.v.k.is_var() {
         return Err(lua_lex::syntax_error(&mut ls.lex, b"syntax error"));
     }
     check_readonly(ls, state, &lh.v.clone())?;
 
     if test_next(ls, state, b',' as TokenKind)? {
-        // C: restassign -> ',' suffixedexp restassign
         let mut nv_assign = LhsAssign {
             prev: None, // We don't link here — Phase B restructures
             v: ExprDesc::default(),
@@ -3792,13 +3532,10 @@ fn restassign(
         if !nv_assign.v.k.is_indexed() {
             check_conflict(ls, state, lh, &nv_assign.v.clone())?;
         }
-        // C: enterlevel(ls)
         enter_level(ls)?;
         restassign(ls, state, &mut nv_assign, nvars + 1)?;
-        // C: leavelevel(ls)
         leave_level(ls);
     } else {
-        // C: restassign -> '=' explist
         let mut e = ExprDesc::default();
         check_next(ls, state, b'=' as TokenKind)?;
         let nexps = explist(ls, state, &mut e)?;
@@ -3821,20 +3558,18 @@ fn restassign(
     Ok(())
 }
 
-/// C: static int cond(LexState *ls)
 /// Parses a condition expression; returns its 'exit when false' patch list.
 fn cond(ls: &mut LexState, state: &mut LuaState) -> Result<i32, LuaError> {
     let mut v = ExprDesc::default();
     expr(ls, state, &mut v)?;
     if v.k == ExprKind::Nil {
-        v.k = ExprKind::False; // C: 'falses' are all equal here
+        v.k = ExprKind::False;
     }
     let line = ls.lastline;
     cg_go_if_true(ls.fs.as_mut().unwrap(), line, &mut v)?;
     Ok(v.f)
 }
 
-/// C: static void gotostat(LexState *ls)
 fn gotostat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let line = ls.lastline;
     let name = str_check_name(ls, state)?;
@@ -3852,7 +3587,6 @@ fn gotostat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             nvarstack(ls, fs)
         };
         if cur_nvarstack > lblevel {
-            // C: luaK_codeABC(fs, OP_CLOSE, lblevel, 0, 0)
             let inst = lua_code::opcodes::Instruction::abck(
                 lua_code::opcodes::OpCode::Close,
                 lblevel as u32,
@@ -3868,19 +3602,15 @@ fn gotostat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void breakstat(LexState *ls)
 fn breakstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let line = ls.lastline;
-    // C: luaX_next(ls) — skip 'break'
     lex_next(ls, state)?;
-    // C: newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, luaK_jump(ls->fs))
     let break_str = state.intern_str(b"break")?;
     let pc = cg_jump(ls.fs.as_mut().unwrap(), line);
     new_goto_entry(ls, state, break_str, line, pc)?;
     Ok(())
 }
 
-/// C: static void checkrepeated(LexState *ls, TString *name)
 fn checkrepeated(ls: &LexState, name: &GcRef<LuaString>) -> Result<(), LuaError> {
     if let Some(lb_idx) = findlabel(ls, name) {
         let name_str = String::from_utf8_lossy(name.as_bytes());
@@ -3892,16 +3622,13 @@ fn checkrepeated(ls: &LexState, name: &GcRef<LuaString>) -> Result<(), LuaError>
     Ok(())
 }
 
-/// C: static void labelstat(LexState *ls, TString *name, int line)
 fn labelstat(
     ls: &mut LexState,
     state: &mut LuaState,
     name: GcRef<LuaString>,
     line: i32,
 ) -> Result<(), LuaError> {
-    // C: checknext(ls, TK_DBCOLON)
     check_next(ls, state, TK_DBCOLON)?;
-    // C: while (ls->t.token == ';' || ls->t.token == TK_DBCOLON) statement(ls)
     while ls.t.token == b';' as TokenKind || ls.t.token == TK_DBCOLON {
         statement(ls, state)?;
     }
@@ -3911,17 +3638,13 @@ fn labelstat(
     Ok(())
 }
 
-/// C: static void whilestat(LexState *ls, int line)
 fn whilestat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
-    // C: luaX_next(ls) — skip WHILE
     lex_next(ls, state)?;
-    // C: whileinit = luaK_getlabel(fs)
     let whileinit = cg_get_label(ls.fs.as_mut().unwrap());
     let condexit = cond(ls, state)?;
     enter_block(ls, true);
     check_next(ls, state, TK_DO)?;
     block(ls, state)?;
-    // C: luaK_jumpto(fs, whileinit) === luaK_patchlist(fs, luaK_jump(fs), whileinit)
     // Use `lastline` (line of the just-parsed body's last token) rather than
     // `linenumber` (which has already advanced to END) so the back-jump's
     // line attribution matches lua-c's bytecode and the line hook does not
@@ -3930,12 +3653,10 @@ fn whilestat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), L
     cg_patch_list(ls.fs.as_mut().unwrap(), back, whileinit)?;
     check_match(ls, state, TK_END, TK_WHILE, line)?;
     leave_block(ls, state)?;
-    // C: luaK_patchtohere(fs, condexit) — false conditions finish the loop
     cg_patch_to_here(ls.fs.as_mut().unwrap(), condexit)?;
     Ok(())
 }
 
-/// C: static void repeatstat(LexState *ls, int line)
 fn repeatstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     let repeat_init = cg_get_label(ls.fs.as_mut().unwrap());
     enter_block(ls, true);
@@ -3970,7 +3691,6 @@ fn repeatstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), 
     Ok(())
 }
 
-/// C: static void exp1(LexState *ls)
 /// Parse an expression and emit it to the next register.
 fn exp1(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut e = ExprDesc::default();
@@ -3981,7 +3701,6 @@ fn exp1(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void fixforjump(FuncState *fs, int pc, int dest, int back)
 fn fixforjump(fs: &mut FuncState, pc: i32, dest: i32, back: bool) -> Result<(), LuaError> {
     let mut offset = dest - (pc + 1);
     if back {
@@ -3997,7 +3716,6 @@ fn fixforjump(fs: &mut FuncState, pc: i32, dest: i32, back: bool) -> Result<(), 
     Ok(())
 }
 
-/// C: static void forbody(LexState *ls, int base, int line, int nvars, int isgen)
 fn forbody(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -4040,7 +3758,6 @@ fn forbody(
     Ok(())
 }
 
-/// C: static void fornum(LexState *ls, TString *varname, int line)
 fn fornum(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -4048,7 +3765,6 @@ fn fornum(
     line: i32,
 ) -> Result<(), LuaError> {
     let base = ls.fs.as_ref().unwrap().freereg as i32;
-    // C: new_localvarliteral(ls, "(for state)") × 3 + new_localvar(ls, varname)
     let for_state_str = state.intern_str(b"(for state)")?;
     new_local_var(ls, state, for_state_str.clone())?;
     new_local_var(ls, state, for_state_str.clone())?;
@@ -4075,7 +3791,6 @@ fn fornum(
     Ok(())
 }
 
-/// C: static void forlist(LexState *ls, TString *indexname)
 fn forlist(
     ls: &mut LexState,
     state: &mut LuaState,
@@ -4083,7 +3798,6 @@ fn forlist(
 ) -> Result<(), LuaError> {
     let mut nvars: i32 = 5; // gen, state, control, toclose, 'indexname'
     let base = ls.fs.as_ref().unwrap().freereg as i32;
-    // C: new_localvarliteral × 4 (for state vars)
     let for_state_str = state.intern_str(b"(for state)")?;
     new_local_var(ls, state, for_state_str.clone())?;
     new_local_var(ls, state, for_state_str.clone())?;
@@ -4096,7 +3810,6 @@ fn forlist(
         nvars += 1;
     }
     check_next(ls, state, TK_IN)?;
-    // C: line = ls->linenumber;  (lparser.c:1611, after consuming TK_IN)
     // After `in`, linenumber is the line of the operand — used for the
     // for-in control instructions so runtime errors point at the operand,
     // not the `in` keyword. errors.lua:401 depends on this.
@@ -4106,16 +3819,13 @@ fn forlist(
     adjust_assign(ls, state, 4, nexps, &mut e)?;
     adjust_local_vars(ls, state, 4)?;
     marktobeclosed(ls.fs.as_mut().unwrap()); // last control var must be closed
-    // C: luaK_checkstack(fs, 3)
     // TODO(port): lua_code::check_stack(ls.fs.as_mut().unwrap(), 3)?;
     forbody(ls, state, base, line, nvars - 4, true)?;
     Ok(())
 }
 
-/// C: static void forstat(LexState *ls, int line)
 fn forstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     enter_block(ls, true); // scope for loop and control variables
-    // C: luaX_next(ls) — skip 'for'
     lex_next(ls, state)?;
     let varname = str_check_name(ls, state)?;
     match ls.t.token {
@@ -4130,13 +3840,11 @@ fn forstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), Lua
     Ok(())
 }
 
-/// C: static void test_then_block(LexState *ls, int *escapelist)
 fn test_then_block(
     ls: &mut LexState,
     state: &mut LuaState,
     escapelist: &mut i32,
 ) -> Result<(), LuaError> {
-    // C: luaX_next(ls) — skip IF or ELSEIF
     lex_next(ls, state)?;
     let mut v = ExprDesc::default();
     expr(ls, state, &mut v)?;
@@ -4145,20 +3853,16 @@ fn test_then_block(
     let jf: i32;
     if ls.t.token == TK_BREAK {
         let line = ls.lastline;
-        // C: luaK_goiffalse(ls->fs, &v) — jumps if condition is true
         cg_go_if_false(ls.fs.as_mut().unwrap(), line, &mut v)?;
         lex_next(ls, state)?; // skip 'break'
         enter_block(ls, false);
-        // C: newgotoentry(ls, "break", line, v.t)
         let break_str = state.intern_str(b"break")?;
         new_goto_entry(ls, state, break_str, line, v.t)?;
-        // C: while (testnext(ls, ';')) {} -- skip semicolons
         while test_next(ls, state, b';' as TokenKind)? {}
         if block_follow(ls, false) {
             leave_block(ls, state)?;
             return Ok(());
         } else {
-            // C: jf = luaK_jump(fs)
             jf = cg_jump(ls.fs.as_mut().unwrap(), ls.linenumber);
         }
     } else {
@@ -4172,17 +3876,14 @@ fn test_then_block(
     leave_block(ls, state)?;
 
     if ls.t.token == TK_ELSE || ls.t.token == TK_ELSEIF {
-        // C: luaK_concat(fs, escapelist, luaK_jump(fs))
         let line = ls.lastline;
         let j = cg_jump(ls.fs.as_mut().unwrap(), line);
         cg_concat(ls.fs.as_mut().unwrap(), escapelist, j)?;
     }
-    // C: luaK_patchtohere(fs, jf)
     cg_patch_to_here(ls.fs.as_mut().unwrap(), jf)?;
     Ok(())
 }
 
-/// C: static void ifstat(LexState *ls, int line)
 fn ifstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
     let mut escapelist = NO_JUMP;
     test_then_block(ls, state, &mut escapelist)?; // IF cond THEN block
@@ -4193,12 +3894,10 @@ fn ifstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaE
         block(ls, state)?;
     }
     check_match(ls, state, TK_END, TK_IF, line)?;
-    // C: luaK_patchtohere(fs, escapelist)
     cg_patch_to_here(ls.fs.as_mut().unwrap(), escapelist)?;
     Ok(())
 }
 
-/// C: static void localfunc(LexState *ls)
 fn localfunc(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut b = ExprDesc::default();
     let fvar = ls.fs.as_ref().unwrap().nactvar as i32;
@@ -4207,13 +3906,11 @@ fn localfunc(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     adjust_local_vars(ls, state, 1)?; // enter its scope
     let line = ls.lastline;
     body(ls, state, &mut b, false, line)?;
-    // C: localdebuginfo(fs, fvar)->startpc = fs->pc
     let pc = ls.fs.as_ref().unwrap().pc;
     // TODO(port): local_debug_info(ls, ls.fs.as_mut().unwrap(), fvar).map(|lv| lv.startpc = pc);
     Ok(())
 }
 
-/// C: static int getlocalattribute(LexState *ls)
 /// Parses an optional '<const>' or '<close>' attribute.
 fn getlocalattribute(ls: &mut LexState, state: &mut LuaState) -> Result<VarKind, LuaError> {
     if test_next(ls, state, b'<' as TokenKind)? {
@@ -4234,11 +3931,9 @@ fn getlocalattribute(ls: &mut LexState, state: &mut LuaState) -> Result<VarKind,
     Ok(VarKind::Reg)
 }
 
-/// C: static void checktoclose(FuncState *fs, int level)
 fn checktoclose(ls: &mut LexState, state: &mut LuaState, level: i32) -> Result<(), LuaError> {
     if level != -1 {
         marktobeclosed(ls.fs.as_mut().unwrap());
-        // C: luaK_codeABC(fs, OP_TBC, reglevel(fs, level), 0, 0)
         let rl = reg_level(ls, ls.fs.as_ref().unwrap(), level);
         let line = ls.lastline;
         let inst = lua_code::opcodes::Instruction::abck(
@@ -4253,7 +3948,6 @@ fn checktoclose(ls: &mut LexState, state: &mut LuaState, level: i32) -> Result<(
     Ok(())
 }
 
-/// C: static void localstat(LexState *ls)
 fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut toclose: i32 = -1;
     let mut nvars: i32 = 0;
@@ -4289,7 +3983,6 @@ fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     if nvars == nexps
         && last_vd_kind == VarKind::Const
     {
-        // C: luaK_exp2const(fs, &e, &var->k) — try compile-time constant
         // TODO(port): let is_const = lua_code::exp_to_const(ls.fs.as_mut().unwrap(), &mut e, &mut var_k)?;
         let is_const = false; // placeholder
         if is_const {
@@ -4308,7 +4001,6 @@ fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static int funcname(LexState *ls, expdesc *v)
 /// Parses a function name (NAME {'.' NAME} [':' NAME]). Returns ismethod.
 fn funcname(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<bool, LuaError> {
     let mut ismethod = false;
@@ -4323,9 +4015,7 @@ fn funcname(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result
     Ok(ismethod)
 }
 
-/// C: static void funcstat(LexState *ls, int line)
 fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), LuaError> {
-    // C: luaX_next(ls) — skip FUNCTION
     lex_next(ls, state)?;
     let mut v = ExprDesc::default();
     let mut b = ExprDesc::default();
@@ -4338,19 +4028,15 @@ fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), Lu
     Ok(())
 }
 
-/// C: static void exprstat(LexState *ls)
 fn exprstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut v_assign = LhsAssign { prev: None, v: ExprDesc::default() };
     suffixedexp(ls, state, &mut v_assign.v)?;
     if ls.t.token == b'=' as TokenKind || ls.t.token == b',' as TokenKind {
-        // C: stat -> assignment
         restassign(ls, state, &mut v_assign, 1)?;
     } else {
-        // C: stat -> func call; check it's a call, fix result count
         if v_assign.v.k != ExprKind::Call {
             return Err(lua_lex::syntax_error(&mut ls.lex, b"syntax error"));
         }
-        // C: SETARG_C(*inst, 1) — call statement uses no results.
         let info = v_assign.v.u.info as usize;
         let fs = ls.fs.as_mut().unwrap();
         let mut lc = lua_code::opcodes::Instruction(fs.f.code[info].0);
@@ -4360,7 +4046,6 @@ fn exprstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: static void retstat(LexState *ls)
 fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut first = {
         let fs = ls.fs.as_ref().unwrap();
@@ -4373,13 +4058,10 @@ fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         let mut e = ExprDesc::default();
         nret = explist(ls, state, &mut e)?;
         if e.k.has_mult_ret() {
-            // C: luaK_setmultret(fs, &e)
             cg_set_returns(ls.fs.as_mut().unwrap(), &mut e, LUA_MULTRET);
             if e.k == ExprKind::Call && nret == 1 {
-                // C: tail call check — !fs->bl->insidetbc
                 let insidetbc = ls.fs.as_ref().unwrap().bl.as_ref().map_or(false, |b| b.insidetbc);
                 if !insidetbc {
-                    // C: SET_OPCODE(getinstruction(fs, &e), OP_TAILCALL)
                     let fs = ls.fs.as_mut().unwrap();
                     let info = e.u.info as usize;
                     let mut lc = lua_code::opcodes::Instruction(fs.f.code[info].0);
@@ -4391,32 +4073,25 @@ fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         } else {
             let line = ls.lastline;
             if nret == 1 {
-                // C: first = luaK_exp2anyreg(fs, &e)
                 first = cg_exp_to_any_reg(ls.fs.as_mut().unwrap(), line, &mut e)? as i32;
             } else {
-                // C: values must go to the top of the stack
                 cg_exp_to_next_reg(ls.fs.as_mut().unwrap(), line, &mut e)?;
             }
         }
     }
-    // C: luaK_ret(fs, first, nret)
     let line = ls.lastline;
     cg_emit_return(ls.fs.as_mut().unwrap(), line, first, nret);
-    // C: testnext(ls, ';')
     test_next(ls, state, b';' as TokenKind)?;
     Ok(())
 }
 
-/// C: static void statement(LexState *ls)
 /// Top-level statement dispatcher.
 fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
-    // C: int line = ls->linenumber;  (lparser.c, statement())
     // This is the line of the current keyword (for/while/if/...), captured
     // BEFORE consuming. Used both for error messages on unmatched blocks
     // AND for runtime-error line attribution on control-flow instructions
     // (FORPREP, etc). errors.lua's lineerror tests depend on this.
     let line = ls.linenumber;
-    // C: enterlevel(ls)
     enter_level(ls)?;
     match ls.t.token {
         c if c == b';' as TokenKind => {
@@ -4477,23 +4152,18 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     );
     let nv = nvarstack(ls, ls.fs.as_ref().unwrap());
     ls.fs.as_mut().unwrap().freereg = nv as u8;
-    // C: leavelevel(ls)
     leave_level(ls);
     Ok(())
 }
 
 // ── §14 Main function and entry point ────────────────────────────────────────
 
-/// C: static void mainfunc(LexState *ls, FuncState *fs)
 /// Compiles the main chunk (always a vararg function with _ENV upvalue).
 fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Result<Box<LuaProto>, LuaError> {
-    // C: open_func(ls, fs, &bl)
     open_func(ls, state, main_fs)?;
 
-    // C: setvararg(fs, 0) — main function is always vararg
     setvararg(ls.fs.as_mut().unwrap(), state, 0)?;
 
-    // C: env = allocupvalue(fs); env->instack=1; env->idx=0; env->kind=VDKREG; env->name=ls->envn
     let env_name = ls.envn.clone();
     {
         let idx = alloc_upvalue(ls.fs.as_mut().unwrap())?;
@@ -4503,20 +4173,16 @@ fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Resu
         up.kind = VarKind::Reg.as_u8();
         up.name = env_name.clone();
     }
-    // C: luaC_objbarrier(ls->L, fs->f, env->name) — no-op in Phase A
 
-    // C: luaX_next(ls) — read first token
     lex_next(ls, state)?;
 
     statlist(ls, state)?;
 
-    // C: check(ls, TK_EOS)
     check(ls, TK_EOS)?;
 
     close_func(ls, state)
 }
 
-/// C: LClosure *luaY_parser(lua_State *L, ZIO *z, Mbuffer *buff, Dyndata *dyd,
 ///                           const char *name, int firstchar)
 /// Top-level entry point: parses a chunk and returns the main LClosure.
 /// LUAI_FUNC visibility.
@@ -4566,7 +4232,6 @@ pub fn parse(
         lex: lex_ls,
         recursion_depth: 0,
     };
-    // C: luaX_setinput is the only setup the C parser performs before
     //   `mainfunc`; it does NOT pre-read the first token. `mainfunc` itself
     //   issues the initial `luaX_next` once its prelude (open_func, vararg
     //   marker, _ENV upvalue) is in place.

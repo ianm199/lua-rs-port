@@ -152,42 +152,35 @@ Useful links:
 
 ## LuaRocks Status
 
-LuaRocks is not ready for a public headline yet.
+LuaRocks is now a credible in-progress feature, but still not a broad ecosystem
+compatibility headline.
 
 Current verified state:
 
-- LuaRocks 3.11.1 boots far enough under `lua-rs` to print the CLI
-  help/version/config output.
-- The smoke still exits nonzero with:
-
-  ```text
-  lua: pcall_k failed: Runtime: error in error handling
-  ```
-
-- `luarocks install <rock>` has not been made to work yet.
-
-Smoke command used:
-
-```bash
-curl -sSL https://luarocks.org/releases/luarocks-3.11.1.tar.gz | tar xz -C /tmp
-tail -n +2 /tmp/luarocks-3.11.1/src/bin/luarocks > /tmp/luarocks_noshebang.lua
-LUA_PATH="/tmp/luarocks-3.11.1/src/?.lua;/tmp/luarocks-3.11.1/src/?/init.lua" \
-  ./target/debug/lua-rs -e 'arg={[0]="luarocks","--version"}; dofile("/tmp/luarocks_noshebang.lua")'
-```
+- LuaRocks 3.11.1 boots under `lua-rs`.
+- Basic commands work: `--version`, `help`, `config lua_version`, `path`,
+  `list`, `show`, and `which`.
+- Local `luarocks make` works for a toy pure-Lua rock.
+- Remote `luarocks search inspect` works.
+- Remote `luarocks install inspect` works.
+- The installed `inspect` module can be loaded and run under `lua-rs`.
+- The stock LuaRocks script can be run directly; `lua-cli` masks a leading
+  Unix shebang line before parsing script files.
+- Native C rocks are not supported today. A `luafilesystem` install probe
+  reaches the native build step and fails on missing `lua.h`, which is expected
+  without a PUC-Rio Lua C API/ABI layer.
 
 Good roadmap phrasing:
 
-> LuaRocks self-hosting is in progress: the LuaRocks 3.11.1 CLI boots and prints
-> version/config output under `lua-rs`; package installation still needs
-> fetch/digest/install-path work.
+> LuaRocks self-hosting is in progress: LuaRocks 3.11.1 can install and use
+> pure-Lua rocks under `lua-rs`; native C rocks remain out of scope until either
+> targeted Rust-native modules or a C API/ABI compatibility layer exist.
 
-Expected LuaRocks work:
+Remaining LuaRocks work:
 
-- fix the clean-exit/error-handler path;
 - clean up the `=[C]` program/chunk name;
-- first target a curated local `file://` rock repo;
-- add digest support if needed;
-- add HTTP/HTTPS later;
+- add a checked-in LuaRocks smoke harness;
+- broaden the curated pure-Lua package matrix;
 - avoid arbitrary native rocks until a C API/ABI strategy exists.
 
 See `docs/PHASE_G_LUAROCKS_PLAN.md`.

@@ -28,10 +28,6 @@ use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_i
 
 // ── Coroutine status codes ────────────────────────────────────────────────────
 
-// C: #define COS_RUN   0
-// C: #define COS_DEAD  1
-// C: #define COS_YIELD 2
-// C: #define COS_NORM  3
 
 /// Coroutine is the currently running thread.
 const COS_RUN: i32 = 0;
@@ -48,14 +44,12 @@ const COS_NORM: i32 = 3;
 /// Human-readable status strings indexed by the `COS_*` constants above.
 /// Pushed onto the Lua stack as byte strings.
 ///
-/// C: `static const char *const statname[] = {"running","dead","suspended","normal"};`
 const STAT_NAMES: [&[u8]; 4] = [b"running", b"dead", b"suspended", b"normal"];
 
 // ── Registration table ────────────────────────────────────────────────────────
 
 /// Registration table for the `coroutine` standard library.
 ///
-/// C: `static const luaL_Reg co_funcs[]`
 ///
 /// Each entry is `(name_bytes, function_pointer)`. Phase B resolves
 /// `lua_CFunction` to the canonical type alias from `lua-types`.
@@ -75,7 +69,6 @@ pub const CO_FUNCS: &[(&[u8], lua_CFunction)] = &[
 /// Retrieves the coroutine thread at stack index 1, raising a type error if
 /// the argument is absent or not a thread.
 ///
-/// C: `static lua_State *getco(lua_State *L)`
 fn get_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>, LuaError> {
     let co = state.to_thread(1);
     if co.is_none() {
@@ -96,7 +89,6 @@ fn get_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>, Lu
 /// is either suspended (initial state, function still on stack) or dead
 /// (empty stack).
 ///
-/// C: `static int auxstatus(lua_State *L, lua_State *co)`
 fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> i32 {
     let co_id = co.id;
     let entry_rc = {
@@ -159,7 +151,6 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 /// the parent's `LuaState` be reached through `Rc<RefCell<_>>` while it
 /// is held by `&mut` further up the call stack.
 ///
-/// C: `static int auxresume(lua_State *L, lua_State *co, int narg)`
 fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
     let co_id = co.id;
     let entry_rc = {
@@ -327,22 +318,17 @@ fn push_lit_or_nil(state: &mut LuaState, bytes: &[u8]) {
 /// On success pushes `true` followed by all values yielded or returned by `co`.
 /// On failure pushes `false` followed by the error object.
 ///
-/// C: `static int luaB_coresume(lua_State *L)`
 pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: lua_State *co = getco(L);
     let co = get_co(state)?;
-    // C: r = auxresume(L, co, lua_gettop(L) - 1);
     // PORT NOTE: lua_gettop returns the argument count; -1 excludes the coroutine
     // itself which sits at index 1.
     let narg = state.get_top() - 1;
     let r = aux_resume(state, co, narg);
     if r < 0 {
-        // C: lua_pushboolean(L, 0); lua_insert(L, -2); return 2;
         state.push(LuaValue::Bool(false));
         state.insert(-2);
         Ok(2)
     } else {
-        // C: lua_pushboolean(L, 1); lua_insert(L, -(r + 1)); return r + 1;
         state.push(LuaValue::Bool(true));
         state.insert(-(r + 1));
         Ok((r + 1) as usize)
@@ -356,7 +342,6 @@ pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
 /// success returns the yielded/returned values; on coroutine error raises
 /// the error (matching `select(2, assert(resume(co, ...)))` semantics).
 ///
-/// C: `static int luaB_auxwrap(lua_State *L)`
 fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
     let up = state.value_at(upvalue_index(1));
     let co = match up {
@@ -401,7 +386,6 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `lua_newthread` in C also leaves only the thread value on the
 /// caller's stack.
 ///
-/// C: `static int luaB_cocreate(lua_State *L)`
 pub fn co_create(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_type(1, LuaType::Function)?;
     let body = state.value_at(1);
@@ -414,7 +398,6 @@ pub fn co_create(state: &mut LuaState) -> Result<usize, LuaError> {
 /// The returned function, when called, resumes the coroutine as if by
 /// `coroutine.resume`, but raises an error rather than returning `false`.
 ///
-/// C: `static int luaB_cowrap(lua_State *L)`
 ///
 /// Captures the new coroutine thread as upvalue 1 of `aux_wrap`.
 pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
@@ -427,7 +410,6 @@ pub fn co_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// All arguments are passed back as results of the corresponding `resume`.
 ///
-/// C: `static int luaB_yield(lua_State *L)`
 /// → `return lua_yield(L, lua_gettop(L));`
 /// → `lua_yield(L,n)` is `lua_yieldk(L, n, 0, NULL)` (lua.h:316)
 pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
@@ -440,11 +422,8 @@ pub fn co_yield(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// Returns one of `"running"`, `"dead"`, `"suspended"`, or `"normal"`.
 ///
-/// C: `static int luaB_costatus(lua_State *L)`
 pub fn co_status(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: lua_State *co = getco(L);
     let co = get_co(state)?;
-    // C: lua_pushstring(L, statname[auxstatus(L, co)]);
     let idx = aux_status(state, &co) as usize;
     let name: &[u8] = STAT_NAMES[idx];
     let interned = state.intern_str(name)?;
@@ -455,7 +434,6 @@ pub fn co_status(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `coroutine.isyieldable([co])` — test whether a coroutine (default: current)
 /// is in a yieldable state.
 ///
-/// C: `static int luaB_yieldable(lua_State *L)`
 pub fn co_isyieldable(state: &mut LuaState) -> Result<usize, LuaError> {
     let is_yieldable = if matches!(state.type_at(1), LuaType::None) {
         state.is_yieldable()
@@ -494,13 +472,10 @@ pub fn co_isyieldable(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// The boolean is `true` when the current coroutine is the main thread.
 ///
-/// C: `static int luaB_corunning(lua_State *L)`
 pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: int ismain = lua_pushthread(L);
     // TODO(port): push_thread pushes a Thread value for the current LuaState and
     // returns true iff it is the main thread; Phase B wire-up needed.
     let is_main = state.push_thread()?;
-    // C: lua_pushboolean(L, ismain);
     state.push(LuaValue::Bool(is_main));
     Ok(2)
 }
@@ -512,7 +487,6 @@ pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
 /// suspended (`Yield`) or dead (`Ok` with no active frames).
 /// Calling on a running or normal coroutine raises an error.
 ///
-/// C: `static int luaB_close(lua_State *L)`
 pub fn co_close(state: &mut LuaState) -> Result<usize, LuaError> {
     lua_vm::state::inc_c_stack(state)?;
     let result = (|| {
@@ -629,9 +603,7 @@ fn close_suspended_or_dead(
 /// Opens the `coroutine` standard library by pushing a new table containing
 /// all `coroutine.*` functions.
 ///
-/// C: `LUAMOD_API int luaopen_coroutine(lua_State *L)` — `LUAMOD_API` → `pub`.
 pub fn open_coroutine(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: luaL_newlib(L, co_funcs);
     // TODO(port): state.new_lib(CO_FUNCS) creates a table from the registration
     // slice and leaves it on the stack; Phase B wire-up needed.
     state.new_lib(CO_FUNCS)?;

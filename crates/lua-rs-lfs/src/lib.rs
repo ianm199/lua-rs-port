@@ -1,6 +1,6 @@
 //! Rust-native port of the LuaFileSystem (lfs) module — Phase G-1.
 //!
-//! Provides the 8 lfs functions LuaRocks actually uses:
+//! Provides the lfs functions LuaRocks actually uses:
 //!
 //! | function                         | std::fs / std::env equivalent      |
 //! |----------------------------------|------------------------------------|
@@ -12,6 +12,7 @@
 //! | `lfs.currentdir()`               | `std::env::current_dir()`          |
 //! | `lfs.touch(path [,a [,m]])`      | `filetime::set_file_times`         |
 //! | `lfs.link(old, new [, sym])`     | `std::fs::hard_link` / `symlink`   |
+//! | `lfs.lock_dir(path)`             | atomic `lockfile.lfs` creation     |
 //!
 //! Out of scope (LuaRocks does not exercise these): `lfs.lock`, `lfs.unlock`,
 //! `lfs.symlinkattributes`, `lfs.setmode`.
@@ -24,6 +25,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -234,6 +236,63 @@ fn lfs_touch(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         Err(e) => push_fail(state, &e.to_string()),
     }
+}
+
+// ─── lfs.lock_dir ─────────────────────────────────────────────────────────
+
+fn lfs_lock_free(state: &mut LuaState) -> Result<usize, LuaError> {
+    lua_vm::api::push_value(state, upvalue_index(1));
+    let lockfile = match state.pop() {
+        LuaValue::Str(s) => path_from_bytes(s.as_bytes())?,
+        _ => {
+            return Err(LuaError::runtime(format_args!(
+                "lfs.lock_dir: missing lockfile upvalue"
+            )));
+        }
+    };
+
+    match std::fs::remove_file(&lockfile) {
+        Ok(()) => {
+            state.push(LuaValue::Bool(true));
+            Ok(1)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            state.push(LuaValue::Bool(true));
+            Ok(1)
+        }
+        Err(e) => push_fail(state, &e.to_string()),
+    }
+}
+
+/// `lfs.lock_dir(path)` — acquire a coarse directory lock.
+///
+/// LuaRocks uses LuaFileSystem's `lock_dir` by creating `path/lockfile.lfs`
+/// and later calling `lock:free()`.  We implement just that stock contract
+/// with `create_new(true)` so acquisition is atomic on the host filesystem.
+fn lfs_lock_dir(state: &mut LuaState) -> Result<usize, LuaError> {
+    let dir = path_from_bytes(&state.check_arg_string(1)?)?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return push_fail(state, &e.to_string());
+    }
+
+    let lockfile = dir.join("lockfile.lfs");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lockfile)
+    {
+        Ok(mut file) => {
+            let _ = file.write_all(b"lock");
+        }
+        Err(e) => return push_fail(state, &e.to_string()),
+    }
+
+    state.create_table(0, 1)?;
+    let lockfile_bytes = path_to_bytes(&lockfile);
+    state.push_string(&lockfile_bytes)?;
+    lua_vm::api::push_cclosure(state, lfs_lock_free, 1)?;
+    lua_vm::api::set_field(state, -2, b"free")?;
+    Ok(1)
 }
 
 // ─── lfs.attributes ────────────────────────────────────────────────────────
@@ -602,6 +661,7 @@ const LFS_FUNCS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] = &[
     (b"currentdir", lfs_currentdir),
     (b"dir",        lfs_dir),
     (b"link",       lfs_link),
+    (b"lock_dir",   lfs_lock_dir),
     (b"mkdir",      lfs_mkdir),
     (b"rmdir",      lfs_rmdir),
     (b"touch",      lfs_touch),
@@ -635,7 +695,7 @@ pub fn luaopen_lfs(state: &mut LuaState) -> Result<usize, LuaError> {
 //   unsafe_blocks: 0
 //   notes:         Rust-native module exposed via package.preload.lfs by
 //                  lua-cli. Statically linked, no FFI, no unsafe. Implements
-//                  the 8 lfs functions LuaRocks needs: attributes, dir,
-//                  mkdir, rmdir, chdir, currentdir, touch, link. Out of
+//                  the lfs functions LuaRocks needs: attributes, dir, mkdir,
+//                  rmdir, chdir, currentdir, touch, link, lock_dir. Out of
 //                  scope: lock/unlock/symlinkattributes/setmode.
 // ──────────────────────────────────────────────────────────────────────────

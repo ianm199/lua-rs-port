@@ -8,7 +8,6 @@
 use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 use lua_types::error::LuaError;
 
-// C: lua_CFunction — fn pointer type for Lua-callable C functions.
 // Matches types.tsv: lua_CFunction → fn(&mut LuaState) -> Result<usize, LuaError>
 type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 
@@ -28,7 +27,6 @@ type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 //
 // Per PORTING.md §3.1 all Lua string data uses &[u8], not &str.
 
-// C: static const luaL_Reg loadedlibs[] = {
 //   {LUA_GNAME, luaopen_base},
 //   {LUA_LOADLIBNAME, luaopen_package},
 //   {LUA_COLIBNAME, luaopen_coroutine},
@@ -70,7 +68,6 @@ static LOADED_LIBS: &[(&[u8], LuaCFunction)] = &[
     (b"debug",      crate::debug_lib::open_debug),
 ];
 
-// C: LUALIB_API void luaL_openlibs (lua_State *L) {
 //   const luaL_Reg *lib;
 //   /* "require" functions from 'loadedlibs' and set results to global table */
 //   for (lib = loadedlibs; lib->func; lib++) {
@@ -91,9 +88,7 @@ static LOADED_LIBS: &[(&[u8], LuaCFunction)] = &[
 /// Corresponds to `luaL_openlibs` in `linit.c`.
 pub fn open_libs(state: &mut LuaState) -> Result<(), LuaError> {
     for &(name, func) in LOADED_LIBS {
-        // C: luaL_requiref(L, lib->name, lib->func, 1);
         state.require_lib(name, func, true)?;
-        // C: lua_pop(L, 1);  /* remove lib */
         state.pop_n(1);
     }
     Ok(())

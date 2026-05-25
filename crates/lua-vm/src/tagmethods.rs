@@ -19,61 +19,34 @@ use lua_types::{CallInfoIdx, GcRef, LuaError, LuaType, LuaValue, StackIdx};
 /// `GlobalState.tmname` and are used as bit positions in `Table.flags`.
 /// Do **not** reorder without grepping ORDER TM / ORDER OP.
 ///
-/// C: `typedef enum { TM_INDEX, … TM_N } TMS;`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub(crate) enum TagMethod {
-    // C: TM_INDEX
     Index = 0,
-    // C: TM_NEWINDEX
     NewIndex,
-    // C: TM_GC
     Gc,
-    // C: TM_MODE
     Mode,
-    // C: TM_LEN
     Len,
-    // C: TM_EQ  /* last tag method with fast access */
     Eq,
-    // C: TM_ADD
     Add,
-    // C: TM_SUB
     Sub,
-    // C: TM_MUL
     Mul,
-    // C: TM_MOD
     Mod,
-    // C: TM_POW
     Pow,
-    // C: TM_DIV
     Div,
-    // C: TM_IDIV
     IDiv,
-    // C: TM_BAND
     BAnd,
-    // C: TM_BOR
     BOr,
-    // C: TM_BXOR
     BXor,
-    // C: TM_SHL
     Shl,
-    // C: TM_SHR
     Shr,
-    // C: TM_UNM
     Unm,
-    // C: TM_BNOT
     BNot,
-    // C: TM_LT
     Lt,
-    // C: TM_LE
     Le,
-    // C: TM_CONCAT
     Concat,
-    // C: TM_CALL
     Call,
-    // C: TM_CLOSE
     Close,
-    // C: TM_N  /* number of elements in the enum */
     N,
 }
 
@@ -81,7 +54,6 @@ impl TagMethod {
     /// Convert a raw u8 discriminant to a `TagMethod`.
     /// Returns `TagMethod::N` (sentinel) if `v >= TM_N`.
     ///
-    /// C: `cast(TMS, x)` — direct integer cast to the enum.
     /// PORT NOTE: reshaped for borrowck — C casts freely; Rust requires an explicit map.
     pub(crate) fn from_u8(v: u8) -> Self {
         match v {
@@ -117,14 +89,11 @@ impl TagMethod {
 
 /// Number of real metamethods (= `TagMethod::N as usize`).
 ///
-/// C: `TM_N`
 pub(crate) const TM_N: usize = TagMethod::N as usize;
 
 // ── Type-name table (from ltm.h / ltm.c `luaT_typenames_`) ──────────────────
 
-// C: static const char udatatypename[] = "userdata";
 //
-// C: LUAI_DDEF const char *const luaT_typenames_[LUA_TOTALTYPES] = {
 //   "no value",
 //   "nil", "boolean", udatatypename, "number",
 //   "string", "table", "function", udatatypename, "thread",
@@ -153,26 +122,22 @@ pub(crate) static TYPE_NAMES: &[&[u8]] = &[
 
 /// Return the human-readable type name for a `LuaType`.
 ///
-/// C: `#define ttypename(x) luaT_typenames_[(x) + 1]`
 ///
 /// Panics in debug builds if `t` is out of the expected range (shouldn't
 /// happen with a well-formed `LuaType`).
 pub(crate) fn type_name(t: LuaType) -> &'static [u8] {
-    // C: luaT_typenames_[(x) + 1]
     let idx = (t as i32 + 1) as usize;
     TYPE_NAMES.get(idx).copied().unwrap_or(b"?")
 }
 
 // ── luaT_init ────────────────────────────────────────────────────────────────
 
-// C: void luaT_init (lua_State *L)
 /// Intern all metamethod name strings and pin them in the GC.
 ///
 /// Must be called exactly once during `LuaState` initialization, before any
 /// metamethod lookup.  After this call, `GlobalState.tmname[i]` holds the
 /// interned `LuaString` for metamethod `i`.
 pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
-    // C: static const char *const luaT_eventname[] = {  /* ORDER TM */
     //     "__index", "__newindex",
     //     "__gc", "__mode", "__len", "__eq",
     //     "__add", "__sub", "__mul", "__mod", "__pow",
@@ -218,16 +183,12 @@ pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
         state.global_mut().tmname.resize(TM_N, pad);
     }
 
-    // C: for (i=0; i<TM_N; i++) {
     //     G(L)->tmname[i] = luaS_new(L, luaT_eventname[i]);
     //     luaC_fix(L, obj2gco(G(L)->tmname[i]));  /* never collect these names */
     // }
     for (i, &name) in EVENT_NAMES.iter().enumerate() {
-        // C: luaS_new(L, luaT_eventname[i])
         let interned = state.intern_str(name)?;
-        // C: G(L)->tmname[i] = ...
         state.global_mut().tmname[i] = interned.clone();
-        // C: luaC_fix(L, obj2gco(...))
         // Pin the string so the GC never collects it.
         // TODO(port): luaC_fix API on gc() is TBD; no-op in Phase A–C (Rc keeps it alive)
         state.gc().fix_object(&interned);
@@ -237,7 +198,6 @@ pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
 
 // ── luaT_gettm ───────────────────────────────────────────────────────────────
 
-// C: const TValue *luaT_gettm (Table *events, TMS event, TString *ename)
 /// Fast-path metamethod lookup using the table's flags cache.
 ///
 /// If the metamethod is absent, sets the corresponding bit in `events.flags`
@@ -252,11 +212,8 @@ pub(crate) fn get_tm(
     event: TagMethod,
     ename: &GcRef<lua_types::LuaString>,
 ) -> Option<LuaValue> {
-    // C: const TValue *tm = luaH_getshortstr(events, ename);
     let tm: LuaValue = events.get_short_str(ename);
-    // C: lua_assert(event <= TM_EQ);
     debug_assert!((event as u8) <= (TagMethod::Eq as u8));
-    // C: if (notm(tm)) {
     //     events->flags |= cast_byte(1u<<event);  /* cache this fact */
     //     return NULL;
     // }
@@ -264,14 +221,12 @@ pub(crate) fn get_tm(
         let _ = (events, event);
         None
     } else {
-        // C: else return tm;
         Some(tm)
     }
 }
 
 // ── luaT_gettmbyobj ──────────────────────────────────────────────────────────
 
-// C: const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o, TMS event)
 /// Look up a metamethod for any Lua value by dispatching on its type.
 ///
 /// Tables and full userdata have per-object metatables; all other types use
@@ -283,8 +238,6 @@ pub(crate) fn get_tm_by_obj(
     o: &LuaValue,
     event: TagMethod,
 ) -> LuaValue {
-    // C: Table *mt;
-    // C: switch (ttype(o)) {
     //   case LUA_TTABLE:    mt = hvalue(o)->metatable; break;
     //   case LUA_TUSERDATA: mt = uvalue(o)->metatable; break;
     //   default:            mt = G(L)->mt[ttype(o)];
@@ -297,18 +250,15 @@ pub(crate) fn get_tm_by_obj(
         LuaValue::Table(t) => t.metatable(),
         LuaValue::UserData(u) => u.metatable(),
         _ => {
-            // C: G(L)->mt[ttype(o)]
             let type_idx = o.base_type() as usize;
             state.global().mt[type_idx].clone()
         }
     };
 
-    // C: return (mt ? luaH_getshortstr(mt, G(L)->tmname[event]) : &G(L)->nilvalue);
     match mt {
         Some(mt_ref) => {
             // Clone the name string before the table lookup to avoid borrow conflict.
             let ename = state.global().tmname[event as usize].clone();
-            // C: luaH_getshortstr(mt, G(L)->tmname[event])
             mt_ref.get_short_str(&ename)
         }
         None => LuaValue::Nil,
@@ -317,7 +267,6 @@ pub(crate) fn get_tm_by_obj(
 
 // ── luaT_objtypename ─────────────────────────────────────────────────────────
 
-// C: const char *luaT_objtypename (lua_State *L, const TValue *o)
 /// Return the human-readable type name for a Lua value without any heap
 /// allocation in the common case.
 ///
@@ -334,11 +283,9 @@ pub(crate) fn get_tm_by_obj(
 /// `intern_str` + `get_short_str` so the lookup is infallible and requires
 /// no mutable state access.
 pub(crate) fn obj_type_name_cow(o: &LuaValue) -> Cow<'static, [u8]> {
-    // C: if (ttislightuserdata(o)) return "light userdata";
     if matches!(o, LuaValue::LightUserData(_)) {
         return Cow::Borrowed(b"light userdata");
     }
-    // C: if ((ttistable(o) && (mt = hvalue(o)->metatable) != NULL) ||
     //        (ttisfulluserdata(o) && (mt = uvalue(o)->metatable) != NULL))
     let mt: Option<GcRef<lua_types::value::LuaTable>> = match o {
         LuaValue::Table(t) => t.metatable(),
@@ -346,16 +293,13 @@ pub(crate) fn obj_type_name_cow(o: &LuaValue) -> Cow<'static, [u8]> {
         _ => None,
     };
     if let Some(mt_ref) = mt {
-        // C: const TValue *name = luaH_getshortstr(mt, luaS_new(L, "__name"));
         // Uses get_str_bytes (raw byte scan) rather than intern_str + get_short_str
         // so no mutable state is needed and no error can propagate.
         let name_val = mt_ref.get_str_bytes(b"__name");
-        // C: if (ttisstring(name))  return getstr(tsvalue(name));
         if let LuaValue::Str(s) = name_val {
             return Cow::Owned(s.as_bytes().to_vec());
         }
     }
-    // C: return ttypename(ttype(o));
     Cow::Borrowed(type_name(o.base_type()))
 }
 
@@ -372,7 +316,6 @@ pub(crate) fn obj_type_name(_state: &mut LuaState, o: &LuaValue) -> Result<Vec<u
 
 // ── luaT_callTM ──────────────────────────────────────────────────────────────
 
-// C: void luaT_callTM (lua_State *L, const TValue *f, const TValue *p1,
 //                      const TValue *p2, const TValue *p3)
 /// Call tag method `f` with three arguments, discarding any return values.
 ///
@@ -388,13 +331,7 @@ pub(crate) fn call_tm(
     p2: LuaValue,
     p3: LuaValue,
 ) -> Result<(), LuaError> {
-    // C: StkId func = L->top.p;
     let func = state.top_idx();
-    // C: setobj2s(L, func, f);     /* push function (assume EXTRA_STACK) */
-    // C: setobj2s(L, func + 1, p1); /* 1st argument */
-    // C: setobj2s(L, func + 2, p2); /* 2nd argument */
-    // C: setobj2s(L, func + 3, p3); /* 3rd argument */
-    // C: L->top.p = func + 4;
     //
     // PORT NOTE: In C these are direct writes into the EXTRA_STACK reserve
     // area above the official top.  In Rust we use push() which manages
@@ -403,7 +340,6 @@ pub(crate) fn call_tm(
     state.push(p1);
     state.push(p2);
     state.push(p3);
-    // C: if (isLuacode(L->ci))
     //      luaD_call(L, func, 0);
     //    else
     //      luaD_callnoyield(L, func, 0);
@@ -420,7 +356,6 @@ pub(crate) fn call_tm(
 
 // ── luaT_callTMres ───────────────────────────────────────────────────────────
 
-// C: void luaT_callTMres (lua_State *L, const TValue *f, const TValue *p1,
 //                          const TValue *p2, StkId res)
 /// Call tag method `f` with two arguments, writing the single result into
 /// the stack slot at index `res`.
@@ -439,20 +374,13 @@ pub(crate) fn call_tm_res(
     p2: LuaValue,
     res: StackIdx,
 ) -> Result<(), LuaError> {
-    // C: ptrdiff_t result = savestack(L, res);
     // savestack → StackIdx is already the stable byte-offset analogue; no-op.
 
-    // C: StkId func = L->top.p;
     let func = state.top_idx();
-    // C: setobj2s(L, func, f);     /* push function (assume EXTRA_STACK) */
-    // C: setobj2s(L, func + 1, p1); /* 1st argument */
-    // C: setobj2s(L, func + 2, p2); /* 2nd argument */
-    // C: L->top.p += 3;
     state.push(f);
     state.push(p1);
     state.push(p2);
 
-    // C: if (isLuacode(L->ci))
     //      luaD_call(L, func, 1);
     //    else
     //      luaD_callnoyield(L, func, 1);
@@ -464,10 +392,8 @@ pub(crate) fn call_tm_res(
         state.do_call_no_yield(func, 1)?;
     }
 
-    // C: res = restorestack(L, result);
     // restorestack → StackIdx is already stable; `res` is unchanged.
 
-    // C: setobjs2s(L, res, --L->top.p);  /* move result to its place */
     // Pre-decrement top, then copy that slot to res.
     let result_val = state.pop();
     state.set_at(res, result_val);
@@ -476,7 +402,6 @@ pub(crate) fn call_tm_res(
 
 // ── callbinTM (static) ────────────────────────────────────────────────────────
 
-// C: static int callbinTM (lua_State *L, const TValue *p1, const TValue *p2,
 //                           StkId res, TMS event)
 /// Try to find and call a binary tag method for `event`.
 ///
@@ -490,29 +415,23 @@ fn call_bin_tm(
     res: StackIdx,
     event: TagMethod,
 ) -> Result<bool, LuaError> {
-    // C: const TValue *tm = luaT_gettmbyobj(L, p1, event);  /* try first operand */
     let tm = get_tm_by_obj(state, p1, event);
-    // C: if (notm(tm))
     //      tm = luaT_gettmbyobj(L, p2, event);  /* try second operand */
     let tm = if tm.is_nil() {
         get_tm_by_obj(state, p2, event)
     } else {
         tm
     };
-    // C: if (notm(tm)) return 0;
     if tm.is_nil() {
         return Ok(false);
     }
-    // C: luaT_callTMres(L, tm, p1, p2, res);
     // Clone p1/p2 before the mutable borrow of `state` via call_tm_res.
     call_tm_res(state, tm, p1.clone(), p2.clone(), res)?;
-    // C: return 1;
     Ok(true)
 }
 
 // ── luaT_trybinTM ────────────────────────────────────────────────────────────
 
-// C: void luaT_trybinTM (lua_State *L, const TValue *p1, const TValue *p2,
 //                         StkId res, TMS event)
 /// Attempt a binary metamethod call; raise a type error if no metamethod exists.
 ///
@@ -533,9 +452,7 @@ pub(crate) fn try_bin_tm(
     res: StackIdx,
     event: TagMethod,
 ) -> Result<(), LuaError> {
-    // C: if (l_unlikely(!callbinTM(L, p1, p2, res, event))) {
     if !call_bin_tm(state, p1, p2, res, event)? {
-        // C: switch (event) {
         //   case TM_BAND: case TM_BOR: case TM_BXOR:
         //   case TM_SHL: case TM_SHR: case TM_BNOT: {
         //     if (ttisnumber(p1) && ttisnumber(p2))
@@ -559,16 +476,13 @@ pub(crate) fn try_bin_tm(
             | TagMethod::Shl
             | TagMethod::Shr
             | TagMethod::BNot => {
-                // C: if (ttisnumber(p1) && ttisnumber(p2))
                 if matches!(p1, LuaValue::Int(_) | LuaValue::Float(_))
                     && matches!(p2, LuaValue::Int(_) | LuaValue::Float(_))
                 {
-                    // C: luaG_tointerror(L, p1, p2) — varinfo enriches "number" with
                     // "(field 'huge')" / "(local 'x')" etc. based on the bytecode that
                     // produced the bad operand.
                     return Err(crate::debug::to_int_error(state, p1, p1_idx, p2, p2_idx));
                 } else {
-                    // C: luaG_opinterror(L, p1, p2, "perform bitwise operation on") —
                     // varinfo on the non-number operand.
                     let p1_idx = p1_idx.unwrap_or(StackIdx(0));
                     let p2_idx = p2_idx.unwrap_or(StackIdx(0));
@@ -578,7 +492,6 @@ pub(crate) fn try_bin_tm(
                 }
             }
             _ => {
-                // C: luaG_opinterror(L, p1, p2, "perform arithmetic on") —
                 // varinfo enriches with "(global 'aaa')" etc.
                 let p1_idx = p1_idx.unwrap_or(StackIdx(0));
                 let p2_idx = p2_idx.unwrap_or(StackIdx(0));
@@ -593,23 +506,19 @@ pub(crate) fn try_bin_tm(
 
 // ── luaT_tryconcatTM ─────────────────────────────────────────────────────────
 
-// C: void luaT_tryconcatTM (lua_State *L)
 /// Attempt the `__concat` metamethod on the two values at the top of the stack.
 ///
 /// Reads `stack[top-2]` and `stack[top-1]`, searches both for `__concat`,
 /// calls it with `(stack[top-2], stack[top-1])` writing the result back to
 /// `stack[top-2]`, or raises `LuaError::concat_error` if no metamethod exists.
 pub(crate) fn try_concat_tm(state: &mut LuaState) -> Result<(), LuaError> {
-    // C: StkId top = L->top.p;
     let top = state.top_idx();
-    // C: if (l_unlikely(!callbinTM(L, s2v(top - 2), s2v(top - 1), top - 2, TM_CONCAT)))
     //      luaG_concaterror(L, s2v(top - 2), s2v(top - 1));
     //
     // Clone the operands before any call that might mutate the stack.
     let p1 = state.get_at(top - 2).clone();
     let p2 = state.get_at(top - 1).clone();
     if !call_bin_tm(state, &p1, &p2, top - 2, TagMethod::Concat)? {
-        // C: luaG_concaterror(L, s2v(top - 2), s2v(top - 1))
         return Err(LuaError::concat_error(&p1, &p2));
     }
     Ok(())
@@ -617,7 +526,6 @@ pub(crate) fn try_concat_tm(state: &mut LuaState) -> Result<(), LuaError> {
 
 // ── luaT_trybinassocTM ───────────────────────────────────────────────────────
 
-// C: void luaT_trybinassocTM (lua_State *L, const TValue *p1, const TValue *p2,
 //                              int flip, StkId res, TMS event)
 /// Try a binary associative metamethod, optionally swapping the operands.
 ///
@@ -635,7 +543,6 @@ pub(crate) fn try_bin_assoc_tm(
     res: StackIdx,
     event: TagMethod,
 ) -> Result<(), LuaError> {
-    // C: if (flip)
     //      luaT_trybinTM(L, p2, p1, res, event);
     //    else
     //      luaT_trybinTM(L, p1, p2, res, event);
@@ -648,7 +555,6 @@ pub(crate) fn try_bin_assoc_tm(
 
 // ── luaT_trybiniTM ───────────────────────────────────────────────────────────
 
-// C: void luaT_trybiniTM (lua_State *L, const TValue *p1, lua_Integer i2,
 //                          int flip, StkId res, TMS event)
 /// Try a binary metamethod where the second operand is an integer constant.
 ///
@@ -662,17 +568,13 @@ pub(crate) fn try_bini_tm(
     res: StackIdx,
     event: TagMethod,
 ) -> Result<(), LuaError> {
-    // C: TValue aux;
-    // C: setivalue(&aux, i2);
     let aux = LuaValue::Int(i2);
     // The immediate operand has no stack location, so it gets `None`.
-    // C: luaT_trybinassocTM(L, p1, &aux, flip, res, event);
     try_bin_assoc_tm(state, p1, p1_idx, &aux, None, flip, res, event)
 }
 
 // ── luaT_callorderTM ─────────────────────────────────────────────────────────
 
-// C: int luaT_callorderTM (lua_State *L, const TValue *p1, const TValue *p2,
 //                           TMS event)
 /// Call an order metamethod (`__lt` or `__le`) and return its boolean result.
 ///
@@ -687,7 +589,6 @@ pub(crate) fn call_order_tm(
     p2: &LuaValue,
     event: TagMethod,
 ) -> Result<bool, LuaError> {
-    // C: if (callbinTM(L, p1, p2, L->top.p, event))  /* try original event */
     //      return !l_isfalse(s2v(L->top.p));
     //
     // PORT NOTE: In C, `L->top.p` is used as a scratch slot (written by
@@ -704,7 +605,6 @@ pub(crate) fn call_order_tm(
     // leaves exactly one value on the stack above func.
     let res_idx = state.top_idx();
     if call_bin_tm(state, p1, p2, res_idx, event)? {
-        // C: return !l_isfalse(s2v(L->top.p));
         // l_isfalse(o) → matches!(o, LuaValue::Nil | LuaValue::Bool(false))
         let result = state.get_at(res_idx).clone();
         return Ok(!matches!(result, LuaValue::Nil | LuaValue::Bool(false)));
@@ -712,13 +612,11 @@ pub(crate) fn call_order_tm(
 
     // PORT NOTE: LUA_COMPAT_LT_LE block skipped (see above).
 
-    // C: luaG_ordererror(L, p1, p2);  /* no metamethod found */
     Err(crate::debug::order_error(state, p1, p2))
 }
 
 // ── luaT_callorderiTM ────────────────────────────────────────────────────────
 
-// C: int luaT_callorderiTM (lua_State *L, const TValue *p1, int v2,
 //                            int flip, int isfloat, TMS event)
 /// Call an order metamethod where the second operand is a primitive int or float.
 ///
@@ -734,25 +632,20 @@ pub(crate) fn call_orderi_tm(
     isfloat: bool,
     event: TagMethod,
 ) -> Result<bool, LuaError> {
-    // C: TValue aux; const TValue *p2;
-    // C: if (isfloat) {
     //      setfltvalue(&aux, cast_num(v2));
     //    }
     //    else
     //      setivalue(&aux, v2);
     let aux = if isfloat {
-        // C: cast_num(v2)  →  v2 as f64
         LuaValue::Float(v2 as f64)
     } else {
         LuaValue::Int(v2 as i64)
     };
 
-    // C: if (flip) {  /* arguments were exchanged? */
     //      p2 = p1; p1 = &aux;  /* correct them */
     //    }
     //    else
     //      p2 = &aux;
-    // C: return luaT_callorderTM(L, p1, p2, event);
     if flip {
         call_order_tm(state, &aux, p1, event)
     } else {
@@ -762,7 +655,6 @@ pub(crate) fn call_orderi_tm(
 
 // ── luaT_adjustvarargs ───────────────────────────────────────────────────────
 
-// C: void luaT_adjustvarargs (lua_State *L, int nfixparams, CallInfo *ci,
 //                              const Proto *p)
 /// Adjust the stack layout for a vararg function at call entry.
 ///
@@ -780,19 +672,15 @@ pub(crate) fn adjust_varargs(
     ci_idx: CallInfoIdx,
     proto: &GcRef<lua_types::LuaProto>,
 ) -> Result<(), LuaError> {
-    // C: int actual = cast_int(L->top.p - ci->func.p) - 1;  /* number of arguments */
     let ci_func: StackIdx = state.call_info[ci_idx.as_usize()].func;
     let actual = (state.top_idx().0 as i32) - (ci_func.0 as i32) - 1;
-    // C: int nextra = actual - nfixparams;  /* number of extra arguments */
     let nextra = actual - nfixparams;
-    // C: ci->u.l.nextraargs = nextra;
     // TODO(phase-b): nextraargs lives inside CallInfoFrame::Lua; needs proper
     // pattern-match write through state.call_info[..].u.
     if let crate::state::CallInfoFrame::Lua { ref mut nextraargs, .. } = state.call_info[ci_idx.as_usize()].u {
         *nextraargs = nextra;
     }
 
-    // C: luaD_checkstack(L, p->maxstacksize + 1);
     let maxstacksize = proto.maxstacksize as i32;
     state.check_stack(maxstacksize + 1)?;
 
@@ -800,11 +688,9 @@ pub(crate) fn adjust_varargs(
     // StackIdx is index-based so the value is still correct).
     let ci_func: StackIdx = state.call_info[ci_idx.as_usize()].func;
 
-    // C: setobjs2s(L, L->top.p++, ci->func.p);  /* copy function to the top */
     let func_val = state.get_at(ci_func).clone();
     state.push(func_val);
 
-    // C: for (i = 1; i <= nfixparams; i++) {
     //      setobjs2s(L, L->top.p++, ci->func.p + i);
     //      setnilvalue(s2v(ci->func.p + i));  /* erase original parameter (for GC) */
     //    }
@@ -815,12 +701,9 @@ pub(crate) fn adjust_varargs(
         let src: StackIdx = ci_func + i as i32;
         let param_val = state.get_at(src).clone();
         state.push(param_val);
-        // C: setnilvalue(s2v(ci->func.p + i))  →  *o = LuaValue::Nil
         state.set_at(src, LuaValue::Nil);
     }
 
-    // C: ci->func.p += actual + 1;
-    // C: ci->top.p  += actual + 1;
     // TODO(port): `actual + 1` may be negative if `actual < -1` (malformed call);
     // casting to StackIdx (u32) would underflow.  In practice Lua guarantees
     // actual >= 0 at this point, but add a debug_assert in Phase B.
@@ -828,14 +711,12 @@ pub(crate) fn adjust_varargs(
     state.call_info[ci_idx.as_usize()].func = state.call_info[ci_idx.as_usize()].func + offset;
     state.call_info[ci_idx.as_usize()].top = state.call_info[ci_idx.as_usize()].top + offset;
 
-    // C: lua_assert(L->top.p <= ci->top.p && ci->top.p <= L->stack_last.p);
     debug_assert!(state.top_idx().0 <= state.call_info[ci_idx.as_usize()].top.0);
     Ok(())
 }
 
 // ── luaT_getvarargs ──────────────────────────────────────────────────────────
 
-// C: void luaT_getvarargs (lua_State *L, CallInfo *ci, StkId where, int wanted)
 /// Copy vararg values into the stack starting at `where_idx`.
 ///
 /// `wanted` specifies how many values to copy.  Pass `wanted < 0` (the
@@ -849,19 +730,15 @@ pub(crate) fn get_varargs(
     where_idx: StackIdx,
     wanted: i32,
 ) -> Result<(), LuaError> {
-    // C: int nextra = ci->u.l.nextraargs;
     let nextra: i32 = if let crate::state::CallInfoFrame::Lua { nextraargs, .. } = state.call_info[ci_idx.as_usize()].u { nextraargs } else { 0 };
 
-    // C: if (wanted < 0) {
     //      wanted = nextra;  /* get all extra arguments available */
     //      checkstackGCp(L, nextra, where);  /* ensure stack space */
     //      L->top.p = where + nextra;  /* next instruction will need top */
     //    }
     let wanted: i32 = if wanted < 0 {
-        // C: checkstackGCp(L, nextra, where)  →  check_stack + gc step
         state.check_stack(nextra)?;
         state.gc().check_step();
-        // C: L->top.p = where + nextra
         // TODO(port): `where_idx + nextra as i32` may overflow if nextra
         // is very large; checked add in Phase B.
         state.set_top(where_idx + nextra as i32);
@@ -870,7 +747,6 @@ pub(crate) fn get_varargs(
         wanted
     };
 
-    // C: for (i = 0; i < wanted && i < nextra; i++)
     //      setobjs2s(L, where + i, ci->func.p - nextra + i);
     //
     // After adjustvarargs, the extra args live at positions
@@ -878,7 +754,6 @@ pub(crate) fn get_varargs(
     let ci_func: StackIdx = state.call_info[ci_idx.as_usize()].func;
     let copy_count = wanted.min(nextra);
     for i in 0..copy_count {
-        // C: ci->func.p - nextra + i
         // TODO(port): subtraction on StackIdx (u32) underflows if nextra > ci_func.
         // Invariant: ci_func >= nextra (enforced by adjustvarargs), but add
         // a debug_assert in Phase B.
@@ -887,10 +762,8 @@ pub(crate) fn get_varargs(
         state.set_at(where_idx + i as i32, val);
     }
 
-    // C: for (; i < wanted; i++)   /* complete required results with nil */
     //      setnilvalue(s2v(where + i));
     for i in copy_count..wanted {
-        // C: setnilvalue(s2v(where + i))  →  *o = LuaValue::Nil
         state.set_at(where_idx + i as i32, LuaValue::Nil);
     }
     Ok(())

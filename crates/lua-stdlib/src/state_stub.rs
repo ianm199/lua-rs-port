@@ -37,7 +37,6 @@ pub use lua_vm::state::LuaState;
 pub type lua_CFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 
 /// Pseudo-index for the `i`-th upvalue of a C function.
-/// C: `#define lua_upvalueindex(i)`
 pub fn upvalue_index(i: i32) -> i32 {
     -1_001_000 - i
 }
@@ -1367,7 +1366,6 @@ impl LuaStateStubExt for LuaState {
 
     /// Install (or clear) a debug hook on this thread.
     ///
-    /// C: `LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count)`
     /// (`ldebug.c`).
     ///
     /// The Phase-B `LuaStateStubExt` signature uses `lua_CFunction` (the
@@ -1396,7 +1394,6 @@ impl LuaStateStubExt for LuaState {
 
     /// Write `msg` to the host's standard output stream.
     ///
-    /// C: `lua_writestring(s, l)` macro from `lauxlib.h` (defaults to
     /// `fwrite(s, 1, l, stdout)`).
     ///
     /// Delegates to the canonical inherent `LuaState::write_output`. UFCS is
@@ -1409,7 +1406,6 @@ impl LuaStateStubExt for LuaState {
     /// `t[n] = v`, where `t` is the value at `idx` and `v` is popped from the
     /// stack top. Honours `__newindex`.
     ///
-    /// C: `LUA_API void lua_seti (lua_State *L, int idx, lua_Integer n)`.
     fn table_set_i(&mut self, idx: i32, n: i64) -> Result<(), LuaError> {
         LuaState::table_set_i(self, idx, n)
     }

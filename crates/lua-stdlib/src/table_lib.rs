@@ -9,24 +9,17 @@ use lua_types::{GcRef, LuaError, LuaTable, LuaType, LuaValue};
 use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 
 // ─── Operation flags ──────────────────────────────────────────────────────────
-// C: #define TAB_R 1  /* read */
 const TAB_R: u32 = 1;
-// C: #define TAB_W 2  /* write */
 const TAB_W: u32 = 2;
-// C: #define TAB_L 4  /* length */
 const TAB_L: u32 = 4;
-// C: #define TAB_RW (TAB_R | TAB_W)
 const TAB_RW: u32 = TAB_R | TAB_W;
 
-// C: #define RANLIMIT 100u — arrays larger than this may use randomised pivots
 const RANLIMIT: u32 = 100;
 
-/// C: `typedef unsigned int IdxT;` — sort array-index type.
 type IdxT = u32;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/// C: `checkfield(L, key, n)` — push `key` and raw-get it from the metatable
 /// currently sitting at stack depth `n`; returns `true` if the result is not nil.
 ///
 /// ```c
@@ -43,7 +36,6 @@ fn check_field(state: &mut LuaState, key: &[u8], n: i32) -> Result<bool, LuaErro
     Ok(ty != LuaType::Nil)
 }
 
-/// C: `checktab(L, arg, what)` — verify that `arg` is a table, or has a
 /// metatable with the metamethods required by `what`
 /// (`TAB_R` → `__index`, `TAB_W` → `__newindex`, `TAB_L` → `__len`).
 ///
@@ -94,12 +86,10 @@ fn check_tab(state: &mut LuaState, arg: i32, what: u32) -> Result<(), LuaError> 
         state.pop_n(n as usize);
         Ok(())
     } else {
-        // C: luaL_checktype(L, arg, LUA_TTABLE) — forces a type error
         state.check_arg_type(arg, LuaType::Table)
     }
 }
 
-/// C: `#define aux_getn(L,n,w) (checktab(L, n, (w) | TAB_L), luaL_len(L, n))`
 ///
 /// Check that argument `n` is a table (or table-like per `w`) and return its length.
 fn aux_getn(state: &mut LuaState, n: i32, w: u32) -> Result<i64, LuaError> {
@@ -129,7 +119,6 @@ fn raw_set_int(
 
 // ─── table.insert ─────────────────────────────────────────────────────────────
 
-/// C: `tinsert(L)` — implements `table.insert(t [, pos,] v)`.
 ///
 /// ```c
 /// static int tinsert (lua_State *L) {
@@ -158,12 +147,10 @@ fn raw_set_int(
 /// ```
 pub fn insert(state: &mut LuaState) -> Result<usize, LuaError> {
     let mut e = aux_getn(state, 1, TAB_RW)?;
-    // C: luaL_intop(+, e, 1) — wrapping unsigned add then re-interpret as signed
     e = (e as u64).wrapping_add(1) as i64;
     let plain_table = plain_table_at(state, 1);
 
     let pos: i64 = match state.get_top() {
-        // C: case 2 — insert new element at the end
         2 => {
             if let Some(tbl) = plain_table {
                 let value = state.value_at(2);
@@ -173,10 +160,8 @@ pub fn insert(state: &mut LuaState) -> Result<usize, LuaError> {
             }
             e
         }
-        // C: case 3 — explicit position argument
         3 => {
             let pos = state.check_arg_integer(2)?;
-            // C: luaL_argcheck(L, (lua_Unsigned)pos - 1u < (lua_Unsigned)e, 2, ...)
             // Checks 1 <= pos <= e (wrapping subtraction catches pos <= 0)
             if !((pos as u64).wrapping_sub(1) < (e as u64)) {
                 return Err(LuaError::arg_error(2, "position out of bounds"));
@@ -198,7 +183,6 @@ pub fn insert(state: &mut LuaState) -> Result<usize, LuaError> {
             // arithmetic operation; our index_to_value is a function call with
             // branches, so this saves ~2N index resolutions for shift count N.
             let tbl = state.value_at(1);
-            // C: for (i = e; i > pos; i--) { lua_geti(L, 1, i-1); lua_seti(L, 1, i); }
             let mut i = e;
             while i > pos {
                 state.table_get_i_value(&tbl, i - 1)?;
@@ -213,14 +197,12 @@ pub fn insert(state: &mut LuaState) -> Result<usize, LuaError> {
             )));
         }
     };
-    // C: lua_seti(L, 1, pos) — pops new value and sets table[pos]
     state.table_set_i(1, pos)?;
     Ok(0)
 }
 
 // ─── table.remove ─────────────────────────────────────────────────────────────
 
-/// C: `tremove(L)` — implements `table.remove(t [, pos])`.
 ///
 /// ```c
 /// static int tremove (lua_State *L) {
@@ -243,7 +225,6 @@ pub fn remove(state: &mut LuaState) -> Result<usize, LuaError> {
     let size = aux_getn(state, 1, TAB_RW)?;
     let mut pos = state.opt_arg_integer(2, size)?;
     if pos != size {
-        // C: luaL_argcheck — checks 1 <= pos <= size+1
         if !((pos as u64).wrapping_sub(1) <= (size as u64)) {
             return Err(LuaError::arg_error(2, "position out of bounds"));
         }
@@ -277,7 +258,6 @@ pub fn remove(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ─── table.move ───────────────────────────────────────────────────────────────
 
-/// C: `tmove(L)` — implements `table.move(a1, f, e, t [, a2])`.
 ///
 /// Copies elements `a1[f..e]` into `a2[t..]` (or `a1[t..]` if `a2` is absent).
 /// Copies in increasing order when safe, decreasing when ranges overlap.
@@ -309,7 +289,6 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
     let f = state.check_arg_integer(2)?;
     let e = state.check_arg_integer(3)?;
     let t = state.check_arg_integer(4)?;
-    // C: int tt = !lua_isnoneornil(L, 5) ? 5 : 1
     let tt: i32 = if !matches!(state.type_at(5), LuaType::None | LuaType::Nil) {
         5
     } else {
@@ -319,16 +298,13 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
     check_tab(state, tt, TAB_W)?;
 
     if e >= f {
-        // C: luaL_argcheck — overflow guard: e - f + 1 must not overflow i64
         if !(f > 0 || e < i64::MAX + f) {
             return Err(LuaError::arg_error(3, "too many elements to move"));
         }
         let n = e - f + 1;
-        // C: luaL_argcheck — destination end must not overflow
         if !(t <= i64::MAX - n + 1) {
             return Err(LuaError::arg_error(4, "destination wrap around"));
         }
-        // C: if (t > e || t <= f || (tt != 1 && !lua_compare(L, 1, tt, LUA_OPEQ)))
         // Copy forward (increasing) when safe to do so; backward when ranges overlap.
         // TODO(port): state.compare(a, b, CompareOp::Eq) → lua_compare LUA_OPEQ; verify method
         let copy_forward = t > e
@@ -346,7 +322,6 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
             }
         }
     }
-    // C: lua_pushvalue(L, tt) — return the destination table
     // TODO(port): state.push_value_at → lua_pushvalue; verify method name
     state.push_value_at(tt);
     Ok(1)
@@ -354,7 +329,6 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ─── table.concat ─────────────────────────────────────────────────────────────
 
-/// C: `addfield(L, b, i)` — push `table[i]` onto the stack, validate it is
 /// a string-or-number, add its string representation to `buf`, then pop it.
 ///
 /// ```c
@@ -371,7 +345,6 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Rust uses a `Vec<u8>` accumulator passed by mutable reference instead.
 fn add_field(state: &mut LuaState, buf: &mut Vec<u8>, idx: i64) -> Result<(), LuaError> {
     state.table_get_i(1, idx)?;
-    // C: lua_isstring — true for LUA_TSTRING and LUA_TNUMBER (numbers coerce to strings)
     if !matches!(state.type_at(-1), LuaType::String | LuaType::Number) {
         // TODO(port): state.type_name_str_at(-1) returns &'static str for the base type name
         let type_name = state.type_name_str_at(-1);
@@ -380,7 +353,6 @@ fn add_field(state: &mut LuaState, buf: &mut Vec<u8>, idx: i64) -> Result<(), Lu
             type_name, idx
         )));
     }
-    // C: luaL_addvalue(b) — convert top to string bytes, append, then pop
     // TODO(port): state.to_bytes_at(-1) converts via Lua's tostring coercion; verify method name
     let bytes = state.to_bytes_at(-1).ok_or_else(|| LuaError::runtime(format_args!("invalid value at index {}", idx)))?;
     buf.extend_from_slice(&bytes);
@@ -388,7 +360,6 @@ fn add_field(state: &mut LuaState, buf: &mut Vec<u8>, idx: i64) -> Result<(), Lu
     Ok(())
 }
 
-/// C: `tconcat(L)` — implements `table.concat(t [, sep [, i [, j]]])`.
 ///
 /// ```c
 /// static int tconcat (lua_State *L) {
@@ -424,7 +395,6 @@ pub fn concat(state: &mut LuaState) -> Result<usize, LuaError> {
     if i == last {
         add_field(state, &mut buf, i)?;
     }
-    // C: luaL_pushresult(&b) — push accumulated string
     // TODO(port): state.push_lstring pushes a Lua string from &[u8]; verify method name
     state.push_lstring(&buf)?;
     Ok(1)
@@ -432,7 +402,6 @@ pub fn concat(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ─── table.pack / table.unpack ────────────────────────────────────────────────
 
-/// C: `tpack(L)` — implements `table.pack(...)`.
 ///
 /// Creates a new table `t` with all arguments as integer keys and `t.n` set
 /// to the argument count.
@@ -454,9 +423,7 @@ pub fn pack(state: &mut LuaState) -> Result<usize, LuaError> {
     let n = state.get_top();
     // TODO(port): state.create_table(narr, nrec) → lua_createtable; verify method name
     state.create_table(n, 1)?;
-    // C: lua_insert(L, 1) — move the new table to position 1, shifting args up
     state.insert(1);
-    // C: for (i = n; i >= 1; i--) lua_seti(L, 1, i)
     // table_set_i pops the top; args shift from n+1..=2 down to 1..=n as we pop
     for i in (1..=n).rev() {
         state.table_set_i(1, i as i64)?;
@@ -467,7 +434,6 @@ pub fn pack(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
-/// C: `tunpack(L)` — implements `table.unpack(t [, i [, j]])`.
 ///
 /// Pushes `t[i], t[i+1], …, t[j]` and returns the count.
 ///
@@ -488,7 +454,6 @@ pub fn pack(state: &mut LuaState) -> Result<usize, LuaError> {
 /// ```
 pub fn unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     let i = state.opt_arg_integer(2, 1)?;
-    // C: luaL_opt(L, luaL_checkinteger, 3, luaL_len(L, 1))
     let e = if matches!(state.type_at(3), LuaType::None | LuaType::Nil) {
         state.length_at(1)?
     } else {
@@ -497,9 +462,7 @@ pub fn unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     if i > e {
         return Ok(0); // empty range
     }
-    // C: n = (lua_Unsigned)e - i  — unsigned subtraction avoids overflow at extremes
     let n = (e as u64).wrapping_sub(i as u64);
-    // C: n >= (unsigned int)INT_MAX || !lua_checkstack(L, (int)(++n))
     // The size check uses the pre-increment value so that a wrapped-to-0 result
     // (e.g. i=minI, e=maxI yields n = 2^64-1 pre-inc, 0 post-inc) still trips
     // the error rather than silently entering a 2^64-iteration loop.
@@ -522,10 +485,8 @@ pub fn unpack(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ─── Quicksort ────────────────────────────────────────────────────────────────
 
-/// C: `l_randomizePivot()` — produce a "random" `u32` to randomize pivot
 /// selection when a partition is severely imbalanced.
 ///
-/// C: uses `clock()` and `time()` as entropy sources via `memcpy` into a
 /// `unsigned int` array whose elements are summed.
 ///
 /// PORT NOTE: Rust uses `SystemTime` as an entropy source instead of
@@ -540,7 +501,6 @@ fn randomize_pivot() -> u32 {
     nanos ^ nanos.wrapping_shr(16)
 }
 
-/// C: `set2(L, i, j)` — pop the top two stack values and assign them to
 /// `table[i]` and `table[j]` respectively (table is at stack position 1).
 ///
 /// ```c
@@ -556,7 +516,6 @@ fn set2(state: &mut LuaState, i: IdxT, j: IdxT) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// C: `sort_comp(L, a, b)` — return `true` iff `stack[a] < stack[b]` per the
 /// sort order: either the `<` operator (if arg 2 is nil) or the user's
 /// comparison function at stack position 2.
 ///
@@ -589,16 +548,13 @@ fn sort_comp(state: &mut LuaState, a: i32, b: i32) -> Result<bool, LuaError> {
     state.push_value_at(2);       // push function
     state.push_value_at(a - 1);   // push copy of a (compensate for function push)
     state.push_value_at(b - 2);   // push copy of b (compensate for function + a copy)
-    // C: lua_call(L, 2, 1)
     state.call(2, 1)?;
-    // C: res = lua_toboolean(L, -1); lua_pop(L, 1)
     // TODO(port): state.to_boolean(-1) → lua_toboolean (never fails); verify method name
     let res = state.to_boolean(-1);
     state.pop_n(1);
     Ok(res)
 }
 
-/// C: `partition(L, lo, up)` — in-place partition around the pivot `P` that
 /// is already on the top of the Lua stack.
 ///
 /// Precondition: `a[lo] <= P == a[up-1] <= a[up]` and `P` is at stack top.
@@ -682,7 +638,6 @@ fn partition(state: &mut LuaState, lo: IdxT, up: IdxT) -> Result<IdxT, LuaError>
     }
 }
 
-/// C: `choosePivot(lo, up, rnd)` — select a pivot index in the middle half of
 /// `[lo, up]`, randomised by `rnd`.
 ///
 /// ```c
@@ -700,7 +655,6 @@ fn choose_pivot(lo: IdxT, up: IdxT, rnd: u32) -> IdxT {
     p
 }
 
-/// C: `auxsort(L, lo, up, rnd)` — recursive quicksort driver.
 ///
 /// Sorts `table[lo..=up]` in place, recursing on the smaller partition and
 /// tail-looping on the larger (to bound Rust's call stack). Randomises pivot
@@ -739,7 +693,6 @@ fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> R
         // Step 1: ensure a[lo] <= a[up] (cheap two-element sort)
         state.table_get_i(1, lo as i64)?; // push a[lo]
         state.table_get_i(1, up as i64)?; // push a[up]
-        // C: if (sort_comp(L, -1, -2)) — a[up] < a[lo]?
         if sort_comp(state, -1, -2)? {
             set2(state, lo, up)?; // swap so a[lo] <= a[up]
         } else {
@@ -759,13 +712,11 @@ fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> R
         // Step 3: median-of-three: sort a[lo], a[p], a[up]
         state.table_get_i(1, p as i64)?;  // push a[p]
         state.table_get_i(1, lo as i64)?; // push a[lo]
-        // C: if (sort_comp(L, -2, -1)) — a[p] < a[lo]?
         if sort_comp(state, -2, -1)? {
             set2(state, p, lo)?; // swap a[p] ↔ a[lo]; stack clean
         } else {
             state.pop_n(1); // remove a[lo]; stack: a[p]
             state.table_get_i(1, up as i64)?; // push a[up]; stack: a[p], a[up]
-            // C: if (sort_comp(L, -1, -2)) — a[up] < a[p]?
             if sort_comp(state, -1, -2)? {
                 set2(state, p, up)?; // swap a[p] ↔ a[up]; stack clean
             } else {
@@ -807,7 +758,6 @@ fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> R
         }
 
         // Re-randomise if the partition was severely imbalanced.
-        // C: if ((up - lo) / 128 > n) rnd = l_randomizePivot()
         if (up - lo) / 128 > n {
             rnd = randomize_pivot();
         }
@@ -815,7 +765,6 @@ fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> R
     Ok(())
 }
 
-/// C: `sort(L)` — implements `table.sort(t [, comp])`.
 ///
 /// ```c
 /// static int sort (lua_State *L) {
@@ -839,7 +788,6 @@ pub fn sort(state: &mut LuaState) -> Result<usize, LuaError> {
         if !matches!(state.type_at(2), LuaType::None | LuaType::Nil) {
             state.check_arg_type(2, LuaType::Function)?;
         }
-        // C: lua_settop(L, 2) — discard any extra arguments.
         // Must go through the public C-API set_top (relative to the call
         // frame); the inherent LuaState::set_top treats its argument as
         // an absolute stack slot and would corrupt the frame.
@@ -851,7 +799,6 @@ pub fn sort(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ─── Registration ─────────────────────────────────────────────────────────────
 
-/// C: `tab_funcs[]` — the function registration table for `require("table")`.
 ///
 /// ```c
 /// static const luaL_Reg tab_funcs[] = {
@@ -875,7 +822,6 @@ pub const TABLE_FUNCS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] 
 
 // ─── Module opener ────────────────────────────────────────────────────────────
 
-/// C: `luaopen_table(L)` — open the `table` library.
 ///
 /// ```c
 /// LUAMOD_API int luaopen_table (lua_State *L) {
@@ -884,7 +830,6 @@ pub const TABLE_FUNCS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] 
 /// }
 /// ```
 pub fn open_table(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: LUAMOD_API → pub  (see macros.tsv)
     // TODO(port): state.new_lib → luaL_newlib; creates a new table and registers functions;
     //             verify method name and signature
     state.new_lib(TABLE_FUNCS)?;

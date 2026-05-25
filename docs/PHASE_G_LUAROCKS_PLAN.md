@@ -4,38 +4,99 @@ The PORT_STRATEGY.md §8 "this is real software" demo. After Phase F lands us at
 
 This doc captures the strategic choice (Rust-native modules vs. C ABI compat) and the concrete path to a working demo.
 
-## STATUS 2026-05-19: LuaRocks 3.11.1 runs
+## Current verified status: LuaRocks works for pure-Lua rocks
 
-**Verified end-to-end:**
+LuaRocks 3.11.1 now runs far enough under `lua-rs` to install and use pure-Lua
+rocks.
+
+Verified commands:
 
 ```bash
+RUSTFLAGS='-Awarnings' cargo build -q --bin lua-rs
+
+curl -sSL https://luarocks.org/releases/luarocks-3.11.1.tar.gz | tar xz -C /tmp
+
+mkdir -p /tmp/lua-rs-bin
+ln -sf "$PWD/target/debug/lua-rs" /tmp/lua-rs-bin/lua
+ln -sf "$PWD/target/debug/lua-rs" /tmp/lua-rs-bin/lua5.4
+
+HOME=/tmp/lua-rs-luarocks-home \
+PATH="/tmp/lua-rs-bin:$PATH" \
 LUA_PATH="/tmp/luarocks-3.11.1/src/?.lua;/tmp/luarocks-3.11.1/src/?/init.lua" \
-  ./target/debug/lua-rs -e 'arg={[0]="luarocks","--version"}; dofile("/tmp/luarocks_noshebang.lua")'
+  ./target/debug/lua-rs /tmp/luarocks-3.11.1/src/bin/luarocks --tree /tmp/lua-rs-remote-tree install inspect
 ```
 
-LuaRocks loads ~50+ pure-Lua modules across its tree (`luarocks.core.cfg`, `luarocks.loader`, `luarocks.cmd`, `luarocks.fs.unix`, etc.), prints its full argparse help banner, prints version `LuaRocks 3.11.1`, dumps the config (`LUA_INCDIR`/`LUA_LIBDIR`/system/user config-file paths/rocks-tree list with `~/.luarocks ("user")`). Then errors with `error in error handling` during exit teardown — likely `os.exit()` interaction with our top-level pcall.
+Confirmed behavior:
+
+- `--version`, `help`, `config lua_version`, `path`, and `list` exit 0.
+- Local `luarocks make` of a toy pure-Lua rock exits 0.
+- Remote `luarocks search inspect` exits 0.
+- Remote `luarocks install inspect` exits 0.
+- The installed `inspect` module can be loaded and run by `lua-rs`.
+- `luarocks show`, `which`, and `list` work against the installed tree.
+
+Native C rocks remain outside the current compatibility boundary. A probe with
+`luarocks install luafilesystem` reached the build step and failed at Lua header
+detection:
+
+```text
+Error: Build error: Failed finding Lua header lua.h
+```
+
+That is expected for now. Even after headers exist, stock native rocks require a
+real PUC-Rio Lua C API/ABI layer or per-module Rust-native replacements.
 
 **What landed to make this work:**
-- **G-1 lfs-rs** ✅ — `crates/lua-rs-lfs/` (663 LOC, 8 functions, zero `unsafe`, depends on `filetime`). Wired into `package.preload` from `lua-cli::register_preloaded_modules`. `require("lfs")` returns a usable table.
-- **G-2 os.execute hook** ✅ — `OsExecuteHook` type + `GlobalState::os_execute_hook` field. Backed in `lua-cli` by `std::process::Command::new("sh").arg("-c")`. Returns C-Lua's `(boolean, "exit"|"signal", code)` tuple.
-- **G-3 io.popen hook** ✅ — separate from os.execute. New `PopenHook` type + `PopenFile` enum in lua-cli that wraps `std::process::Child` and implements `LuaFileHandle` with proper Drop semantics (take()s the BufReader/BufWriter before `wait()` so write-mode children see EOF).
-- **F-3.b dofile yieldable branch** ✅ — `dofile` can now suspend across coroutine boundaries; LuaRocks doesn't yield from dofile but the broader yield path is unblocked.
 
-**What's still in front of `luarocks install <thing>`:**
-1. **`error in error handling` on exit** — debug `os.exit()` path in stdlib + top-level pcall. ~$10.
-2. **`=[C]` showing as program name** in argparse output — chunkname/`arg[0]` cosmetic issue. ~$5.
-3. **HTTP fetch** — needs G-4 (ureq via `lua-rs-socket` crate, ~$30) OR a `file://` local repo for the install demo.
-4. **MD5/SHA256 digests** — needs G-5 (RustCrypto shim, ~$5).
+- **Script arguments in `lua-cli`** — `lua-rs script.lua arg1 arg2` now
+  populates global `arg` and passes `arg1`, `arg2`, ... as chunk varargs. This
+  removed the misleading `dofile(...)` smoke harness.
+- **Clean `os.exit` process control** — `os.exit` now uses a typed `LuaExit`
+  panic payload so Lua `pcall` does not catch it as an ordinary error, and the
+  CLI converts it to the process `ExitCode` without printing a panic.
+- **`os.execute` hook registration** — LuaRocks probes candidate interpreters
+  through `os.execute(cmd .. " > tmpfile")`; the CLI now installs the shell
+  execution hook.
+- **`lfs.lock_dir`** — LuaRocks locks install trees with
+  `lfs.lock_dir(path):free()`. The Rust-native `lfs` module now implements the
+  needed atomic `lockfile.lfs` path.
+- **Directory read error propagation** — LuaRocks' macOS filesystem probe
+  distinguishes directories from files by reading an opened directory and
+  checking errno `21` (`EISDIR`). The file-handle trait now preserves read error
+  errno/message so that probe works.
+- **Shebang masking in `lua-cli`** — source files whose first byte is `#` can
+  now be run directly, so the stock LuaRocks script no longer needs a
+  `tail -n +2` copy.
 
-A pure-Lua rockspec install against a file:// repo is ~$45 of additional work. A real HTTPS-served install is ~$75.
+**Important debugging correction:**
 
-**Cost realized vs. estimated:**
-- G-1 lfs-rs estimated $30-50, actual ~$40
-- G-2 os.execute estimated $5-10, actual bundled with F-3
-- G-3 popen wasn't in original plan, ~$25 actual
-- H-1 heavy.lua regression (table cap) — emergency unblock, ~$25
-- H-2 io stubs + popen — bundled fix, ~$25
-- **Total Phase F→G actual: ~$300** (including the F slices it depended on); end state is "LuaRocks runs `--version`" vs. plan's "LuaRocks installs a rock". Half the original Phase G work done; the other half (HTTP + digest + the install path) is well-scoped.
+The earlier smoke:
+
+```bash
+lua-rs -e 'arg={[0]="luarocks","--version"}; dofile("/tmp/luarocks_noshebang.lua")'
+```
+
+was misleading. `dofile` does not forward varargs to the script, so LuaRocks did
+not actually receive `--version`. The temporary wrapper form was:
+
+```lua
+local f = assert(loadfile("/tmp/luarocks_noshebang.lua"))
+return f(table.unpack(arg, 1, #arg))
+```
+
+The normal path no longer needs that wrapper because `lua-cli` now handles
+script arguments.
+
+**Remaining known gaps:**
+
+1. **Program name cosmetic** — LuaRocks help/version still prints `=[C]` in
+   places where stock Lua would show the script name.
+2. **Native C rocks** — header discovery and C API/ABI compatibility are not
+   solved. Prefer Rust-native module ports for targeted rocks unless a full ABI
+   effort is explicitly chosen.
+3. **More package coverage** — `inspect` proves remote pure-Lua rock install,
+   but a broader curated matrix should be added before public claims get
+   stronger than "pure-Lua rocks can work."
 
 ---
 
@@ -99,8 +160,11 @@ Required functions for LuaRocks (top 8 of lfs's ~14):
 | `lfs.currentdir()` | get cwd | `std::env::current_dir()` |
 | `lfs.touch(path, atime, mtime)` | set file times | `filetime` crate |
 | `lfs.link(old, new, symlink)` | hard/symlink | `std::fs::hard_link` / `std::os::unix::fs::symlink` |
+| `lfs.lock_dir(path)` | install-tree lock | atomic `lockfile.lfs` creation + `free()` |
 
-Skip for now: `lfs.lock` / `lfs.unlock` (LuaRocks doesn't use), `lfs.symlinkattributes` (rarely needed), `lfs.setmode` (Windows-specific, no-op on Unix).
+Skip for now: `lfs.lock` / `lfs.unlock` (file-region locks; LuaRocks does not
+use these for the current flow), `lfs.symlinkattributes` (rarely needed),
+`lfs.setmode` (Windows-specific, no-op on Unix).
 
 **Implementation shape**: new crate `crates/lua-rs-lfs/`. Mirror the `crates/lua-cli-test-rust-module/` skeleton from the dynlib slice. Each function is 5-30 LOC of `std::fs` wrapping.
 

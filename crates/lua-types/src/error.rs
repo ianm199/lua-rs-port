@@ -4,6 +4,11 @@ use crate::status::LuaStatus;
 use crate::value::LuaValue;
 use std::fmt;
 
+/// Internal control-flow payload used by the standalone CLI to implement
+/// `os.exit` without making Lua protected calls catch it as an ordinary error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LuaExit(pub i32);
+
 /// The Lua error type. Carries a `LuaValue` payload because Lua errors can
 /// be any value (typically a string).
 #[derive(Debug, Clone)]

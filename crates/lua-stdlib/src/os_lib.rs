@@ -13,15 +13,12 @@
 //! (`gmtime_r`, `localtime_r`, `mktime`, `strftime`).  Those call sites are
 //! flagged with `TODO(port)` and the stubs use a zero-initialised `TmFields`.
 
-// C: #include "lua.h" / "lauxlib.h" / "lualib.h"
-use lua_types::{LuaError, LuaType, LuaValue};
+use lua_types::{LuaError, LuaExit, LuaType, LuaValue};
 use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index, CompareOp, LuaDebug};
 use lua_vm::state::OsExecuteReason;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-// C: #define LUA_STRFTIMEOPTIONS  "aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%" \
-// C:     "||" "EcECExEXEyEY" "OdOeOHOIOmOMOSOuOUOVOwOWOy"
 //
 // Valid `strftime` conversion specifiers — C99 / POSIX variant.
 // Single-char specifiers appear first; the `||` sentinel signals the start
@@ -29,7 +26,6 @@ use lua_vm::state::OsExecuteReason;
 const STRFTIME_OPTIONS: &[u8] =
     b"aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%||EcECExEXEyEYOdOeOHOIOmOMOSOuOUOVOwOWOy";
 
-// C: #define SIZETIMEFMT 250
 const SIZE_TIME_FMT: usize = 250;
 
 // ── TmFields ─────────────────────────────────────────────────────────────────
@@ -76,80 +72,58 @@ impl std::fmt::Display for ByteDisplay<'_> {
 
 // ── Private stack-manipulation helpers ───────────────────────────────────────
 
-/// C: `static void setfield(lua_State *L, const char *key, int value, int delta)`
 ///
 /// Pushes `(value as i64) + (delta as i64)` as a Lua integer, then stores it
 /// in the table currently on top of the stack at field `key`.
 fn set_field(state: &mut LuaState, key: &[u8], value: i32, delta: i32) -> Result<(), LuaError> {
-    // C: lua_pushinteger(L, (lua_Integer)value + delta);
     state.push(LuaValue::Int((value as i64) + (delta as i64)));
-    // C: lua_setfield(L, -2, key);
     state.set_field(-2, key)?;
     Ok(())
 }
 
-/// C: `static void setboolfield(lua_State *L, const char *key, int value)`
 ///
 /// Stores a boolean at field `key` in the table on top of the stack.
 /// A negative `value` means "undefined" — the field is silently skipped.
 fn set_bool_field(state: &mut LuaState, key: &[u8], value: i32) -> Result<(), LuaError> {
-    // C: if (value < 0) return;  /* undefined? */
     if value < 0 {
         return Ok(());
     }
-    // C: lua_pushboolean(L, value);
     state.push(LuaValue::Bool(value != 0));
-    // C: lua_setfield(L, -2, key);
     state.set_field(-2, key)?;
     Ok(())
 }
 
-/// C: `static void setallfields(lua_State *L, struct tm *stm)`
 ///
 /// Writes every field of `stm` into the table on top of the stack, applying the
 /// offsets that convert from C-library conventions to Lua conventions:
 /// year+1900, month+1, wday+1, yday+1.
 fn set_all_fields(state: &mut LuaState, stm: &TmFields) -> Result<(), LuaError> {
-    // C: setfield(L, "year",  stm->tm_year, 1900);
     set_field(state, b"year",  stm.tm_year, 1900)?;
-    // C: setfield(L, "month", stm->tm_mon,  1);
     set_field(state, b"month", stm.tm_mon,  1)?;
-    // C: setfield(L, "day",   stm->tm_mday, 0);
     set_field(state, b"day",   stm.tm_mday, 0)?;
-    // C: setfield(L, "hour",  stm->tm_hour, 0);
     set_field(state, b"hour",  stm.tm_hour, 0)?;
-    // C: setfield(L, "min",   stm->tm_min,  0);
     set_field(state, b"min",   stm.tm_min,  0)?;
-    // C: setfield(L, "sec",   stm->tm_sec,  0);
     set_field(state, b"sec",   stm.tm_sec,  0)?;
-    // C: setfield(L, "yday",  stm->tm_yday, 1);
     set_field(state, b"yday",  stm.tm_yday, 1)?;
-    // C: setfield(L, "wday",  stm->tm_wday, 1);
     set_field(state, b"wday",  stm.tm_wday, 1)?;
-    // C: setboolfield(L, "isdst", stm->tm_isdst);
     set_bool_field(state, b"isdst", stm.tm_isdst)?;
     Ok(())
 }
 
-/// C: `static int getboolfield(lua_State *L, const char *key)`
 ///
 /// Reads a boolean field from the table on top of the stack.
 /// Returns `-1` when the field is absent (nil), or `0` / `1` for false / true.
 fn get_bool_field(state: &mut LuaState, key: &[u8]) -> Result<i32, LuaError> {
-    // C: res = (lua_getfield(L, -1, key) == LUA_TNIL) ? -1 : lua_toboolean(L, -1);
     let ty = state.get_field(-1, key)?;
     let res = if matches!(ty, LuaType::Nil) {
         -1i32
     } else {
-        // C: lua_toboolean(L, -1)
         state.to_boolean(-1) as i32
     };
-    // C: lua_pop(L, 1);
     state.pop_n(1);
     Ok(res)
 }
 
-/// C: `static int getfield(lua_State *L, const char *key, int d, int delta)`
 ///
 /// Reads an integer field from the table on top of the stack.
 ///
@@ -166,13 +140,10 @@ fn get_field(
     d: i32,
     delta: i32,
 ) -> Result<i32, LuaError> {
-    // C: int t = lua_getfield(L, -1, key);
     let ty = state.get_field(-1, key)?;
-    // C: lua_Integer res = lua_tointegerx(L, -1, &isnum);
     let maybe_int = state.to_integer_x(-1);
     let res: i32 = match maybe_int {
         Some(res) => {
-            // C: if (!(res >= 0 ? res - delta <= INT_MAX : INT_MIN + delta <= res))
             //        return luaL_error(L, "field '%s' is out-of-bound", key);
             let in_bounds = if res >= 0 {
                 res.saturating_sub(delta as i64) <= (i32::MAX as i64)
@@ -186,21 +157,17 @@ fn get_field(
                     ByteDisplay(key),
                 )));
             }
-            // C: res -= delta;
             (res - delta as i64) as i32
         }
         None => {
-            // C: if (l_unlikely(t != LUA_TNIL))
             if !matches!(ty, LuaType::Nil) {
                 state.pop_n(1);
-                // C: return luaL_error(L, "field '%s' is not an integer", key);
                 return Err(LuaError::runtime(format_args!(
                     "field '{}' is not an integer",
                     ByteDisplay(key),
                 )));
             } else if d < 0 {
                 state.pop_n(1);
-                // C: return luaL_error(L, "field '%s' missing in date table", key);
                 return Err(LuaError::runtime(format_args!(
                     "field '{}' missing in date table",
                     ByteDisplay(key),
@@ -209,12 +176,10 @@ fn get_field(
             d
         }
     };
-    // C: lua_pop(L, 1);
     state.pop_n(1);
     Ok(res)
 }
 
-/// C: `static const char *checkoption(lua_State *L, const char *conv,
 ///                                     ptrdiff_t convlen, char *buff)`
 ///
 /// Validates the `strftime` conversion specifier at the start of `conv` against
@@ -240,35 +205,28 @@ fn check_strftime_option<'a>(
     let mut oplen: usize = 1;
     let mut i: usize = 0;
 
-    // C: for (; *option != '\0' && oplen <= convlen; option += oplen)
     while i < options.len() && oplen <= conv.len() {
         if options[i] == b'|' {
-            // C: if (*option == '|') oplen++;  then option advances by new oplen
             // Increment first so the subsequent `i += oplen` uses the new value,
             // which jumps from the first `|` past the entire `||` separator block.
             oplen += 1;
             i += oplen;
         } else if i + oplen <= options.len() && conv[..oplen] == options[i..i + oplen] {
-            // C: memcpy(buff, conv, oplen); buff[oplen] = '\0';
             // cc[0] = b'%' is pre-filled; write specifier bytes into cc[1..=oplen].
             debug_assert!(oplen <= 2, "STRFTIME_OPTIONS only has 1- and 2-char specifiers");
             cc[1..=oplen].copy_from_slice(&conv[..oplen]);
             cc[oplen + 1] = 0;
-            // C: return conv + oplen;
             return Ok(&conv[oplen..]);
         } else {
-            // C: option += oplen  (advance to the next entry in the options list)
             i += oplen;
         }
     }
-    // C: luaL_argerror(L, 1, lua_pushfstring(L, "invalid conversion specifier '%%%s'", conv));
     Err(LuaError::arg_error(
         1,
         "invalid conversion specifier",
     ))
 }
 
-/// C: `static time_t l_checktime(lua_State *L, int arg)`
 ///
 /// Reads argument `arg` as a Lua integer and returns it as a Unix timestamp.
 ///
@@ -277,9 +235,7 @@ fn check_strftime_option<'a>(
 /// TODO(port): On hypothetical 32-bit `time_t` platforms the check would need
 /// to narrow `t` to `i32` and verify no truncation; flag for Phase B.
 fn check_time(state: &mut LuaState, arg: i32) -> Result<i64, LuaError> {
-    // C: l_timet t = l_gettime(L, arg);  where l_timet = lua_Integer = i64
     let t = state.check_arg_integer(arg)?;
-    // C: luaL_argcheck(L, (time_t)t == t, arg, "time out-of-bounds");
     Ok(t)
 }
 
@@ -478,7 +434,6 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
 
 // ── Library functions ─────────────────────────────────────────────────────────
 
-/// C: `static int os_execute(lua_State *L)`
 ///
 /// Executes a shell command via the system shell.
 ///
@@ -494,7 +449,6 @@ pub(crate) fn os_execute(state: &mut LuaState) -> Result<usize, LuaError> {
     let cmd = state.opt_arg_lstring(1, None)?;
     match cmd {
         None => {
-            // C: lua_pushboolean(L, stat);  where stat = l_system(NULL) != 0
             // We have a shell if and only if the embedder installed a hook.
             let has_shell = state.global().os_execute_hook.is_some();
             state.push(LuaValue::Bool(has_shell));
@@ -508,12 +462,9 @@ pub(crate) fn os_execute(state: &mut LuaState) -> Result<usize, LuaError> {
                     let cmd_owned: Vec<u8> = cmd_bytes.to_vec();
                     match execute_fn(&cmd_owned) {
                         Ok(result) => {
-                            // C: luaL_execresult — push (boolean|nil, "exit"|"signal", int)
                             if result.success {
-                                // C: if (*what == 'e' && stat == 0) lua_pushboolean(L, 1);
                                 state.push(LuaValue::Bool(true));
                             } else {
-                                // C: luaL_pushfail(L) — pushes nil
                                 state.push(LuaValue::Nil);
                             }
                             let reason_str: &[u8] = match result.reason {
@@ -525,7 +476,6 @@ pub(crate) fn os_execute(state: &mut LuaState) -> Result<usize, LuaError> {
                             Ok(3)
                         }
                         Err(e) => {
-                            // C: luaL_execresult with errno — pushes nil, errmsg, code
                             state.push(LuaValue::Nil);
                             let msg = match &e {
                                 LuaError::Runtime(LuaValue::Str(s)) => s.as_bytes().to_vec(),
@@ -549,12 +499,10 @@ pub(crate) fn os_execute(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 }
 
-/// C: `static int os_remove(lua_State *L)`
 ///
 /// Removes the file or empty directory at the given path.
 /// Returns `true` on success, or `nil, errmsg` on failure.
 pub(crate) fn os_remove(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: const char *filename = luaL_checkstring(L, 1);
     let filename: Vec<u8> = state.check_arg_string(1)?.to_vec();
     // `std::fs` is banned in lua-stdlib; delegate to the embedder hook.
     let hook = state.global().file_remove_hook;
@@ -583,14 +531,11 @@ pub(crate) fn os_remove(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 }
 
-/// C: `static int os_rename(lua_State *L)`
 ///
 /// Renames (moves) a file from the first path to the second.
 /// Returns `true` on success, or `nil, errmsg` on failure.
 pub(crate) fn os_rename(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: const char *fromname = luaL_checkstring(L, 1);
     let fromname: Vec<u8> = state.check_arg_string(1)?.to_vec();
-    // C: const char *toname = luaL_checkstring(L, 2);
     let toname: Vec<u8> = state.check_arg_string(2)?.to_vec();
     // `std::fs` is banned in lua-stdlib; delegate to the embedder hook.
     let hook = state.global().file_rename_hook;
@@ -618,7 +563,6 @@ pub(crate) fn os_rename(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(2)
 }
 
-/// C: `static int os_tmpname(lua_State *L)`
 ///
 /// Generates a unique temporary file name and pushes it as a string.
 /// Raises a runtime error if generation fails.
@@ -661,17 +605,14 @@ pub(crate) fn os_tmpname(state: &mut LuaState) -> Result<usize, LuaError> {
     let suffix = format!("lua_{:x}_{:x}_{:x}", std::process::id(), nanos, n);
     dir.extend_from_slice(suffix.as_bytes());
 
-    // C: lua_pushstring(L, buff);
     state.push_string(&dir)?;
     Ok(1)
 }
 
-/// C: `static int os_getenv(lua_State *L)`
 ///
 /// Reads the environment variable named by the first argument and pushes its
 /// value as a string, or `nil` if the variable is not set.
 pub(crate) fn os_getenv(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: lua_pushstring(L, getenv(luaL_checkstring(L, 1)));  /* if NULL push nil */
     let name_bytes: Vec<u8> = state.check_arg_string(1)?.to_vec();
 
     // PORT NOTE: On Unix, environment variable names are arbitrary byte sequences
@@ -701,22 +642,18 @@ pub(crate) fn os_getenv(state: &mut LuaState) -> Result<usize, LuaError> {
 
     match result {
         Some(val) => {
-            // C: lua_pushstring(L, ...) — push the value as a Lua string
             state.push_string(&val)?;
         }
         None => {
-            // C: getenv returns NULL → lua_pushstring pushes nil
             state.push(LuaValue::Nil);
         }
     }
     Ok(1)
 }
 
-/// C: `static int os_clock(lua_State *L)`
 ///
 /// Returns an approximation of the CPU time (in seconds) used by the program.
 pub(crate) fn os_clock(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: lua_pushnumber(L, ((lua_Number)clock())/(lua_Number)CLOCKS_PER_SEC);
     // TODO(port): C's `clock()` returns process CPU time, not wall-clock time.
     // `std::time::Instant` provides wall time only.  On POSIX targets, use
     // `libc::clock()` / `libc::CLOCKS_PER_SEC` via the `libc` crate.
@@ -725,7 +662,6 @@ pub(crate) fn os_clock(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
-/// C: `static int os_date(lua_State *L)`
 ///
 /// Formats the current (or a specified) date/time.
 ///
@@ -734,20 +670,16 @@ pub(crate) fn os_clock(state: &mut LuaState) -> Result<usize, LuaError> {
 /// * Other format → push a formatted string, expanding `%`-specifiers via
 ///   the C-library `strftime`.
 pub(crate) fn os_date(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: size_t slen; const char *s = luaL_optlstring(L, 1, "%c", &slen);
     // Clone to Vec<u8> so that `s` does not borrow from `state`.
     let format: Vec<u8> = state.opt_arg_lstring(1, Some(b"%c"))?.unwrap_or_default();
     let s: &[u8] = &format[..];
 
-    // C: time_t t = luaL_opt(L, l_checktime, 2, time(NULL));
     let t: i64 = if matches!(state.type_at(2), LuaType::None | LuaType::Nil) {
         unix_now()
     } else {
         check_time(state, 2)?
     };
 
-    // C: if (*s == '!') { stm = l_gmtime(&t, &tmr); s++; }
-    // C: else              stm = l_localtime(&t, &tmr);
     let (_use_utc, s): (bool, &[u8]) = if s.first() == Some(&b'!') {
         (true, &s[1..])
     } else {
@@ -762,30 +694,22 @@ pub(crate) fn os_date(state: &mut LuaState) -> Result<usize, LuaError> {
     // `decompose_utc`.  Wall-clock displays will read as UTC rather than local.
     let stm = decompose_utc(t);
 
-    // C: if (stm == NULL)
     //      return luaL_error(L, "date result cannot be represented in this installation");
     // (Phase A stub is always valid — no null check needed.)
 
     if s == b"*t" {
-        // C: lua_createtable(L, 0, 9);  /* 9 = number of fields */
         state.create_table(0, 9)?;
-        // C: setallfields(L, stm);
         set_all_fields(state, &stm)?;
     } else {
-        // C: builds formatted string using luaL_Buffer and per-specifier strftime calls
         let mut result: Vec<u8> = Vec::new();
         let mut pos: usize = 0;
 
-        // C: while (s < se)
         while pos < s.len() {
             if s[pos] != b'%' {
-                // C: luaL_addchar(&b, *s++);
                 result.push(s[pos]);
                 pos += 1;
             } else {
-                // C: s++;  /* skip '%' */
                 pos += 1;
-                // C: char cc[4]; cc[0] = '%';
                 let mut cc = [0u8; 4];
                 cc[0] = b'%';
                 // Pass the remaining slice even if empty: checkoption's loop
@@ -793,12 +717,9 @@ pub(crate) fn os_date(state: &mut LuaState) -> Result<usize, LuaError> {
                 // slice, which causes it to raise "invalid conversion specifier"
                 // matching C behaviour for a trailing bare '%'.
                 let conv = &s[pos..];
-                // C: s = checkoption(L, s, se - s, cc + 1);
                 let after = check_strftime_option(state, conv, &mut cc)?;
                 let oplen = conv.len() - after.len();
                 pos += oplen;
-                // C: reslen = strftime(buff, SIZETIMEFMT, cc, stm);
-                // C: luaL_addsize(&b, reslen);
                 // The `%%` specifier is data-independent: strftime emits a literal
                 // `%` byte regardless of the broken-down time, so it is correct to
                 // handle here even while the rest of strftime is stubbed.
@@ -806,13 +727,11 @@ pub(crate) fn os_date(state: &mut LuaState) -> Result<usize, LuaError> {
                 let _ = SIZE_TIME_FMT;
             }
         }
-        // C: luaL_pushresult(&b);
         state.push_string(&result)?;
     }
     Ok(1)
 }
 
-/// C: `static int os_time(lua_State *L)`
 ///
 /// Without arguments: returns the current time as a Unix timestamp (integer).
 /// With a table argument: interprets the table as broken-down local time,
@@ -821,31 +740,21 @@ pub(crate) fn os_date(state: &mut LuaState) -> Result<usize, LuaError> {
 pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
     let t: i64;
 
-    // C: if (lua_isnoneornil(L, 1)) { t = time(NULL); }
     if matches!(state.type_at(1), LuaType::None | LuaType::Nil) {
         t = unix_now();
     } else {
-        // C: luaL_checktype(L, 1, LUA_TTABLE);
         state.check_arg_type(1, LuaType::Table)?;
-        // C: lua_settop(L, 1);  /* make sure table is at the top */
         // PORT NOTE: must use the public-API `set_top` (relative to the current
         // C-frame's `func`), not `LuaState::set_top` which is an inherent that
         // sets an absolute stack index and would truncate the entire stack.
         lua_vm::api::set_top(state, 1)?;
 
-        // C: ts.tm_year = getfield(L, "year",  -1, 1900);
         let tm_year  = get_field(state, b"year",  -1, 1900)?;
-        // C: ts.tm_mon  = getfield(L, "month", -1, 1);
         let tm_mon   = get_field(state, b"month", -1, 1)?;
-        // C: ts.tm_mday = getfield(L, "day",   -1, 0);
         let tm_mday  = get_field(state, b"day",   -1, 0)?;
-        // C: ts.tm_hour = getfield(L, "hour",  12, 0);
         let tm_hour  = get_field(state, b"hour",  12, 0)?;
-        // C: ts.tm_min  = getfield(L, "min",   0,  0);
         let tm_min   = get_field(state, b"min",   0,  0)?;
-        // C: ts.tm_sec  = getfield(L, "sec",   0,  0);
         let tm_sec   = get_field(state, b"sec",   0,  0)?;
-        // C: ts.tm_isdst = getboolfield(L, "isdst");
         let tm_isdst = get_bool_field(state, b"isdst")?;
 
         let raw = TmFields {
@@ -859,7 +768,6 @@ pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
             ..TmFields::default()
         };
 
-        // C: t = mktime(&ts);
         // PORT NOTE: C `mktime` interprets the broken-down time as local; we
         // interpret it as UTC for the same reason `os_date` decomposes as UTC.
         // `compose_utc` normalises month-axis overflow itself, then a
@@ -869,11 +777,9 @@ pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
         t = compose_utc(&raw);
         let stm = decompose_utc(t);
 
-        // C: setallfields(L, &ts);
         set_all_fields(state, &stm)?;
     }
 
-    // C: if (t != (time_t)(l_timet)t || t == (time_t)(-1))
     //        return luaL_error(L, "time result cannot be represented in this installation");
     // PORT NOTE: On 64-bit targets time_t == i64 == lua_Integer so the cast check
     // is a no-op.  We only guard against mktime's failure sentinel (−1).
@@ -883,12 +789,10 @@ pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
         )));
     }
 
-    // C: l_pushtime(L, t);  where l_timet = lua_Integer → push as integer
     state.push(LuaValue::Int(t));
     Ok(1)
 }
 
-/// C: `static int os_difftime(lua_State *L)`
 ///
 /// Returns the number of seconds between two time values as a float (`t1 − t2`).
 ///
@@ -896,32 +800,24 @@ pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
 /// 64-bit `time_t` this is exact as `f64` up to approximately 2^53 seconds
 /// (~285 million years), which is sufficient for all practical timestamps.
 pub(crate) fn os_difftime(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: time_t t1 = l_checktime(L, 1);
     let t1 = check_time(state, 1)?;
-    // C: time_t t2 = l_checktime(L, 2);
     let t2 = check_time(state, 2)?;
-    // C: lua_pushnumber(L, (lua_Number)difftime(t1, t2));
     state.push(LuaValue::Float((t1 - t2) as f64));
     Ok(1)
 }
 
-/// C: `static int os_setlocale(lua_State *L)`
 ///
 /// Sets the locale for the given category and pushes the resulting locale name
 /// as a string, or `nil` on failure.
 pub(crate) fn os_setlocale(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: static const char *const catnames[] = {"all","collate","ctype","monetary","numeric","time",NULL};
     const CAT_NAMES: &[&[u8]] = &[
         b"all", b"collate", b"ctype", b"monetary", b"numeric", b"time",
     ];
 
-    // C: const char *l = luaL_optstring(L, 1, NULL);
     let locale: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
 
-    // C: int op = luaL_checkoption(L, 2, "all", catnames);
     let _op: usize = state.check_arg_option(2, Some(b"all"), CAT_NAMES)?;
 
-    // C: lua_pushstring(L, setlocale(cat[op], l));
     // PORT NOTE: calling libc::setlocale requires unsafe (banned in lua-stdlib, budget=0).
     // Rust programs inherit the "C" locale by default and never change it, so returning
     // "C" for the C locale (and nil for anything else) is faithful for this build:
@@ -938,14 +834,12 @@ pub(crate) fn os_setlocale(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
-/// C: `static int os_exit(lua_State *L)`
 ///
 /// Exits the host process with the given status code (default `EXIT_SUCCESS = 0`).
 /// If the second argument is true, also closes the Lua state before exiting.
 ///
 /// This function is expected to terminate the process and never return normally.
 pub(crate) fn os_exit(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: if (lua_isboolean(L, 1))
     //      status = lua_toboolean(L, 1) ? EXIT_SUCCESS : EXIT_FAILURE;
     //    else
     //      status = (int)luaL_optinteger(L, 1, EXIT_SUCCESS);
@@ -955,21 +849,16 @@ pub(crate) fn os_exit(state: &mut LuaState) -> Result<usize, LuaError> {
         state.opt_arg_integer(1, 0)? as i32
     };
 
-    // C: if (lua_toboolean(L, 2)) lua_close(L);
     if state.to_boolean(2) {
-        // C: lua_close(L) — tear down the Lua state before exiting
         state.close();
     }
 
-    // C: if (L) exit(status);
-    // TODO(port): `std::process::exit(exit_code)` is banned in lua-stdlib per
-    // PORTING.md.  The correct design is a `LuaError::Exit(i32)` variant (not yet
-    // defined in lua-types) that `lua-cli`'s main loop intercepts and converts to
-    // `std::process::exit`.  For Phase A, propagate as a status-coded error so the
-    // call stack unwinds — the exit code is passed via `with_status` as a
-    // placeholder (semantic mismatch intentional; flagged for Phase B).
-    let _ = exit_code;
-    Err(LuaError::with_status(lua_types::LuaStatus::Ok))
+    //
+    // `std::process::exit` remains restricted to `lua-cli`. A regular
+    // `LuaError` is also wrong here: Lua `pcall` must not catch `os.exit`.
+    // Use a typed panic payload as internal non-local control flow; the CLI
+    // catches it at the process boundary and converts it to an `ExitCode`.
+    std::panic::panic_any(LuaExit(exit_code));
 }
 
 // ── Registration table and entry point ───────────────────────────────────────
@@ -980,7 +869,6 @@ pub(crate) fn os_exit(state: &mut LuaState) -> Result<usize, LuaError> {
 /// in `lua-types` once that crate stabilises.
 pub type NativeFn = fn(&mut LuaState) -> Result<usize, LuaError>;
 
-/// C: `static const luaL_Reg syslib[]`
 ///
 /// Mapping from Lua-visible names to the Rust implementations of each `os.*`
 /// function.
@@ -998,7 +886,6 @@ pub const OS_LIB: &[(&[u8], NativeFn)] = &[
     (b"tmpname",   os_tmpname),
 ];
 
-/// C: `LUAMOD_API int luaopen_os(lua_State *L)`
 ///
 /// Opens the `os` library: creates a new table populated with `OS_LIB` and
 /// leaves it on the stack.
@@ -1006,7 +893,6 @@ pub const OS_LIB: &[(&[u8], NativeFn)] = &[
 /// PORT NOTE: `register_lib` is the Rust equivalent of `luaL_newlib`; it creates
 /// a fresh table, fills it from the `(name, fn)` pair slice, and pushes it.
 pub fn open_os(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: luaL_newlib(L, syslib);
     state.register_lib(b"os", OS_LIB)?;
     Ok(1)
 }

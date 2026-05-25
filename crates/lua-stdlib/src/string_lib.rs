@@ -23,52 +23,37 @@ use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_i
 // Constants
 // ────────────────────────────────────────────────────────────────────────────
 
-// C: #define LUA_MAXCAPTURES 32
 const LUA_MAX_CAPTURES: usize = 32;
 
-// C: #define MAXCCALLS 200
 const MAX_CC_CALLS: i32 = 200;
 
-// C: #define L_ESC '%'
 const L_ESC: u8 = b'%';
 
-// C: #define SPECIALS "^$*+?.([%-"
 const SPECIALS: &[u8] = b"^$*+?.([%-";
 
-// C: #define CAP_UNFINISHED (-1)
 const CAP_UNFINISHED: isize = -1;
 
-// C: #define CAP_POSITION (-2)
 const CAP_POSITION: isize = -2;
 
-// C: #define MAX_ITEM 120
 const MAX_ITEM: usize = 120;
 
-// C: #define MAX_ITEMF (110 + DBL_MAX_10_EXP) ≈ 110 + 308 = 418
 const MAX_ITEM_F: usize = 418;
 
-// C: #define MAX_FORMAT 32
 const MAX_FORMAT: usize = 32;
 
-// C: #define MAXINTSIZE 16
 const MAX_INT_SIZE: usize = 16;
 
-// C: #define MAXSIZE (sizeof(size_t) < sizeof(int) ? MAX_SIZET : (size_t)(INT_MAX))
 // On platforms where size_t is at least as wide as int (all our targets), this
 // collapses to INT_MAX so that packed sizes round-trip through a Lua integer
 // without ambiguity.
 const PACK_MAXSIZE: usize = i32::MAX as usize;
 
-// C: #define NB CHAR_BIT  (8)
 const NB: u32 = 8;
 
-// C: #define MC ((1 << NB) - 1)
 const MC: u8 = 0xFF;
 
-// C: #define SZINT ((int)sizeof(lua_Integer))
 const SZINT: usize = 8; // sizeof(i64) == 8
 
-// C: #define LUAL_PACKPADBYTE 0x00
 const PACK_PAD_BYTE: u8 = 0x00;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -77,7 +62,6 @@ const PACK_PAD_BYTE: u8 = 0x00;
 
 /// One capture record inside MatchState.
 ///
-/// C: `struct { const char *init; ptrdiff_t len; }`
 /// In Rust, `init` is an index into `MatchState::src`; `len` is either a
 /// non-negative actual length, `CAP_UNFINISHED`, or `CAP_POSITION`.
 #[derive(Copy, Clone)]
@@ -96,7 +80,6 @@ impl Default for Capture {
 
 /// State threaded through the recursive pattern-matcher.
 ///
-/// C: `typedef struct MatchState { ... } MatchState;`
 /// Raw C pointers replaced by indices into `src` / `pat` slices.
 struct MatchState<'a> {
     /// Source string being searched.
@@ -130,7 +113,6 @@ impl<'a> MatchState<'a> {
 
 /// Iterator state for `string.gmatch`.
 ///
-/// C: `typedef struct GMatchState { ... } GMatchState;`
 /// Stored as userdata on the Lua stack in the C implementation; in Phase A we
 /// represent it as a plain Rust struct.
 ///
@@ -154,7 +136,6 @@ struct GMatchState {
 
 /// Pack/unpack format option.
 ///
-/// C: `typedef enum KOption { Kint, Kuint, ... } KOption;`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KOption {
     Int,        // signed integers
@@ -172,7 +153,6 @@ enum KOption {
 
 /// Header state for pack/unpack format parsing.
 ///
-/// C: `typedef struct Header { lua_State *L; int islittle; int maxalign; } Header;`
 struct Header {
     is_little: bool,
     max_align: usize,
@@ -194,7 +174,6 @@ impl Header {
 /// Translate a relative initial string position: negative means back from end;
 /// result is clipped to `[1, ∞)`.
 ///
-/// C: `static size_t posrelatI(lua_Integer pos, size_t len)`
 fn pos_relat_i(pos: i64, len: usize) -> usize {
     if pos > 0 {
         pos as usize
@@ -210,7 +189,6 @@ fn pos_relat_i(pos: i64, len: usize) -> usize {
 /// Get an optional ending string position from argument `arg`, default `def`.
 /// Negative means back from end; clipped to `[0, len]`.
 ///
-/// C: `static size_t getendpos(lua_State *L, int arg, lua_Integer def, size_t len)`
 fn get_end_pos(pos: i64, len: usize) -> usize {
     if pos > len as i64 {
         len
@@ -229,7 +207,6 @@ fn get_end_pos(pos: i64, len: usize) -> usize {
 
 /// `string.len(s)` — return byte-length of `s`.
 ///
-/// C: `static int str_len(lua_State *L)`
 ///
 /// Reads only the byte-length, never the bytes themselves, so go through
 /// `to_lua_string_len` (which never copies) rather than `check_arg_string`
@@ -248,7 +225,6 @@ pub fn str_len(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.sub(s, i [, j])` — return substring.
 ///
-/// C: `static int str_sub(lua_State *L)`
 ///
 /// Borrow through `to_lua_string` so the full source string is not copied just
 /// to slice a (typically small) substring out of it. The `GcRef` keeps the
@@ -278,7 +254,6 @@ pub fn str_sub(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.reverse(s)` — return string with bytes reversed.
 ///
-/// C: `static int str_reverse(lua_State *L)`
 ///
 /// Borrow the source bytes; the previous `check_arg_string` made a full owned
 /// copy that was discarded after the single iteration.
@@ -298,7 +273,6 @@ pub fn str_reverse(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.lower(s)` — return lowercase copy.
 ///
-/// C: `static int str_lower(lua_State *L)`
 ///
 /// Borrow the source bytes; one allocation (the output `Vec`) is unavoidable,
 /// but the intermediate copy from `check_arg_string` was not.
@@ -318,7 +292,6 @@ pub fn str_lower(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.upper(s)` — return uppercase copy.
 ///
-/// C: `static int str_upper(lua_State *L)`
 ///
 /// Borrow the source bytes; called as the `string.gsub` replacement function
 /// in `string_ops_long` ~700k times against `%w+` matches, so the intermediate
@@ -339,7 +312,6 @@ pub fn str_upper(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.rep(s, n [, sep])` — return `n` copies of `s` separated by `sep`.
 ///
-/// C: `static int str_rep(lua_State *L)`
 ///
 /// Borrow `s` through `to_lua_string`. The previous version did the
 /// `check_arg_string` copy and then a second redundant `s.to_vec()` inside the
@@ -384,7 +356,6 @@ pub fn str_rep(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.byte(s [, i [, j]])` — return numeric codes of characters.
 ///
-/// C: `static int str_byte(lua_State *L)`
 ///
 /// Borrow the source bytes through `to_lua_string` (returns a `GcRef<LuaString>`)
 /// instead of `check_arg_string` (which copies the entire string into a fresh
@@ -424,7 +395,6 @@ pub fn str_byte(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.char(...)` — return string built from character codes.
 ///
-/// C: `static int str_char(lua_State *L)`
 pub fn str_char(state: &mut LuaState) -> Result<usize, LuaError> {
     let n = state.get_top();
     let mut buf = Vec::with_capacity(n as usize);
@@ -441,12 +411,10 @@ pub fn str_char(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.dump(function [, strip])` — serialize a function as binary chunk.
 ///
-/// C: `static int str_dump(lua_State *L)`
 /// Uses `lua_dump` internally; the writer callback builds a buffer.
 pub fn str_dump(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_type(1, LuaType::Function)?;
     let strip = state.arg_to_bool(2);
-    // C: lua_settop(L, 1);
     // PORT NOTE: `state.set_top` (inherent) takes an absolute StackIdx and
     // would wipe the call frame. `lua_settop` is frame-relative.
     lua_vm::api::set_top(state, 1)?;
@@ -466,14 +434,12 @@ pub fn str_dump(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Try to coerce the argument at `arg` to a number, pushing it on the stack.
 /// Returns true on success.
 ///
-/// C: `static int tonum(lua_State *L, int arg)`
 fn tonum(state: &mut LuaState, arg: i32) -> Result<bool, LuaError> {
     if state.type_at(arg) == LuaType::Number {
         state.push_value_at(arg)?;
         Ok(true)
     } else {
         // check whether it is a numerical string
-        // C: const char *s = lua_tolstring(L, arg, &len);
         //    return (s != NULL && lua_stringtonumber(L, s) == len + 1);
         if let Some(s) = state.to_lua_string_bytes(arg) {
             let len = s.len();
@@ -488,19 +454,15 @@ fn tonum(state: &mut LuaState, arg: i32) -> Result<bool, LuaError> {
 
 /// Try to invoke the metamethod `mtname` on the two operands.
 ///
-/// C: `static void trymt(lua_State *L, const char *mtname)`
 fn trymt(state: &mut LuaState, mtname: &[u8]) -> Result<(), LuaError> {
-    // C: lua_settop(L, 2); /* back to original arguments */
     // PORT NOTE: `state.set_top` (inherent) takes an absolute StackIdx and
     // would wipe the call frame's arguments. `lua_settop` is frame-relative
     // — keep the first two args of the current C function.
     lua_vm::api::set_top(state, 2)?;
-    // C: if (lua_type(L, 2) == LUA_TSTRING || !luaL_getmetafield(L, 2, mtname))
     //        luaL_error(...)
     let t2_is_string = state.type_at(2) == LuaType::String;
     let has_mm = state.get_meta_field(2, mtname)?;
     if t2_is_string || !has_mm {
-        // C: luaL_error(L, "attempt to %s a '%s' with a '%s'", mtname + 2, ...)
         let op = &mtname[2..]; // skip "__"
         return Err(LuaError::runtime(format_args!(
             "attempt to {} a '{}' with a '{}'",
@@ -509,7 +471,6 @@ fn trymt(state: &mut LuaState, mtname: &[u8]) -> Result<(), LuaError> {
             state.type_name_at(-1).escape_ascii(),
         )));
     }
-    // C: lua_insert(L, -3); lua_call(L, 2, 1);
     state.insert(-3)?;
     state.call(2, 1)?;
     Ok(())
@@ -517,7 +478,6 @@ fn trymt(state: &mut LuaState, mtname: &[u8]) -> Result<(), LuaError> {
 
 /// Generic arithmetic helper: coerce both args and call `op`, else try metamethod.
 ///
-/// C: `static int arith(lua_State *L, int op, const char *mtname)`
 fn arith(state: &mut LuaState, op: ArithOp, mtname: &[u8]) -> Result<usize, LuaError> {
     if tonum(state, 1)? && tonum(state, 2)? {
         state.arith(op)?;
@@ -527,35 +487,27 @@ fn arith(state: &mut LuaState, op: ArithOp, mtname: &[u8]) -> Result<usize, LuaE
     Ok(1)
 }
 
-/// C: `static int arith_add(lua_State *L)`
 pub fn arith_add(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Add, b"__add")
 }
-/// C: `static int arith_sub(lua_State *L)`
 pub fn arith_sub(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Sub, b"__sub")
 }
-/// C: `static int arith_mul(lua_State *L)`
 pub fn arith_mul(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Mul, b"__mul")
 }
-/// C: `static int arith_mod(lua_State *L)`
 pub fn arith_mod(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Mod, b"__mod")
 }
-/// C: `static int arith_pow(lua_State *L)`
 pub fn arith_pow(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Pow, b"__pow")
 }
-/// C: `static int arith_div(lua_State *L)`
 pub fn arith_div(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Div, b"__div")
 }
-/// C: `static int arith_idiv(lua_State *L)`
 pub fn arith_idiv(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Idiv, b"__idiv")
 }
-/// C: `static int arith_unm(lua_State *L)`
 pub fn arith_unm(state: &mut LuaState) -> Result<usize, LuaError> {
     arith(state, ArithOp::Unm, b"__unm")
 }
@@ -566,7 +518,6 @@ pub fn arith_unm(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// Return `true` if `c` belongs to the character class `cl` (a `%x` letter).
 ///
-/// C: `static int match_class(int c, int cl)`
 fn match_class(c: u8, cl: u8) -> bool {
     let res = match cl.to_ascii_lowercase() {
         b'a' => c.is_ascii_alphabetic(),
@@ -587,7 +538,6 @@ fn match_class(c: u8, cl: u8) -> bool {
 
 /// Match character `c` against a bracket class `[p .. ec-1]`.
 ///
-/// C: `static int matchbracketclass(int c, const char *p, const char *ec)`
 /// `p` and `ec` are indices into `pat`.
 fn matchbracketclass(pat: &[u8], c: u8, mut p: usize, ec: usize) -> bool {
     let sig = if p + 1 < pat.len() && pat[p + 1] == b'^' {
@@ -621,7 +571,6 @@ fn matchbracketclass(pat: &[u8], c: u8, mut p: usize, ec: usize) -> bool {
 /// Return `true` if the single character at `src[s]` matches the pattern
 /// element starting at `pat[p]` with class end at `ep`.
 ///
-/// C: `static int singlematch(MatchState *ms, const char *s, const char *p, const char *ep)`
 fn singlematch(ms: &MatchState, s: usize, p: usize, ep: usize) -> bool {
     if s >= ms.src.len() {
         return false;
@@ -638,12 +587,10 @@ fn singlematch(ms: &MatchState, s: usize, p: usize, ep: usize) -> bool {
 /// Find the end of the pattern element starting at `pat[p]`.
 /// Returns the index one past the element, or an error for malformed patterns.
 ///
-/// C: `static const char *classend(MatchState *ms, const char *p)`
 fn classend(ms: &MatchState, p: usize) -> Result<usize, LuaError> {
     let pat = ms.pat;
     match pat.get(p).copied() {
         Some(L_ESC) => {
-            // C: if (p == ms->p_end) luaL_error(...);
             if p + 1 >= pat.len() {
                 return Err(LuaError::runtime(format_args!(
                     "malformed pattern (ends with '%')"
@@ -680,7 +627,6 @@ fn classend(ms: &MatchState, p: usize) -> Result<usize, LuaError> {
 /// Check that capture `l` (1-based char digit from pattern) is valid.
 /// Returns the 0-based capture index.
 ///
-/// C: `static int check_capture(MatchState *ms, int l)`
 fn check_capture(ms: &MatchState, l: u8) -> Result<usize, LuaError> {
     let signed = (l as i32) - (b'1' as i32);
     if signed < 0
@@ -697,7 +643,6 @@ fn check_capture(ms: &MatchState, l: u8) -> Result<usize, LuaError> {
 
 /// Find the most recent unfinished capture to close.
 ///
-/// C: `static int capture_to_close(MatchState *ms)`
 fn capture_to_close(ms: &MatchState) -> Result<usize, LuaError> {
     let mut level = ms.level as usize;
     while level > 0 {
@@ -711,10 +656,8 @@ fn capture_to_close(ms: &MatchState) -> Result<usize, LuaError> {
 
 /// Match a balanced string `%bxy` starting at `src[s]`.
 ///
-/// C: `static const char *matchbalance(MatchState *ms, const char *s, const char *p)`
 /// Returns the new `s` position after the match, or `None`.
 fn matchbalance(ms: &MatchState, s: usize, p: usize) -> Result<Option<usize>, LuaError> {
-    // C: if (p >= ms->p_end - 1) luaL_error(...)
     if p + 1 >= ms.pat.len() {
         return Err(LuaError::runtime(format_args!(
             "malformed pattern (missing arguments to '%b')"
@@ -743,7 +686,6 @@ fn matchbalance(ms: &MatchState, s: usize, p: usize) -> Result<Option<usize>, Lu
 
 /// Greedy match: match as many as possible, then try the rest of the pattern.
 ///
-/// C: `static const char *max_expand(MatchState *ms, const char *s, const char *p, const char *ep)`
 fn max_expand(
     ms: &mut MatchState,
     s: usize,
@@ -766,7 +708,6 @@ fn max_expand(
 
 /// Lazy match: try the rest of the pattern first, then expand by one.
 ///
-/// C: `static const char *min_expand(MatchState *ms, const char *s, const char *p, const char *ep)`
 fn min_expand(
     ms: &mut MatchState,
     mut s: usize,
@@ -787,7 +728,6 @@ fn min_expand(
 
 /// Open a new capture at `src[s]`.
 ///
-/// C: `static const char *start_capture(MatchState *ms, const char *s, const char *p, int what)`
 fn start_capture(
     ms: &mut MatchState,
     s: usize,
@@ -810,7 +750,6 @@ fn start_capture(
 
 /// Close the most recent open capture at `src[s]`.
 ///
-/// C: `static const char *end_capture(MatchState *ms, const char *s, const char *p)`
 fn end_capture(ms: &mut MatchState, s: usize, p: usize) -> Result<Option<usize>, LuaError> {
     let l = capture_to_close(ms)?;
     ms.captures[l].len = (s - ms.captures[l].init) as isize;
@@ -823,7 +762,6 @@ fn end_capture(ms: &mut MatchState, s: usize, p: usize) -> Result<Option<usize>,
 
 /// Match a back-reference `%n` against `src[s]`.
 ///
-/// C: `static const char *match_capture(MatchState *ms, const char *s, int l)`
 fn match_capture(ms: &MatchState, s: usize, l: u8) -> Result<Option<usize>, LuaError> {
     let idx = check_capture(ms, l)?;
     let cap_len = ms.captures[idx].len as usize;
@@ -840,10 +778,8 @@ fn match_capture(ms: &MatchState, s: usize, l: u8) -> Result<Option<usize>, LuaE
 /// Core recursive pattern matcher.
 /// Returns `Ok(Some(new_s))` on match, `Ok(None)` on failure, `Err` on error.
 ///
-/// C: `static const char *match(MatchState *ms, const char *s, const char *p)`
 /// The C code uses `goto init` for tail calls; here we use a loop.
 fn match_pat(ms: &mut MatchState, mut s: usize, mut p: usize) -> Result<Option<usize>, LuaError> {
-    // C: if (l_unlikely(ms->matchdepth-- == 0)) luaL_error(ms->L, "pattern too complex");
     ms.matchdepth -= 1;
     if ms.matchdepth < 0 {
         ms.matchdepth = 0;
@@ -859,7 +795,6 @@ fn match_pat(ms: &mut MatchState, mut s: usize, mut p: usize) -> Result<Option<u
 
         match ms.pat[p] {
             b'(' => {
-                // C: start capture
                 let s2 = if p + 1 < ms.pat.len() && ms.pat[p + 1] == b')' {
                     // position capture
                     start_capture(ms, s, p + 2, CAP_POSITION)?
@@ -873,20 +808,17 @@ fn match_pat(ms: &mut MatchState, mut s: usize, mut p: usize) -> Result<Option<u
                 break 'outer Ok(s2);
             }
             b'$' => {
-                // C: if ((p + 1) != ms->p_end) goto dflt;
                 if p + 1 != ms.pat.len() {
                     // fall through to default
                     let ep = classend(ms, p)?;
                     let s2 = handle_class_with_suffix(ms, s, p, ep)?;
                     break 'outer Ok(s2);
                 }
-                // C: s = (s == ms->src_end) ? s : NULL;
                 break 'outer Ok(if s == ms.src.len() { Some(s) } else { None });
             }
             L_ESC => {
                 match ms.pat.get(p + 1).copied().unwrap_or(0) {
                     b'b' => {
-                        // C: matchbalance
                         let s2 = matchbalance(ms, s, p + 2)?;
                         if let Some(ns) = s2 {
                             s = ns;
@@ -896,7 +828,6 @@ fn match_pat(ms: &mut MatchState, mut s: usize, mut p: usize) -> Result<Option<u
                         break 'outer Ok(None);
                     }
                     b'f' => {
-                        // C: frontier pattern
                         p += 2;
                         if ms.pat.get(p).copied() != Some(b'[') {
                             return Err(LuaError::runtime(format_args!(
@@ -915,7 +846,6 @@ fn match_pat(ms: &mut MatchState, mut s: usize, mut p: usize) -> Result<Option<u
                         break 'outer Ok(None);
                     }
                     c @ b'0'..=b'9' => {
-                        // C: back-reference %0-%9
                         let s2 = match_capture(ms, s, c)?;
                         if let Some(ns) = s2 {
                             s = ns;
@@ -957,7 +887,6 @@ fn handle_class_with_suffix(
 ) -> Result<Option<usize>, LuaError> {
     let matched_once = singlematch(ms, s, p, ep);
     if !matched_once {
-        // C: if (*ep == '*' || *ep == '?' || *ep == '-') { p = ep+1; goto init; }
         //    else s = NULL;
         match ms.pat.get(ep).copied() {
             Some(b'*') | Some(b'?') | Some(b'-') => {
@@ -1006,7 +935,6 @@ fn handle_class_with_suffix(
 
 /// Find `needle` in `haystack` using a plain memmem-style search.
 ///
-/// C: `static const char *lmemfind(const char *s1, size_t l1, const char *s2, size_t l2)`
 /// Returns the byte-offset of the first occurrence, or `None`.
 fn lmemfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
@@ -1037,7 +965,6 @@ fn lmemfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Check whether the pattern `pat` has no special characters (for plain search).
 ///
-/// C: `static int nospecials(const char *p, size_t l)`
 fn nospecials(pat: &[u8]) -> bool {
     !pat.iter().any(|b| SPECIALS.contains(b))
 }
@@ -1053,7 +980,6 @@ enum CaptureInfo<'a> {
 /// Get information about the `i`-th capture.
 /// If there are no captures and `i == 0`, returns the whole match `s..e`.
 ///
-/// C: `static size_t get_onecapture(MatchState *ms, int i, const char *s, const char *e, const char **cap)`
 fn get_one_capture<'a>(
     ms: &'a MatchState,
     i: usize,
@@ -1061,7 +987,6 @@ fn get_one_capture<'a>(
     e: usize,
 ) -> Result<CaptureInfo<'a>, LuaError> {
     if i >= ms.level as usize {
-        // C: if (i != 0) luaL_error(...)
         if i != 0 {
             return Err(LuaError::runtime(format_args!(
                 "invalid capture index %{}",
@@ -1076,7 +1001,6 @@ fn get_one_capture<'a>(
         return Err(LuaError::runtime(format_args!("unfinished capture")));
     }
     if cap.len == CAP_POSITION {
-        // C: lua_pushinteger(ms->L, (ms->capture[i].init - ms->src_init) + 1);
         return Ok(CaptureInfo::Position((cap.init + 1) as i64));
     }
     let len = cap.len as usize;
@@ -1086,7 +1010,6 @@ fn get_one_capture<'a>(
 /// Push all captures (or whole match if none) onto the stack.
 /// Returns the number of values pushed.
 ///
-/// C: `static int push_captures(MatchState *ms, const char *s, const char *e)`
 fn push_captures(
     state: &mut LuaState,
     ms: &MatchState,
@@ -1110,7 +1033,6 @@ fn push_captures(
 
 /// Shared implementation of `string.find` and `string.match`.
 ///
-/// C: `static int str_find_aux(lua_State *L, int find)`
 fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
     let s_ref = match state.to_lua_string(1) {
         Some(r) => r,
@@ -1138,7 +1060,6 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
         return Ok(1);
     }
 
-    // C: if (find && (lua_toboolean(L, 4) || nospecials(p, lp)))
     if find && (state.arg_to_bool(4) || nospecials(p)) {
         // plain search
         if let Some(pos) = lmemfind(&s[init..], p) {
@@ -1177,28 +1098,24 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
         }
     }
 
-    // C: luaL_pushfail(L); return 1;
     state.push(LuaValue::Nil);
     Ok(1)
 }
 
 /// `string.find(s, pattern [, init [, plain]])` — find pattern in `s`.
 ///
-/// C: `static int str_find(lua_State *L)`
 pub fn str_find(state: &mut LuaState) -> Result<usize, LuaError> {
     str_find_aux(state, true)
 }
 
 /// `string.match(s, pattern [, init])` — match pattern against `s`.
 ///
-/// C: `static int str_match(lua_State *L)`
 pub fn str_match(state: &mut LuaState) -> Result<usize, LuaError> {
     str_find_aux(state, false)
 }
 
 /// Continuation function for `string.gmatch` iterator closure.
 ///
-/// C: `static int gmatch_aux(lua_State *L)`
 ///
 /// PORT NOTE: The C version stores `GMatchState` inside a heap-allocated
 /// userdata referenced by upvalue 3, then mutates fields via the raw pointer
@@ -1273,7 +1190,6 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.gmatch(s, pattern [, init])` — return an iterator for all matches.
 ///
-/// C: `static int gmatch(lua_State *L)`
 ///
 /// PORT NOTE: C uses `lua_newuserdatauv` for the GMatchState plus a 3-upvalue
 /// C closure. Phase-A LuaCClosure upvalues are immutable, so we collapse the
@@ -1321,7 +1237,6 @@ pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// Add a replacement string with `%n` capture references to `buf`.
 ///
-/// C: `static void add_s(MatchState *ms, luaL_Buffer *b, const char *s, const char *e)`
 fn add_s(
     state: &mut LuaState,
     ms: &MatchState,
@@ -1329,7 +1244,6 @@ fn add_s(
     s: usize,
     e: usize,
 ) -> Result<(), LuaError> {
-    // C: const char *news = lua_tolstring(L, 3, &l);
     let news_bytes = state.to_lua_string_bytes(3).unwrap_or_default();
     let mut i = 0usize;
     while i < news_bytes.len() {
@@ -1350,7 +1264,6 @@ fn add_s(
                 match get_one_capture(ms, (c - b'1') as usize, s, e)? {
                     CaptureInfo::Position(n) => {
                         // push position then pop into buf
-                        // C: luaL_addvalue(b);  -- adds the top of stack
                         let formatted = format!("{}", n).into_bytes();
                         buf.extend_from_slice(&formatted);
                     }
@@ -1373,7 +1286,6 @@ fn add_s(
 /// Add the replacement value (string, table lookup, or function call) to `buf`.
 /// Returns `true` if the original text was changed.
 ///
-/// C: `static int add_value(MatchState *ms, luaL_Buffer *b, const char *s, const char *e, int tr)`
 fn add_value(
     state: &mut LuaState,
     ms: &MatchState,
@@ -1384,13 +1296,11 @@ fn add_value(
 ) -> Result<bool, LuaError> {
     match tr {
         LuaType::Function => {
-            // C: lua_pushvalue(L, 3); n = push_captures(...); lua_call(L, n, 1);
             state.push_value_at(3)?;
             let n = push_captures(state, ms, s, e)?;
             state.call(n as i32, 1)?;
         }
         LuaType::Table => {
-            // C: push_onecapture(ms, 0, s, e); lua_gettable(L, 3);
             match get_one_capture(ms, 0, s, e)? {
                 CaptureInfo::Position(n) => state.push(LuaValue::Int(n)),
                 CaptureInfo::Bytes(b) => state.push_bytes(b)?,
@@ -1404,7 +1314,6 @@ fn add_value(
         }
     }
 
-    // C: if (!lua_toboolean(L, -1)) { lua_pop(L, 1); addlstring(b, s, e-s); return 0; }
     let top_bool = state.arg_to_bool(-1);
     if !top_bool {
         state.pop_n(1);
@@ -1417,7 +1326,6 @@ fn add_value(
             "invalid replacement value (a {})", tname.escape_ascii()
         )));
     }
-    // C: luaL_addvalue(b);
     let v = state.to_bytes(-1).unwrap_or_default();
     state.pop();
     buf.extend_from_slice(&v);
@@ -1426,7 +1334,6 @@ fn add_value(
 
 /// `string.gsub(s, pattern, repl [, n])` — global substitution.
 ///
-/// C: `static int str_gsub(lua_State *L)`
 pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
     let src_bytes = state.check_arg_string(1)?;
     let pat_bytes = state.check_arg_string(2)?;
@@ -1434,7 +1341,6 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
     let max_s = state.opt_arg_integer(4, (src_len + 1) as i64)?;
     let tr = state.type_at(3);
 
-    // C: luaL_argexpected(..., tr == TNUMBER || tr == TSTRING || tr == TFUNCTION || tr == TTABLE, ...)
     if !matches!(tr, LuaType::Number | LuaType::String | LuaType::Function | LuaType::Table) {
         let v = state.arg(3);
         return Err(LuaError::type_arg_error(3, "string/function/table", &v));
@@ -1481,7 +1387,6 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     if !changed {
-        // C: lua_pushvalue(L, 1); /* return original string */
         state.push_value_at(1)?;
     } else {
         buf.extend_from_slice(&ms.src[src_pos..]);
@@ -1497,7 +1402,6 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// Add a hex-float digit to buffer and return the fractional remainder.
 ///
-/// C: `static lua_Number adddigit(char *buff, int n, lua_Number x)`
 fn adddigit(buf: &mut Vec<u8>, x: f64) -> f64 {
     let dd = x.floor();
     let d = dd as i32;
@@ -1510,7 +1414,6 @@ fn adddigit(buf: &mut Vec<u8>, x: f64) -> f64 {
 ///
 /// Returns `(frac_digits, exponent_string)` for use by `format_hex_float`.
 ///
-/// C: `static int num2straux(char *buff, int sz, lua_Number x)`
 fn num2straux(x: f64) -> Vec<u8> {
     format_hex_float(x, None)
 }
@@ -1603,7 +1506,6 @@ fn frexp(x: f64) -> (f64, i32) {
 
 /// Convert float `n` to a Lua-readable literal (hex or special representation).
 ///
-/// C: `static int quotefloat(lua_State *L, char *buff, lua_Number n)`
 fn quotefloat(n: f64) -> Vec<u8> {
     if n == f64::INFINITY {
         return b"1e9999".to_vec();
@@ -1623,7 +1525,6 @@ fn quotefloat(n: f64) -> Vec<u8> {
 
 /// Add a quoted Lua string literal to `buf`.
 ///
-/// C: `static void addquoted(luaL_Buffer *b, const char *s, size_t len)`
 fn addquoted(buf: &mut Vec<u8>, s: &[u8]) {
     buf.push(b'"');
     for (idx, &c) in s.iter().enumerate() {
@@ -1647,7 +1548,6 @@ fn addquoted(buf: &mut Vec<u8>, s: &[u8]) {
 
 /// Add a Lua literal representation of arg `n` to `buf`.
 ///
-/// C: `static void addliteral(lua_State *L, luaL_Buffer *b, int arg)`
 fn addliteral(state: &mut LuaState, buf: &mut Vec<u8>, arg: i32) -> Result<(), LuaError> {
     match state.type_at(arg) {
         LuaType::String => {
@@ -1682,7 +1582,6 @@ fn addliteral(state: &mut LuaState, buf: &mut Vec<u8>, arg: i32) -> Result<(), L
     Ok(())
 }
 
-/// C: `MAX_FORMAT - 10 = 22` threshold from lstrlib.c — format body `spec_body_len + 1` must be < 22.
 
 /// Flags allowed per conversion type (matches lstrlib.c constants).
 const FMT_FLAGS_F: &[u8] = b"-+#0 ";
@@ -1998,7 +1897,6 @@ fn strip_trailing_zeros_exp(s: &[u8]) -> Vec<u8> {
 
 /// `string.format(fmt, ...)` — C-style string formatting.
 ///
-/// C: `static int str_format(lua_State *L)`
 pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
     let top = state.get_top();
     let mut arg = 1i32;
@@ -2059,7 +1957,6 @@ pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
         let spec_slice = &fmt_bytes[spec_start + 1..i - 1];
         let form = &fmt_bytes[spec_start..i];
 
-        // C: getformat rejects spec bodies >= MAX_FORMAT - 10 = 22 bytes.
         // Must check before parse_fmt_spec to avoid overflow on huge widths.
         if spec_slice.len() + 1 >= 22 {
             return Err(LuaError::runtime(format_args!("invalid format (too long)")));
@@ -2210,7 +2107,6 @@ fn is_digit(c: u8) -> bool {
 
 /// Read an optional integer from the format string, returning `df` if absent.
 ///
-/// C: `static int getnum(const char **fmt, int df)`
 fn getnum(fmt: &[u8], pos: &mut usize, df: i32) -> i32 {
     if *pos >= fmt.len() || !is_digit(fmt[*pos]) {
         return df;
@@ -2228,7 +2124,6 @@ fn getnum(fmt: &[u8], pos: &mut usize, df: i32) -> i32 {
 
 /// Read an integer from the format string, error if out of `[1, MAXINTSIZE]`.
 ///
-/// C: `static int getnumlimit(Header *h, const char **fmt, int df)`
 fn getnumlimit(fmt: &[u8], pos: &mut usize, df: i32) -> Result<usize, LuaError> {
     let sz = getnum(fmt, pos, df);
     if sz > MAX_INT_SIZE as i32 || sz <= 0 {
@@ -2242,9 +2137,7 @@ fn getnumlimit(fmt: &[u8], pos: &mut usize, df: i32) -> Result<usize, LuaError> 
 
 /// Read and classify the next pack format option, filling `size`.
 ///
-/// C: `static KOption getoption(Header *h, const char **fmt, int *size)`
 fn getoption(h: &mut Header, fmt: &[u8], pos: &mut usize, size: &mut usize) -> Result<KOption, LuaError> {
-    // C: struct cD { char c; union { LUAI_MAXALIGN; } u; };
     // In Rust, the native max-align of a union of f64/void*/size_t is 8 on 64-bit.
     const NATIVE_MAX_ALIGN: usize = std::mem::align_of::<f64>();
 
@@ -2297,7 +2190,6 @@ fn getoption(h: &mut Header, fmt: &[u8], pos: &mut usize, size: &mut usize) -> R
 
 /// Get full details about the next format option, including alignment padding.
 ///
-/// C: `static KOption getdetails(Header *h, size_t totalsize, const char **fmt, int *psize, int *ntoalign)`
 fn getdetails(
     h: &mut Header,
     total_size: usize,
@@ -2310,7 +2202,6 @@ fn getdetails(
     let mut align = *psize;
 
     if opt == KOption::Paddalign {
-        // C: if (**fmt == '\0' || getoption(h, fmt, &align) == Kchar || align == 0) argerror
         if *pos >= fmt.len() {
             return Err(LuaError::arg_error(1, "invalid next option for option 'X'"));
         }
@@ -2338,7 +2229,6 @@ fn getdetails(
 
 /// Pack integer `n` with `size` bytes into `buf` with given endianness.
 ///
-/// C: `static void packint(luaL_Buffer *b, lua_Unsigned n, int islittle, int size, int neg)`
 fn packint(buf: &mut Vec<u8>, mut n: u64, is_little: bool, size: usize, neg: bool) {
     let start = buf.len();
     buf.resize(start + size, 0);
@@ -2358,7 +2248,6 @@ fn packint(buf: &mut Vec<u8>, mut n: u64, is_little: bool, size: usize, neg: boo
 
 /// Copy bytes with endianness correction.
 ///
-/// C: `static void copywithendian(char *dest, const char *src, int size, int islittle)`
 fn copywithendian(dest: &mut [u8], src: &[u8], is_little: bool) {
     debug_assert_eq!(dest.len(), src.len());
     if is_little == cfg!(target_endian = "little") {
@@ -2372,7 +2261,6 @@ fn copywithendian(dest: &mut [u8], src: &[u8], is_little: bool) {
 
 /// Unpack a (possibly signed) integer from `data[0..size]`.
 ///
-/// C: `static lua_Integer unpackint(lua_State *L, const char *str, int islittle, int size, int issigned)`
 fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_signed: bool) -> Result<i64, LuaError> {
     let limit = size.min(SZINT);
     let mut res: u64 = 0;
@@ -2403,7 +2291,6 @@ fn unpackint(state: &LuaState, data: &[u8], is_little: bool, size: usize, is_sig
 
 /// `string.pack(fmt, ...)` — pack values into a binary string.
 ///
-/// C: `static int str_pack(lua_State *L)`
 pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
     let fmt_bytes = state.check_arg_string(1)?.to_vec();
     let fmt = &fmt_bytes[..];
@@ -2508,7 +2395,6 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.packsize(fmt)` — return the byte-size the format would produce.
 ///
-/// C: `static int str_packsize(lua_State *L)`
 pub fn str_packsize(state: &mut LuaState) -> Result<usize, LuaError> {
     let fmt_bytes = state.check_arg_string(1)?.to_vec();
     let fmt = &fmt_bytes[..];
@@ -2535,7 +2421,6 @@ pub fn str_packsize(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.unpack(fmt, s [, pos])` — unpack binary data from string.
 ///
-/// C: `static int str_unpack(lua_State *L)`
 pub fn str_unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     let fmt_bytes = state.check_arg_string(1)?.to_vec();
     let data_bytes = state.check_arg_string(2)?.to_vec();
@@ -2629,7 +2514,6 @@ pub fn str_unpack(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// Function table for `string` library.
 ///
-/// C: `static const luaL_Reg strlib[]`
 pub const STRING_LIB: &[(&[u8], lua_CFunction)] = &[
     (b"byte",     str_byte),
     (b"char",     str_char),
@@ -2652,7 +2536,6 @@ pub const STRING_LIB: &[(&[u8], lua_CFunction)] = &[
 
 /// Metamethods to install on the string metatable.
 ///
-/// C: `static const luaL_Reg stringmetamethods[]`
 pub const STRING_META_METHODS: &[(&[u8], lua_CFunction)] = &[
     (b"__add",  arith_add),
     (b"__sub",  arith_sub),
@@ -2666,35 +2549,26 @@ pub const STRING_META_METHODS: &[(&[u8], lua_CFunction)] = &[
 
 /// Create the string metatable and set it as the metatable for all strings.
 ///
-/// C: `static void createmetatable(lua_State *L)`
 pub fn createmetatable(state: &mut LuaState) -> Result<(), LuaError> {
-    // C: luaL_newlibtable(L, stringmetamethods);
     state.new_lib_table(STRING_META_METHODS)?;
-    // C: luaL_setfuncs(L, stringmetamethods, 0);
     state.set_funcs(STRING_META_METHODS, 0)?;
-    // C: lua_pushliteral(L, ""); lua_pushvalue(L, -2); lua_setmetatable(L, -2);
     state.push_string(b"")?;
     let mt_idx = state.top_idx() - 2;
     let mt = state.get_at(mt_idx);
     state.push(mt);
     state.set_metatable(-2)?;
-    // C: lua_pop(L, 1);
     state.pop_n(1);
-    // C: lua_pushvalue(L, -2); lua_setfield(L, -2, "__index");
     let strlib_idx = state.top_idx() - 2;
     let strlib = state.get_at(strlib_idx);
     state.push(strlib);
     state.set_field(-2, b"__index")?;
-    // C: lua_pop(L, 1);
     state.pop_n(1);
     Ok(())
 }
 
 /// `luaopen_string` — open the string library.
 ///
-/// C: `LUAMOD_API int luaopen_string(lua_State *L)`
 pub fn luaopen_string(state: &mut LuaState) -> Result<usize, LuaError> {
-    // C: luaL_newlib(L, strlib);
     state.new_lib(STRING_LIB)?;
     createmetatable(state)?;
     Ok(1)

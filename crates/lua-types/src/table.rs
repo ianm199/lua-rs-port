@@ -31,23 +31,18 @@ use crate::value::LuaValue;
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Largest `k` such that `2^k` fits in a signed `i32`.
-/// C: `#define MAXABITS cast_int(sizeof(int) * CHAR_BIT - 1)`
 const MAXABITS: u32 = (std::mem::size_of::<i32>() as u32) * 8 - 1;
 
 /// Maximum size of the array part.
-/// C: `#define MAXASIZE luaM_limitN(1u << MAXABITS, TValue)`
 pub const MAXASIZE: u32 = 1u32 << MAXABITS;
 
 /// Largest `k` such that `2^k` fits in a signed `i32` minus one (hash part).
-/// C: `#define MAXHBITS (MAXABITS - 1)`
 pub const MAXHBITS: u32 = MAXABITS - 1;
 
 /// Maximum size of the hash part (power-of-2 count of nodes).
-/// C: `#define MAXHSIZE luaM_limitN(1u << MAXHBITS, Node)`
 const MAXHSIZE: u32 = 1u32 << MAXHBITS;
 
 /// Bit 7 of `TableFlags`: when set, `alimit` is NOT the real array size.
-/// C: `#define BITRAS (1 << 7)`.
 const BIT_RAS: u8 = 1 << 7;
 
 /// Soft cap on array growth in a single `raw_set` call.
@@ -109,7 +104,6 @@ impl TableFlags {
 
 /// One node in a table's hash part.
 ///
-/// C: `Node` = `NodeKey` + `TValue i_val`. The collision chain is a
 /// signed offset into the same node vector.
 pub struct TableNode {
     /// Value stored at this key.  C: `gval(n)`.
@@ -117,7 +111,6 @@ pub struct TableNode {
     /// Key stored in this node.  C: `n->u.key_val` + `n->u.key_tt`.
     pub key: LuaValue,
     /// Collision-chain offset (positive or negative; zero means end of chain).
-    /// C: `n->u.next` (`int`).
     pub next: i32,
 }
 
@@ -163,7 +156,6 @@ pub enum TableSlotRef {
 // ── ceil_log2 ─────────────────────────────────────────────────────────────────
 
 /// Computes `ceil(log2(x))`; returns the minimum `k` such that `2^k >= x`.
-/// C: `int luaO_ceillog2 (unsigned int x)`.
 fn ceil_log2(x: u32) -> i32 {
     static LOG_2: [u8; 256] = [
         0,1,2,2,3,3,3,3,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
@@ -188,7 +180,6 @@ fn ceil_log2(x: u32) -> i32 {
 /// Uses `frexp` decomposition to produce a well-distributed integer hash.
 /// Handles inf/NaN by returning 0.
 ///
-/// C: `static int l_hashfloat (lua_Number n)`.
 fn hash_float(n: f64) -> i32 {
     if n.is_nan() || n.is_infinite() {
         return 0;
@@ -573,7 +564,6 @@ impl TableInner {
     }
 
     /// Resize the table to new array and hash sizes.
-    /// C: `void luaH_resize`.
     fn resize(&mut self, new_asize: u32, nhsize: u32) -> Result<(), LuaError> {
         let old_asize = self.set_limit_to_size();
 
