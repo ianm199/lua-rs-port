@@ -23,6 +23,7 @@ cargo build --bin lua-rs
 | [`oop.lua`](oop.lua) | object-orientation and inheritance via metatables |
 | [`patterns.lua`](patterns.lua) | Lua string patterns: `match`, `gmatch`, `gsub` |
 | [`errors.lua`](errors.lua) | `pcall`, table error objects, `<close>` to-be-closed variables |
+| [`wasm-browser/`](wasm-browser/) | static browser playground for the published `lua-rs-wasm` package |
 
 Run them all:
 

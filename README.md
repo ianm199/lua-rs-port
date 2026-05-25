@@ -94,6 +94,9 @@ repository has an `NPM_TOKEN` secret. Adding WASI support is separate future wor
 smoke, and [docs/NPM_WASM_PUBLISHING.md](docs/NPM_WASM_PUBLISHING.md) for the
 publish runbook.
 
+Try the browser playground on GitHub Pages:
+[ianm199.github.io/lua-rs/examples/wasm-browser/](https://ianm199.github.io/lua-rs/examples/wasm-browser/).
+
 ## LuaRocks
 
 `lua-rs` runs the stock LuaRocks 3.11.1 client and installs pure-Lua rocks

@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>lua-rs WASM Playground</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --ink: #1a1f2b;
+        --muted: #687284;
+        --line: #d8dde8;
+        --accent: #0b6b6f;
+        --accent-strong: #084f52;
+        --ok: #117044;
+        --err: #b42318;
+        --code: #101828;
+        --code-soft: #182230;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(247, 248, 251, 0.95)),
+          repeating-linear-gradient(
+            90deg,
+            rgba(11, 107, 111, 0.05) 0,
+            rgba(11, 107, 111, 0.05) 1px,
+            transparent 1px,
+            transparent 36px
+          );
+        color: var(--ink);
+        font:
+          14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      button,
+      select,
+      textarea,
+      input {
+        font: inherit;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 64px;
+        padding: 10px 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.86);
+        backdrop-filter: blur(12px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .mark {
+        width: 38px;
+        height: 38px;
+        border: 1px solid #96c7c9;
+        border-radius: 8px;
+        background:
+          linear-gradient(135deg, rgba(11, 107, 111, 0.18), rgba(17, 112, 68, 0.13)),
+          #ffffff;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+      }
+
+      .mark span {
+        color: var(--accent-strong);
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      .sub {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .select,
+      .button {
+        height: 36px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: var(--ink);
+        padding: 0 11px;
+      }
+
+      .button {
+        cursor: pointer;
+        font-weight: 650;
+      }
+
+      .button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .button:hover,
+      .select:hover {
+        border-color: #9aa4b5;
+      }
+
+      .button.primary:hover {
+        background: var(--accent-strong);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(320px, 1.35fr) minmax(300px, 0.9fr);
+        min-height: 0;
+      }
+
+      .pane {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        border-right: 1px solid var(--line);
+      }
+
+      .pane:last-child {
+        border-right: 0;
+      }
+
+      .pane-head {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .pane-title {
+        font-size: 12px;
+        font-weight: 750;
+        text-transform: uppercase;
+        color: #344054;
+      }
+
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status.ok {
+        color: var(--ok);
+      }
+
+      .status.err {
+        color: var(--err);
+      }
+
+      .editor {
+        width: 100%;
+        height: 100%;
+        min-height: 420px;
+        resize: none;
+        border: 0;
+        outline: 0;
+        padding: 18px;
+        color: #f8fbff;
+        background: var(--code);
+        font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          monospace;
+        tab-size: 2;
+      }
+
+      .side {
+        display: grid;
+        grid-template-rows: minmax(180px, 1fr) minmax(180px, 1fr);
+        min-height: 0;
+      }
+
+      .output,
+      .files {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .output {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .console {
+        margin: 0;
+        min-height: 0;
+        padding: 16px;
+        overflow: auto;
+        background: var(--code-soft);
+        color: #e6edf6;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          monospace;
+        white-space: pre-wrap;
+      }
+
+      .file-list {
+        margin: 0;
+        padding: 12px 14px;
+        overflow: auto;
+        list-style: none;
+        background: var(--panel);
+      }
+
+      .file-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 0;
+        border-bottom: 1px solid #edf0f5;
+        font-size: 13px;
+      }
+
+      .file-list li:last-child {
+        border-bottom: 0;
+      }
+
+      .file-list code {
+        color: var(--accent-strong);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          monospace;
+      }
+
+      .file-list span {
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      @media (max-width: 860px) {
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .toolbar {
+          width: 100%;
+          justify-content: flex-start;
+        }
+
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .pane {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .editor {
+          min-height: 360px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="mark" aria-hidden="true"><span>Lua</span></div>
+          <div>
+            <h1>lua-rs WASM Playground</h1>
+            <div class="sub">lua-rs-wasm@0.0.4 via wasm32-unknown-unknown</div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <select id="sample" class="select" aria-label="Sample program">
+            <option value="fib">fibonacci</option>
+            <option value="module">module</option>
+            <option value="io">io</option>
+            <option value="errors">errors</option>
+          </select>
+          <button id="reset" class="button" type="button">Reset</button>
+          <button id="run" class="button primary" type="button">Run</button>
+        </div>
+      </header>
+
+      <section class="workspace" aria-label="Lua WASM playground">
+        <section class="pane">
+          <div class="pane-head">
+            <div class="pane-title">main.lua</div>
+            <div id="runtime-status" class="status">loading wasm</div>
+          </div>
+          <textarea id="editor" class="editor" spellcheck="false"></textarea>
+        </section>
+
+        <aside class="side">
+          <section class="output">
+            <div class="pane-head">
+              <div class="pane-title">stdout</div>
+              <div id="run-status" class="status">idle</div>
+            </div>
+            <pre id="console" class="console"></pre>
+          </section>
+
+          <section class="files">
+            <div class="pane-head">
+              <div class="pane-title">host files</div>
+              <div class="status">JS backed</div>
+            </div>
+            <ul id="file-list" class="file-list"></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module">
+      import { loadLuaRs, luaRsWasmUrl } from "https://cdn.jsdelivr.net/npm/lua-rs-wasm@0.0.4/index.mjs";
+
+      const editor = document.querySelector("#editor");
+      const consoleEl = document.querySelector("#console");
+      const sampleEl = document.querySelector("#sample");
+      const runtimeStatus = document.querySelector("#runtime-status");
+      const runStatus = document.querySelector("#run-status");
+      const fileList = document.querySelector("#file-list");
+      const runButton = document.querySelector("#run");
+      const resetButton = document.querySelector("#reset");
+
+      const files = {
+        "./greeter.lua": `
+local M = {}
+
+function M.message(name)
+  return "hello " .. name .. " from a JS-hosted Lua module"
+end
+
+return M
+`,
+        "./data.lua": `
+return {
+  language = "Lua",
+  runtime = "lua-rs",
+  target = "wasm32-unknown-unknown",
+}
+`,
+      };
+
+      const samples = {
+        fib: `
+local function fib(n)
+  if n < 2 then
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+local data = require("data")
+print(data.runtime .. " running " .. data.language)
+print("fib(20) = " .. fib(20))
+`,
+        module: `
+local greeter = require("greeter")
+
+for _, name in ipairs({ "browser", "wasm", "lua-rs" }) do
+  print(greeter.message(name))
+end
+`,
+        io: `
+local handle = assert(io.open("./notes.txt", "w"))
+handle:write("written by Lua through a JS host file\\n")
+handle:close()
+
+local readback = assert(io.open("./notes.txt", "r"))
+print(readback:read("a"))
+readback:close()
+`,
+        errors: `
+local ok, err = pcall(function()
+  error("a Lua error surfaced through tryExec")
+end)
+
+print("pcall ok:", ok)
+print("error:", err)
+`,
+      };
+
+      let lua;
+      let host;
+
+      function setStatus(node, text, kind) {
+        node.textContent = text;
+        node.classList.remove("ok", "err");
+        if (kind) {
+          node.classList.add(kind);
+        }
+      }
+
+      function renderFiles() {
+        fileList.innerHTML = "";
+        for (const [path, source] of Object.entries(files)) {
+          const item = document.createElement("li");
+          const code = document.createElement("code");
+          const meta = document.createElement("span");
+          code.textContent = path;
+          meta.textContent = `${new TextEncoder().encode(source).length} bytes`;
+          item.append(code, meta);
+          fileList.append(item);
+        }
+      }
+
+      function writeOutput(text) {
+        consoleEl.textContent = text || "";
+      }
+
+      async function boot() {
+        editor.value = samples.fib.trimStart();
+        renderFiles();
+
+        try {
+          const runtime = await loadLuaRs(luaRsWasmUrl, {
+            env: { LUA_PATH_5_4: "./?.lua" },
+            files,
+            stdin: "line from JS stdin\\n",
+            unixTime: () => BigInt(Math.floor(Date.now() / 1000)),
+          });
+          lua = runtime.lua;
+          host = runtime.host;
+          setStatus(runtimeStatus, "ready", "ok");
+          runButton.disabled = false;
+        } catch (error) {
+          setStatus(runtimeStatus, "failed to load wasm", "err");
+          writeOutput(String(error && error.stack ? error.stack : error));
+          runButton.disabled = true;
+        }
+      }
+
+      function runCurrentProgram() {
+        if (!lua) {
+          return;
+        }
+
+        host.resetOutput();
+        const result = lua.tryExec(editor.value);
+        writeOutput(host.outputText());
+        renderFiles();
+
+        if (result.ok) {
+          setStatus(runStatus, "ok", "ok");
+        } else {
+          setStatus(runStatus, "error", "err");
+          writeOutput(`${host.outputText()}${result.error}`);
+        }
+      }
+
+      sampleEl.addEventListener("change", () => {
+        editor.value = samples[sampleEl.value].trimStart();
+        setStatus(runStatus, "idle");
+      });
+
+      runButton.addEventListener("click", runCurrentProgram);
+
+      resetButton.addEventListener("click", () => {
+        if (lua) {
+          lua.reset();
+          host.resetOutput();
+          writeOutput("");
+          setStatus(runStatus, "reset", "ok");
+        }
+      });
+
+      runButton.disabled = true;
+      boot();
+    </script>
+  </body>
+</html>

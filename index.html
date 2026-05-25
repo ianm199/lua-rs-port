@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>lua-rs — Lua 5.4.7, reimplemented in safe Rust</title>
-  <meta name="description" content="lua-rs is a from-scratch Rust port of PUC-Rio Lua 5.4.7. Safe Rust, no C runtime, passes 44/44 of the upstream Lua test suite.">
+  <meta name="description" content="lua-rs is a from-scratch Rust port of PUC-Rio Lua 5.4.7. Safe Rust, no C runtime, passes 44/44 of the upstream Lua test suite, and runs in browser WebAssembly.">
   <meta property="og:title" content="lua-rs — Lua 5.4.7, reimplemented in safe Rust">
   <meta property="og:description" content="A safe-Rust Lua 5.4.7 runtime that passes 44/44 of the upstream PUC-Rio test suite. Built by an AI porting harness.">
   <meta property="og:type" content="website">
@@ -125,6 +125,7 @@
       <div class="cta">
         <a class="btn btn-primary" href="https://github.com/ianm199/lua-rs">GitHub</a>
         <a class="btn btn-ghost" href="https://crates.io/crates/lua-cli">crates.io</a>
+        <a class="btn btn-ghost" href="./examples/wasm-browser/">Browser playground →</a>
         <a class="btn btn-ghost" href="./harness/bench/history/index.html">Performance dashboard →</a>
       </div>
     </div>
@@ -157,6 +158,19 @@ $ lua-rs script.lua                <span class="c"># run a source file</span>
 $ echo 'print("hi")' | lua-rs -    <span class="c"># read a program from stdin</span>
 $ lua-rs                           <span class="c"># start the interactive REPL</span></pre>
       <p class="muted" style="margin-top:14px;"><code>lua-rs</code> mirrors the standard <code>lua</code> CLI: a bare argument is a script filename, <code>-e</code> runs a chunk, <code>-</code> reads from stdin, and no arguments on a terminal starts the REPL.</p>
+    </section>
+
+    <section>
+      <h2>Browser WebAssembly</h2>
+      <p class="lead">The same interpreter core is published as <code>lua-rs-wasm</code> for browser and Node embeddings. The package ships a prebuilt <code>wasm32-unknown-unknown</code> artifact plus JS host hooks for stdout, stdin, environment values, time, and controlled file access.</p>
+      <pre class="block"><span class="c"># from npm</span>
+$ npm install lua-rs-wasm
+
+<span class="c"># or try it without installing anything</span>
+<span class="o">https://ianm199.github.io/lua-rs/examples/wasm-browser/</span></pre>
+      <div class="callout">
+        <a href="./examples/wasm-browser/">Open the browser playground →</a>
+      </div>
     </section>
 
     <section>
@@ -208,6 +222,7 @@ $ lua-rs                           <span class="c"># start the interactive REPL<
       <h2>Status &amp; roadmap</h2>
       <div class="cards">
         <div class="card"><span class="badge good">shipping</span><h3>Lua 5.4 runtime</h3><p>Runs real Lua programs, passes 44/44 upstream tests, and is published to crates.io as <code>lua-cli</code>.</p></div>
+        <div class="card"><span class="badge good">shipping</span><h3>Browser WASM package</h3><p>The <code>lua-rs-wasm</code> npm package runs Lua in the browser through the published WebAssembly build and JS host hooks.</p></div>
         <div class="card"><span class="badge good">working</span><h3>LuaRocks (pure-Lua rocks)</h3><p>lua-rs runs the real LuaRocks 3.11.1 package manager: <code>search</code>, <code>install</code>, <code>show</code>, and <code>require</code> pure-Lua rocks like <code>inspect</code> all work. Native C rocks are the remaining piece.</p></div>
       </div>
     </section>
@@ -218,6 +233,7 @@ $ lua-rs                           <span class="c"># start the interactive REPL<
       <div class="flinks">
         <a href="https://github.com/ianm199/lua-rs">GitHub</a>
         <a href="https://crates.io/crates/lua-cli">crates.io</a>
+        <a href="./examples/wasm-browser/">Browser playground</a>
         <a href="./harness/bench/history/index.html">Performance dashboard</a>
         <a href="https://www.lua.org/">Lua</a>
       </div>
