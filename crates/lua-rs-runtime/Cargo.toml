@@ -1,12 +1,13 @@
 [package]
 name = "lua-rs-runtime"
 version.workspace = true
-description = "Embedding helper for lua-rs."
+description = "Embed Lua 5.4 in Rust: handles, userdata, and scoped borrows. Pure safe Rust, no C, runs in WebAssembly."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 
 [lints.rust]
 unsafe_code = "allow"
