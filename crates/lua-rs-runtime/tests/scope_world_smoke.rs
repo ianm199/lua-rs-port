@@ -129,7 +129,7 @@ fn world_round_trips_through_scope() {
 
     let count: i64 = lua
         .scope(|scope| {
-            let w = scope.create_userdata(&lua, &mut world)?;
+            let w = scope.create_userdata_ref_mut(&lua, &mut world)?;
             lua.globals().set("world", &w)?;
             lua.load(TICK_SCRIPT).eval::<i64>()
         })
@@ -155,7 +155,7 @@ fn world_stashed_on_global_is_unusable_after_scope() {
     let mut world = World::default();
 
     lua.scope(|scope| {
-        let w = scope.create_userdata(&lua, &mut world)?;
+        let w = scope.create_userdata_ref_mut(&lua, &mut world)?;
         lua.globals().set("escaped", &w)?;
         lua.load("escaped:spawn(\"in_scope\")").exec()
     })
@@ -189,7 +189,7 @@ fn world_and_scoped_callback_together() {
     let mut tick_log: Vec<String> = Vec::new();
 
     lua.scope(|scope| {
-        let w = scope.create_userdata(&lua, &mut world)?;
+        let w = scope.create_userdata_ref_mut(&lua, &mut world)?;
         let log_tick = scope.create_function_mut(&lua, |_lua, name: String| {
             tick_log.push(name);
             Ok(())

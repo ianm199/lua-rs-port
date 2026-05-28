@@ -422,11 +422,17 @@ impl<'scope> Scope<'scope> {
         }
     }
 
-    /// Wrap a borrowed value `data` as a Lua userdata that lives for the
-    /// duration of this scope. Any call from Lua to the returned userdata after
-    /// the scope ends fails with a clean Lua runtime error instead of touching
-    /// the freed borrow.
-    pub fn create_userdata<T>(&self, lua: &Lua, data: &'scope mut T) -> Result<AnyUserData>
+    /// Wrap a `&mut T` borrow as a Lua userdata that lives for the duration of
+    /// this scope. Any call from Lua to the returned userdata after the scope
+    /// ends fails with a clean Lua runtime error instead of touching the
+    /// freed borrow.
+    ///
+    /// Naming mirrors mlua's `Scope::create_userdata_ref_mut`. The bare
+    /// `create_userdata` name on `Scope` is intentionally reserved for the
+    /// future by-value, non-`'static` constructor (mlua's
+    /// `Scope::create_userdata<T: UserData + 'env>(T)`), tracked as a
+    /// follow-up to lua-rs#27.
+    pub fn create_userdata_ref_mut<T>(&self, lua: &Lua, data: &'scope mut T) -> Result<AnyUserData>
     where
         T: UserData,
     {
@@ -1009,7 +1015,7 @@ impl Lua {
     /// let mut counter = Counter { value: 0 };
     ///
     /// lua.scope(|scope| {
-    ///     let ud = scope.create_userdata(&lua, &mut counter)?;
+    ///     let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
     ///     lua.globals().set("c", &ud)?;
     ///     lua.load("c:inc(5); c:inc(7)").exec()
     /// }).unwrap();
@@ -1020,7 +1026,7 @@ impl Lua {
     /// // later, but the call cleanly errors instead of touching the
     /// // dropped `&mut counter`:
     /// lua.scope(|scope| {
-    ///     let ud = scope.create_userdata(&lua, &mut counter)?;
+    ///     let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
     ///     lua.globals().set("leaked", &ud)
     /// }).unwrap();
     /// assert!(lua.load("leaked:inc(1)").exec().is_err());
@@ -3742,7 +3748,7 @@ mod tests {
 
         let observed: i64 = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 lua.globals().set("c", &ud)?;
                 lua.load("return c:get()").eval::<i64>()
             })
@@ -3764,7 +3770,7 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let ud = scope.create_userdata(&lua, &mut counter)?;
+            let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
             lua.globals().set("c", &ud)?;
             lua.load("c:inc(5); c:inc(7)").exec()
         })
@@ -3786,7 +3792,7 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let ud = scope.create_userdata(&lua, &mut counter)?;
+            let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
             lua.globals().set("leaked", &ud)?;
             Ok(())
         })
@@ -3815,7 +3821,7 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let ud = scope.create_userdata(&lua, &mut counter)?;
+            let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
             lua.globals().set("leaked", &ud)?;
             Ok(())
         })
@@ -3842,7 +3848,7 @@ mod tests {
 
         let err = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 lua.globals().set("c", &ud)?;
                 lua.load("return c:inc_via_global()").eval::<i64>()
             })
@@ -3867,7 +3873,7 @@ mod tests {
 
         let observed: i64 = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 lua.globals().set("c", &ud)?;
                 lua.load("return c:call_get_via_global()").eval::<i64>()
             })
@@ -3886,7 +3892,7 @@ mod tests {
 
         let read_back: i64 = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut bag)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut bag)?;
                 lua.globals().set("f", &ud)?;
                 lua.load("f.n = f.n + 39; return f.n").eval::<i64>()
             })
@@ -3904,7 +3910,7 @@ mod tests {
 
         let read: i64 = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut bag)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut bag)?;
                 lua.globals().set("b", &ud)?;
                 lua.load("b.value = 200; return b.value").eval::<i64>()
             })
@@ -3928,8 +3934,8 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let ua = scope.create_userdata(&lua, &mut a)?;
-            let ub = scope.create_userdata(&lua, &mut b)?;
+            let ua = scope.create_userdata_ref_mut(&lua, &mut a)?;
+            let ub = scope.create_userdata_ref_mut(&lua, &mut b)?;
             lua.globals().set("a", &ua)?;
             lua.globals().set("b", &ub)?;
             lua.load("a:inc(10); b:inc(1)").exec()
@@ -3951,8 +3957,8 @@ mod tests {
         let mut bag = ScopedBag { value: 0 };
 
         lua.scope(|scope| {
-            let uc = scope.create_userdata(&lua, &mut counter)?;
-            let ub = scope.create_userdata(&lua, &mut bag)?;
+            let uc = scope.create_userdata_ref_mut(&lua, &mut counter)?;
+            let ub = scope.create_userdata_ref_mut(&lua, &mut bag)?;
             lua.globals().set("c", &uc)?;
             lua.globals().set("b", &ub)?;
             lua.load("c:inc(7); b.value = 13").exec()
@@ -3974,7 +3980,7 @@ mod tests {
 
         let doubled: i64 = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 lua.globals().set("c", &ud)?;
                 lua.load("return c:inc(c:get())").eval::<i64>()
             })
@@ -4005,13 +4011,13 @@ mod tests {
 
         lua_a
             .scope(|scope| {
-                let _ud = scope.create_userdata(&lua_a, &mut a)?;
+                let _ud = scope.create_userdata_ref_mut(&lua_a, &mut a)?;
                 Ok(())
             })
             .expect("scope on A should succeed");
         lua_b
             .scope(|scope| {
-                let _ud = scope.create_userdata(&lua_b, &mut b)?;
+                let _ud = scope.create_userdata_ref_mut(&lua_b, &mut b)?;
                 Ok(())
             })
             .expect("scope on B should succeed");
@@ -4039,14 +4045,14 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let _ud = scope.create_userdata(&lua, &mut a)?;
+            let _ud = scope.create_userdata_ref_mut(&lua, &mut a)?;
             Ok(())
         })
         .expect("first scope should succeed");
         let after_first = lua.inner.userdata_scoped_metatables.borrow().len();
 
         lua.scope(|scope| {
-            let _ud = scope.create_userdata(&lua, &mut b)?;
+            let _ud = scope.create_userdata_ref_mut(&lua, &mut b)?;
             Ok(())
         })
         .expect("second scope should succeed");
@@ -4067,7 +4073,7 @@ mod tests {
 
         let observed = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 ud.scoped_borrow::<ScopedCounter, _>(|c| c.value)
             })
             .expect("scoped_borrow should succeed inside scope");
@@ -4084,7 +4090,7 @@ mod tests {
         };
 
         lua.scope(|scope| {
-            let ud = scope.create_userdata(&lua, &mut counter)?;
+            let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
             ud.scoped_borrow_mut::<ScopedCounter, _>(|c| c.value = 5)
         })
         .expect("scoped_borrow_mut should succeed");
@@ -4103,7 +4109,7 @@ mod tests {
         };
 
         let leaked: AnyUserData = lua
-            .scope(|scope| scope.create_userdata(&lua, &mut counter))
+            .scope(|scope| scope.create_userdata_ref_mut(&lua, &mut counter))
             .expect("scope body should succeed");
 
         let err = leaked
@@ -4142,7 +4148,7 @@ mod tests {
 
         let err = lua
             .scope(|scope| {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 Ok(ud.with_borrow::<ScopedCounter, _>(|c| c.value))
             })
             .expect("scope body should succeed")
@@ -4287,7 +4293,7 @@ mod tests {
         let log = Cell::new(0i64);
 
         lua.scope(|scope| {
-            let ud = scope.create_userdata(&lua, &mut bag)?;
+            let ud = scope.create_userdata_ref_mut(&lua, &mut bag)?;
             let logger = scope.create_function(&lua, |_lua, n: i64| {
                 log.set(log.get() + n);
                 Ok(())
@@ -4365,7 +4371,7 @@ mod tests {
 
         let err = lua
             .scope(|scope| -> Result<()> {
-                let ud = scope.create_userdata(&lua, &mut counter)?;
+                let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
                 lua.globals().set("c", &ud)?;
                 Err(LuaError::runtime(format_args!("aborting scope")))
             })
@@ -4381,6 +4387,89 @@ mod tests {
             msg.contains("no longer valid") || msg.contains("scope has ended"),
             "expected invalidation error after scope-with-error, got: {msg}"
         );
+    }
+
+    /// Cloning an `AnyUserData` produces two handles to the same scope cell.
+    /// Invalidation runs against the cell, so a clone that escapes via a
+    /// global must fail at the same point a direct handle would. Pins the
+    /// "every reference to the same cell sees invalidation together"
+    /// invariant.
+    #[test]
+    fn scope_userdata_cloned_handles_invalidate_together() {
+        let lua = Lua::new();
+        let mut counter = ScopedCounter {
+            value: 9,
+            calls: Cell::new(0),
+        };
+
+        lua.scope(|scope| {
+            let ud = scope.create_userdata_ref_mut(&lua, &mut counter)?;
+            let clone = ud.clone();
+            lua.globals().set("a", &ud)?;
+            lua.globals().set("b", &clone)?;
+            lua.load("assert(a:get() == 9); assert(b:get() == 9)").exec()
+        })
+        .expect("scope body should succeed");
+
+        let err_a = lua
+            .load("return a:get()")
+            .eval::<i64>()
+            .expect_err("original handle must error post-scope");
+        let err_b = lua
+            .load("return b:get()")
+            .eval::<i64>()
+            .expect_err("cloned handle must error post-scope");
+        assert!(runtime_error_message(&err_a).contains("no longer valid"));
+        assert!(runtime_error_message(&err_b).contains("no longer valid"));
+    }
+
+    /// Nested `Lua::scope` calls: cells created in the inner scope invalidate
+    /// when the inner returns; cells in the outer remain live until the outer
+    /// returns. Pins that scope cells don't leak across siblings/parents.
+    #[test]
+    fn scope_userdata_nested_scopes_isolated() {
+        let lua = Lua::new();
+        let mut outer_counter = ScopedCounter {
+            value: 1,
+            calls: Cell::new(0),
+        };
+        let mut inner_counter = ScopedCounter {
+            value: 100,
+            calls: Cell::new(0),
+        };
+
+        lua.scope(|outer| {
+            let o = outer.create_userdata_ref_mut(&lua, &mut outer_counter)?;
+            lua.globals().set("outer", &o)?;
+
+            lua.scope(|inner| {
+                let i = inner.create_userdata_ref_mut(&lua, &mut inner_counter)?;
+                lua.globals().set("inner", &i)?;
+                lua.load("assert(outer:get() == 1); assert(inner:get() == 100)").exec()
+            })?;
+
+            // Inner ended. `inner` global is dead, but `outer` is still live.
+            let inner_err = lua
+                .load("return inner:get()")
+                .eval::<i64>()
+                .expect_err("inner userdata must be dead after inner scope");
+            assert!(runtime_error_message(&inner_err).contains("no longer valid"));
+
+            let outer_alive: i64 = lua
+                .load("return outer:get()")
+                .eval()
+                .expect("outer userdata must still be alive in outer scope");
+            assert_eq!(outer_alive, 1);
+            Ok(())
+        })
+        .expect("scope body should succeed");
+
+        // Outer ended; both should now be dead.
+        let err = lua
+            .load("return outer:get()")
+            .eval::<i64>()
+            .expect_err("outer userdata must be dead after outer scope");
+        assert!(runtime_error_message(&err).contains("no longer valid"));
     }
 
     // -- Direct exercises of the unsafe machinery, no Lua state --
