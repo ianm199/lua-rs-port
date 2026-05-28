@@ -49,12 +49,6 @@
 //!
 //! # Known limitations and planned work
 //!
-//! - The userdata method and field callbacks capture a strong [`Lua`] handle,
-//!   which forms a `LuaInner -> state -> heap -> closure -> Rc<LuaInner>`
-//!   reference cycle. A state that keeps any userdata-with-callbacks reachable
-//!   for its lifetime therefore does not free on drop. This is invisible for
-//!   long-lived embeddings (the target), but the right fix is to capture
-//!   `Weak<LuaInner>` and upgrade on call across the callback constructors.
 //! - `#[lua_methods]` does not yet special-case methods that return
 //!   `Result<T, E>`, associated functions and constructors (`Type::new`), or
 //!   `Option<T>` parameters and returns.
@@ -481,8 +475,16 @@ impl Lua {
         R: IntoLuaMulti + 'static,
         F: Fn(&Lua, A) -> Result<R> + 'static,
     {
-        let lua = self.clone();
+        let lua_weak = Rc::downgrade(&self.inner);
         let callable: LuaRustFunction = Rc::new(move |state| {
+            let lua = match lua_weak.upgrade() {
+                Some(inner) => Lua { inner },
+                None => {
+                    return Err(LuaError::runtime(format_args!(
+                        "Lua callback fired after the state was dropped"
+                    )))
+                }
+            };
             match catch_unwind(AssertUnwindSafe(|| {
                 let args = callback_args(state, &lua)?;
                 let args = A::from_lua_multi(args, &lua)?;
@@ -561,8 +563,16 @@ impl Lua {
         R: IntoLuaMulti + 'static,
         F: Fn(&Lua, &T, A) -> Result<R> + 'static,
     {
-        let lua = self.clone();
+        let lua_weak = Rc::downgrade(&self.inner);
         let callable: LuaRustFunction = Rc::new(move |state| {
+            let lua = match lua_weak.upgrade() {
+                Some(inner) => Lua { inner },
+                None => {
+                    return Err(LuaError::runtime(format_args!(
+                        "Lua callback fired after the state was dropped"
+                    )))
+                }
+            };
             match catch_unwind(AssertUnwindSafe(|| {
                 let (userdata, args) = callback_userdata_args(state, &lua)?;
                 let args = A::from_lua_multi(args, &lua)?;
@@ -590,8 +600,16 @@ impl Lua {
         R: IntoLuaMulti + 'static,
         F: Fn(&Lua, &mut T, A) -> Result<R> + 'static,
     {
-        let lua = self.clone();
+        let lua_weak = Rc::downgrade(&self.inner);
         let callable: LuaRustFunction = Rc::new(move |state| {
+            let lua = match lua_weak.upgrade() {
+                Some(inner) => Lua { inner },
+                None => {
+                    return Err(LuaError::runtime(format_args!(
+                        "Lua callback fired after the state was dropped"
+                    )))
+                }
+            };
             match catch_unwind(AssertUnwindSafe(|| {
                 let (userdata, args) = callback_userdata_args(state, &lua)?;
                 let args = A::from_lua_multi(args, &lua)?;
@@ -2387,6 +2405,63 @@ mod tests {
         globals.set("c", &c).unwrap();
         let sum: i64 = lua.load("return a:n() + b:n() + c:n()").eval().unwrap();
         assert_eq!(sum, 6);
+    }
+
+    /// Reproducer for the callback-to-`Lua` reference cycle:
+    /// `create_userdata_method` captures a strong `Lua` (`Rc<LuaInner>`) into each
+    /// callback closure, the closure lives in a heap GC object owned by `LuaState`,
+    /// and `LuaState` is owned by `LuaInner` — so dropping every external `Lua`
+    /// handle still leaves the closures holding a strong `Rc<LuaInner>` to the
+    /// state that owns them. Per-type metatable caching makes this permanent for
+    /// any type a userdata is ever created for.
+    ///
+    /// This test holds a `Weak<LuaInner>`, drops every external `Lua`, and asserts
+    /// the inner has actually been freed. It fails today and is what the
+    /// `Weak`-capture fix in the callback constructors is meant to make pass.
+    #[test]
+    fn lua_state_frees_after_userdata_with_methods_is_dropped() {
+        use std::rc::Rc;
+
+        let weak_inner = {
+            let lua = Lua::new();
+            let weak = Rc::downgrade(&lua.inner);
+            // Create + drop a userdata of a type that registers methods. This
+            // primes the per-type metatable cache and installs method closures
+            // that capture `Lua` strongly.
+            let _ = lua
+                .create_userdata(Counter { value: 1 })
+                .expect("userdata should create");
+            weak
+        };
+
+        assert!(
+            weak_inner.upgrade().is_none(),
+            "LuaInner is still alive after every external Lua handle dropped: \
+             internal callback closures hold a strong Rc<LuaInner>, leaking the state"
+        );
+    }
+
+    /// Same cycle issue as above, on the `create_function` path: the Rust
+    /// callback closure used to capture a strong `Lua`, so a function that
+    /// outlived all external handles would keep the state pinned.
+    #[test]
+    fn lua_state_frees_after_create_function_handle_drops() {
+        use std::rc::Rc;
+
+        let weak_inner = {
+            let lua = Lua::new();
+            let weak = Rc::downgrade(&lua.inner);
+            let _f = lua
+                .create_function(|_, ()| Ok(()))
+                .expect("create_function should succeed");
+            weak
+        };
+
+        assert!(
+            weak_inner.upgrade().is_none(),
+            "LuaInner is still alive after the only Lua handle dropped: \
+             the create_function callback held a strong Rc<LuaInner>"
+        );
     }
 
     #[test]
