@@ -1510,6 +1510,16 @@ pub struct LuaState {
     // types.tsv: lua_State.hookcount → i32
     pub hookcount: i32,
 
+    /// Out-of-band error staged by a debug/count hook closure.
+    ///
+    /// A `lua_Hook` in C aborts execution by calling `luaL_error`, which
+    /// longjmps. Our hook closure has signature `FnMut(.., ..) -> ()` and so
+    /// cannot return a `Result`. To let a hook abort the VM (the mechanism the
+    /// sandbox uses to enforce an instruction/memory budget), the closure
+    /// stores a `LuaError` here; `do_::hook` takes it after the closure runs
+    /// and converts it into the `Err` that unwinds the dispatch loop.
+    pub pending_hook_error: Option<LuaError>,
+
     // ── Error handling ──
 
     // types.tsv: lua_State.errorJmp → (removed; replaced by Result<T, LuaError>)
@@ -1617,6 +1627,16 @@ impl LuaState {
     /// macros.tsv: `resethookcount → state.reset_hook_count()`
     pub fn reset_hook_count(&mut self) {
         self.hookcount = self.basehookcount;
+    }
+
+    /// Stage an error to be raised when the current hook closure returns.
+    ///
+    /// See [`LuaState::pending_hook_error`]. Intended to be called from inside
+    /// a count/line hook closure to abort execution with a sandbox-budget
+    /// error. The closure cannot itself return a `Result`, so it routes the
+    /// error through this slot, which `do_::hook` drains.
+    pub fn set_pending_hook_error(&mut self, err: LuaError) {
+        self.pending_hook_error = Some(err);
     }
 
     /// Returns the current stack capacity (slots between base and stack_last).
@@ -4054,6 +4074,7 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
         hookmask: 0,
         basehookcount: 0,
         hookcount: 0,
+        pending_hook_error: None,
         errfunc: 0,
         nCcalls: 0,
         oldpc: 0,
@@ -4375,6 +4396,7 @@ pub fn new_state() -> Option<LuaState> {
         hookmask: 0,
         basehookcount: 0,
         hookcount: 0,
+        pending_hook_error: None,
         errfunc: 0,
         nCcalls: 0,
         oldpc: 0,
