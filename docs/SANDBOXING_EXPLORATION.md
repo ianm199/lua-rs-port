@@ -6,8 +6,14 @@ Branch: `explore/sandboxing` (worktree `lua-rs-sandbox`).
 
 Sandboxing — running untrusted Lua with bounded CPU, bounded memory, and no
 ambient host authority — is one of the main capabilities [piccolo] has that we
-did not. This pass found the seams, built the feature, and hardened it (the
-initial prototype's coroutine escape is now closed).
+did not. This pass found the seams, built the feature, and hardened it into a
+**sound boundary against adversarial code *and* adversarial input**: every
+escape an attacker would reach for (coroutines, `pcall`/`xpcall`/`resume` loops,
+catastrophic pattern matches, single huge allocations, deep recursion) is closed
+and regression-locked, with the full official Lua suite still 44/44 and zero
+overhead when no sandbox is active. What remains (limitations 4–5 below) is
+piccolo's *cooperative scheduling* model and an allowlist environment — separate
+bets, not safety gaps.
 
 [piccolo]: https://github.com/kyren/piccolo
 
@@ -15,7 +21,7 @@ initial prototype's coroutine escape is now closed).
 
 A working `Lua::sandboxed(SandboxConfig)` constructor that gives an embedder
 three independent controls, each proven by a passing test
-(`crates/lua-rs-runtime/tests/sandbox.rs`, 14/14 green; full official Lua suite
+(`crates/lua-rs-runtime/tests/sandbox.rs`, 23/23 green; full official Lua suite
 44/44):
 
 | Control | Mechanism | Test |
@@ -113,7 +119,7 @@ unaffected, and the dispatch loop itself is untouched. Confirmed:
   `pcall`/`xpcall`/`coroutine`/`errors` semantics the uncatchability change
   touches).
 - `lua-vm` lib tests, full `lua-rs-runtime` build — clean.
-- Sandbox tests **14/14**, including `coroutine_is_metered`,
+- Sandbox tests **23/23**, including `coroutine_is_metered`,
   `pcall_loop_cannot_escape`, `xpcall_cannot_swallow_trip`,
   `resume_loop_cannot_escape`, and
   `pcall_still_catches_ordinary_errors_under_sandbox`.
@@ -176,42 +182,71 @@ still bound execution.
    handler during the abort unwind is also bounded (the count hook meters the
    handler body; verified to abort in ~2ms).
 
-1. **Enforcement is granular, not exact.** Limits are checked every
-   `check_interval` instructions (default 1000). A budget trips within
-   `check_interval` of the true limit, and memory is sampled at that cadence —
-   so a single huge allocation *between* two samples (e.g. `string.rep("x",
-   1e9)`) can momentarily blow past the ceiling before the next check catches
-   it. For a **hard, per-allocation** memory cap, enforce in
-   `lua-gc/src/heap.rs::allocate` (the central byte-accounting point at
-   `heap.rs:558`) — but `allocate` is currently infallible and called from
-   hundreds of sites, so making it fail-able is a real project, not a patch.
+1. **✅ Memory overshoot — RESOLVED (bounded).** Single size-known-upfront
+   allocations (e.g. `string.rep`, whose own guard is 2 GiB — far above a typical
+   cap) are refused *before* the buffer is built by `LuaState::sandbox_reserve`,
+   which projects `total_bytes() + size` against the ceiling and arms the
+   uncatchable memory abort. Incremental growth is caught by the per-interval
+   charge, so overshoot is bounded to one `check_interval` of small allocations.
+   Proven by `huge_string_rep_aborts_at_cap` and `memory_cap_is_uncatchable`.
+   (A fully synchronous per-allocation fallible allocator awaits the Phase-D GC
+   allocator-accounting migration; the reserve + per-interval combination makes
+   it unnecessary for the realistic vectors.)
 
-2. **No preemption inside a single stdlib C call.** The budget is charged per
-   *VM instruction*; one `string`/`table` call runs as a single instruction the
-   hook can't interrupt mid-call. Many stdlib functions self-guard (e.g.
-   `string.rep('x', 5e9)` errors in ~190µs on its own length check), but a
-   pathological pattern match could still spin inside one call. A complete
-   defense would add budget checks to the loop-heavy stdlib functions.
+2. **✅ Single long-running stdlib C call — RESOLVED.** The pattern matcher
+   (`string.find/match/gmatch/gsub`) counts `match_pat` invocations bounded by a
+   `step_limit` set to the remaining instruction budget; on overrun it unwinds
+   and the caller charges the work via `sandbox_charge`, exhausting the budget
+   and arming the uncatchable abort. A catastrophic-backtracking pattern now
+   aborts instead of spinning. `table.sort` needs no change — comparator calls
+   are Lua frames already metered. Proven by `catastrophic_pattern_is_bounded`,
+   `catastrophic_gsub_is_uncatchable`, `adversarial_sort_is_bounded`, and
+   `ordinary_pattern_matching_still_works`.
 
-3. **Abort, not pause/resume.** piccolo's fuel is *cooperative*: out-of-fuel
+3. **✅ Host-stack-overflow crash — bounded (structural).** A recursive Rust
+   interpreter consumes host stack per nested Lua call. The `LUAI_MAXCCALLS`
+   call-depth guard (single source of truth in `state.rs`, documented margin
+   ~`stack_bytes/40k`) converts what would be a SIGSEGV into a catchable
+   `"stack overflow"` error. Verified: deep non-tail recursion, infinite
+   `__index`/`__concat`/`__tostring` chains, and nested-coroutine `__close`
+   cascades all error cleanly (`recursion_*` tests, plus official `cstack.lua`).
+
+4. **Abort, not pause/resume.** piccolo's fuel is *cooperative*: out-of-fuel
    suspends and resumes later, enabling preemptive scheduling of many scripts on
    one thread. Our interpreter is a recursive Rust function (`vm::execute` calls
    itself for Lua→Lua calls), so we can *abort* at a hook point but not *yield
    the Rust stack* mid-instruction. True pausable fuel would need the stackless
    re-entrant VM redesign that is piccolo's whole architecture — out of scope
-   here, worth a separate strategy note.
+   here, a separate product bet (a Lua async runtime), not required for the
+   "safe embedded Lua 5.4" goal.
 
-4. **Capability stripping is a blocklist, not an allowlist.** `strict()` removes
+5. **Capability stripping is a blocklist, not an allowlist.** `strict()` removes
    a known-dangerous set. A higher-assurance design builds the environment from
    an empty table and adds only vetted functions. The host-hook layer is the
    real backstop (omitted hooks make `io`/`os`/dynlib calls error even if a
    global slips through), so this is defense-in-depth, not the sole gate.
 
-## Suggested next steps
+## CLI
 
-- Hard memory cap via a fallible `Heap::allocate` (biggest correctness win).
-- Allowlist-based environment builder for `SandboxConfig`.
-- Wire `instruction_limit` / `memory_limit` flags into `lua-cli` for an
-  end-to-end demo (`lua-rs --max-instructions=… script.lua`).
-- Strategy note on whether pausable/cooperative fuel justifies any move toward a
-  stackless dispatch core.
+The budget is exposed end-to-end on the `lua-rs` binary:
+
+```
+lua-rs --sandbox script.lua              # strict preset: strip host globals + caps
+lua-rs --max-instructions=5000000 s.lua  # CPU budget
+lua-rs --max-memory=64M s.lua            # memory ceiling (K/M/G suffixes)
+lua-rs --sandbox --max-memory=16M s.lua  # strict preset, tighter memory cap
+```
+
+`--sandbox` strips the code-loading and host-access globals
+(`lua_stdlib::sandbox::STRICT_REMOVED_GLOBALS` — the single source of truth that
+`SandboxConfig::strict()` also uses) and applies 10M-instruction / 64 MiB
+defaults; the explicit flags override or set limits independently.
+
+## Suggested next steps (beyond the safe-sandbox goal)
+
+- Allowlist-based environment builder for `SandboxConfig` (limitation 5).
+- Fully synchronous per-allocation memory failure once the Phase-D GC
+  allocator-accounting migration lands (limitation 1 is already bounded).
+- Strategy note on whether pausable/cooperative fuel (limitation 4) justifies a
+  move toward a stackless dispatch core — a separate product bet (async runtime),
+  not required here.
