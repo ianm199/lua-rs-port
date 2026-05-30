@@ -1201,28 +1201,14 @@ impl SandboxConfig {
     /// A strict default: 10M instructions, 64 MiB, and removal of the
     /// code-loading and host-access globals. Tune fields as needed.
     pub fn strict() -> Self {
-        let removed: &[&[u8]] = &[
-            b"dofile",
-            b"loadfile",
-            b"load",
-            b"loadstring",
-            b"require",
-            b"package",
-            b"io",
-            b"debug",
-            b"os.execute",
-            b"os.exit",
-            b"os.remove",
-            b"os.rename",
-            b"os.tmpname",
-            b"os.getenv",
-            b"os.setlocale",
-        ];
         Self {
             instruction_limit: Some(10_000_000),
             memory_limit_bytes: Some(64 * 1024 * 1024),
             check_interval: 1000,
-            remove_globals: removed.iter().map(|s| s.to_vec()).collect(),
+            remove_globals: lua_stdlib::sandbox::STRICT_REMOVED_GLOBALS
+                .iter()
+                .map(|s| s.to_vec())
+                .collect(),
         }
     }
 }
@@ -1234,27 +1220,8 @@ impl Default for SandboxConfig {
 }
 
 fn strip_globals(state: &mut LuaState, names: &[Vec<u8>]) -> Result<()> {
-    let globals = match state.global().globals.clone() {
-        RawLuaValue::Table(t) => t,
-        _ => return Ok(()),
-    };
-    for name in names {
-        match name.iter().position(|&b| b == b'.') {
-            Some(dot) => {
-                let head = &name[..dot];
-                let tail = &name[dot + 1..];
-                if let RawLuaValue::Table(sub) = globals.get_str_bytes(head) {
-                    let key = RawLuaValue::Str(state.new_string(tail)?);
-                    sub.raw_set(key, RawLuaValue::Nil);
-                }
-            }
-            None => {
-                let key = RawLuaValue::Str(state.new_string(name)?);
-                globals.raw_set(key, RawLuaValue::Nil);
-            }
-        }
-    }
-    Ok(())
+    let refs: Vec<&[u8]> = names.iter().map(|n| n.as_slice()).collect();
+    lua_stdlib::sandbox::strip_globals(state, &refs)
 }
 
 impl Lua {
