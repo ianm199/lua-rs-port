@@ -2250,7 +2250,7 @@ impl LuaState {
     /// way `luaM_reallocvector` does in C, so the `Result` is here for
     /// signature parity with future fallible allocators.
     ///
-    ///                         newsize+EXTRA_STACK, StackValue)`.
+    /// newsize+EXTRA_STACK, StackValue)`.
     pub fn stack_resize(&mut self, size: usize) -> Result<(), LuaError> {
         self.stack.resize_with(size, StackValue::default);
         Ok(())
