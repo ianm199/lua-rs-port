@@ -127,10 +127,25 @@ pub struct GcHeader {
     /// Set true after this object's finalizer (`__gc` metamethod) has run.
     /// Phase D defers finalizers; this is reserved.
     finalized: Cell<bool>,
+    /// True iff this box is linked into a heap's allgc chain, so it will be
+    /// swept and its `size` refunded. `new_uncollected` boxes leave this
+    /// false: they never join a chain, are never swept, and so must never
+    /// have buffer bytes charged against the pacer (the charge would never be
+    /// refunded). [`Gc::account_buffer`] is a no-op when this is false.
+    ///
+    /// Placed adjacent to the other byte-sized flags (before `next`) so it
+    /// packs into existing alignment padding: the header stays the same size
+    /// it was before this field existed, so per-object allocation accounting
+    /// — and therefore collection timing — is unchanged by the plumbing.
+    collected: Cell<bool>,
     /// Intrusive link into the heap's allgc chain.
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
-    /// Rough byte size of the contained value; used for memory accounting.
-    size: usize,
+    /// Rough byte size charged to the pacer for this object. Starts at the
+    /// `GcBox<T>` size and is adjusted in place by [`Gc::account_buffer`] when
+    /// the value's owned heap buffers (table array/node Vecs) grow or shrink.
+    /// Invariant: this is always exactly the amount sweep will refund to the
+    /// heap's byte counter when this object is freed.
+    size: Cell<usize>,
 }
 
 impl GcHeader {
@@ -138,8 +153,9 @@ impl GcHeader {
         Self {
             color: Cell::new(Color::White),
             finalized: Cell::new(false),
+            collected: Cell::new(false),
             next: Cell::new(None),
-            size,
+            size: Cell::new(size),
         }
     }
 }
@@ -241,6 +257,33 @@ impl<T: ?Sized> Gc<T> {
 
     fn header(&self) -> &GcHeader {
         &self.as_box().header
+    }
+
+    /// Charge (`delta > 0`) or refund (`delta < 0`) `delta` bytes of this
+    /// object's owned heap buffers against the pacer, keeping `header.size`
+    /// as the single source of truth for what sweep will refund.
+    ///
+    /// No-op when `delta == 0` or when this box is not on a heap allgc chain
+    /// (`collected == false`): an uncollected box is never swept, so charging
+    /// it would permanently inflate the byte counter. On the collected path,
+    /// `header.size` and the heap's byte counter move together, so after sweep
+    /// frees this box it refunds exactly the bytes that were charged here.
+    pub fn account_buffer(&self, heap: &Heap, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        let header = self.header();
+        if !header.collected.get() {
+            return;
+        }
+        if delta >= 0 {
+            header.size.set(header.size.get().saturating_add(delta as usize));
+        } else {
+            header
+                .size
+                .set(header.size.get().saturating_sub((-delta) as usize));
+        }
+        heap.adjust_bytes(delta);
     }
 }
 
@@ -491,7 +534,13 @@ impl StepBudget {
 /// few allocations, re-tracing all roots each time (issue #38, GC path).
 /// The floor bounds the wasted work: the collector waits until at least
 /// this many bytes of garbage accumulate before collecting a small heap.
-const GC_MIN_THRESHOLD: usize = 256 * 1024;
+///
+/// Raised from 256 KB to 1 MB once table array/node buffer bytes became
+/// honestly accounted (see [`Gc::account_buffer`]): with real buffer bytes
+/// flowing into the pacer, a 256 KB floor fires too eagerly on table-heavy
+/// workloads, re-tracing all roots each time. 1 MB keeps the small-heap
+/// over-collection guard while letting honest pressure drive the threshold.
+const GC_MIN_THRESHOLD: usize = 1024 * 1024;
 
 pub struct Heap {
     /// Head of the singly-linked allgc list (every live `GcBox`).
@@ -558,6 +607,7 @@ impl Heap {
             value,
         });
         boxed.header.next.set(self.head.get());
+        boxed.header.collected.set(true);
         let raw: *mut GcBox<T> = Box::into_raw(boxed);
         let ptr: NonNull<GcBox<T>> =
             NonNull::new(raw).expect("Box::into_raw is non-null");
@@ -573,6 +623,19 @@ impl Heap {
     /// Bytes currently retained by GC-tracked objects (rough estimate).
     pub fn bytes_used(&self) -> usize {
         self.bytes.get()
+    }
+
+    /// Adjust the heap's pacer byte counter by a signed delta, saturating at
+    /// zero. Used by [`Gc::account_buffer`] to charge or refund the bytes of
+    /// an object's owned heap buffers (table array/node Vecs) so collections
+    /// fire at honest memory pressure rather than only on header sizes.
+    pub fn adjust_bytes(&self, delta: isize) {
+        if delta >= 0 {
+            self.bytes.set(self.bytes.get().saturating_add(delta as usize));
+        } else {
+            self.bytes
+                .set(self.bytes.get().saturating_sub((-delta) as usize));
+        }
     }
 
     /// Current collection threshold in bytes. When `bytes_used() >= threshold_bytes()`,
@@ -866,7 +929,7 @@ impl Heap {
             match header.color.get() {
                 Color::White => {
                     prev_cell.set(next);
-                    freed_bytes += header.size;
+                    freed_bytes += header.size.get();
                     unsafe {
                         let _ = Box::from_raw(ptr.as_ptr());
                     }
@@ -1001,6 +1064,43 @@ mod tests {
         assert!(heap.bytes_used() > 0);
         heap.drop_all();
         assert_eq!(heap.bytes_used(), 0);
+    }
+
+    #[test]
+    fn account_buffer_refunded_on_sweep() {
+        let heap = Heap::new();
+        heap.unpause();
+        let baseline = heap.bytes_used();
+        {
+            let a = heap.allocate(Cell0 {
+                next: Cell::new(None),
+                marker_calls: Cell::new(0),
+            });
+            assert!(heap.bytes_used() > baseline);
+            a.account_buffer(&heap, 4096);
+            assert_eq!(a.header().size.get(), std::mem::size_of::<GcBox<Cell0>>() + 4096);
+        }
+        // Drop the only root path (a is no longer Trace-visible). The +4096
+        // must be refunded via header.size when the box is swept.
+        heap.full_collect(&OneRoot(None));
+        assert_eq!(
+            heap.bytes_used(),
+            baseline,
+            "account_buffer charge must be fully refunded by sweep"
+        );
+    }
+
+    #[test]
+    fn account_buffer_noop_on_uncollected() {
+        let heap = Heap::new();
+        heap.unpause();
+        let g = Gc::new_uncollected(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let before = heap.bytes_used();
+        g.account_buffer(&heap, 8192);
+        assert_eq!(heap.bytes_used(), before, "uncollected box must not charge the pacer");
     }
 
     #[test]

@@ -77,6 +77,22 @@ impl<T: Trace + 'static> GcRef<T> {
     pub fn downgrade(&self) -> GcWeak<T> {
         GcWeak(self.0)
     }
+
+    /// Charge (`delta > 0`) or refund (`delta < 0`) bytes of this object's
+    /// owned heap buffers against the active heap's pacer, so collections
+    /// fire at honest memory pressure. No-op on `delta == 0`, when no heap is
+    /// active, or when the underlying box is uncollected (see
+    /// [`lua_gc::Gc::account_buffer`]).
+    pub fn account_buffer(&self, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        lua_gc::with_current_heap(|h| {
+            if let Some(h) = h {
+                self.0.account_buffer(h, delta)
+            }
+        })
+    }
 }
 
 /// A weak handle to a `GcRef<T>`. Phase D-1 placeholder; D-2 will give

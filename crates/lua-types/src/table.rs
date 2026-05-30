@@ -1190,6 +1190,16 @@ impl LuaTable {
         f(&self.inner.borrow())
     }
 
+    /// Bytes of heap-allocated buffer backing this table's array and node
+    /// parts, measured by *capacity* (the bytes actually reserved from the
+    /// allocator, not just the populated prefix). Read-only; used by the GC
+    /// pacer-accounting path to charge these buffers against the heap.
+    pub fn buffer_bytes(&self) -> usize {
+        let inner = self.inner.borrow();
+        inner.array.capacity() * std::mem::size_of::<LuaValue>()
+            + inner.node.capacity() * std::mem::size_of::<TableNode>()
+    }
+
     /// Read a key. Returns `LuaValue::Nil` if absent or if `k` is nil.
     /// Integer keys take the direct array-part fast path used by
     /// [`LuaTable::get_int`]; short-string keys take the analogous

@@ -1723,6 +1723,7 @@ impl LuaState {
         self.mark_gc_check_needed();
         let t = GcRef::new(LuaTable::placeholder());
         self.table_resize(&t, array_size as usize, hash_size as usize)?;
+        t.account_buffer(t.buffer_bytes() as isize);
         Ok(t)
     }
 
