@@ -262,6 +262,12 @@ pub const TK_NAME: i32 = 292;
 /// `<string>`  (string literal)
 pub const TK_STRING: i32 = 293;
 
+// Lua 5.5 `global`: with the upstream-default LUA_COMPAT_GLOBAL it is NOT a
+// reserved word — it always lexes as TK_NAME (so it stays a valid identifier on
+// every version), and the parser recognizes the `global` declaration statement
+// contextually (see `globalstat`/`statement` in lua-parse). There is therefore
+// no dedicated token id.
+
 // ORDER RESERVED — index 0 = TK_AND - FIRST_RESERVED, etc.
 /// Display strings for tokens, indexed by `token - FIRST_RESERVED`.
 pub static LUAX_TOKENS: &[&[u8]] = &[
@@ -1680,9 +1686,14 @@ fn llex(
 
                     if let Some(tk) = reserved_token {
                         return Ok(tk);
-                    } else {
-                        return Ok(TK_NAME);
                     }
+
+                    // Lua 5.5: with the upstream-default `LUA_COMPAT_GLOBAL`, the
+                    // `global` declaration word is NOT reserved — `global` stays a
+                    // valid identifier, and the parser recognizes the declaration
+                    // statement contextually (see `globalstat` in lua-parse). So
+                    // `global` always lexes as a plain name, on every version.
+                    return Ok(TK_NAME);
                 } else {
                     let tok = ls.current;
                     advance(ls);

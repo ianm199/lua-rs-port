@@ -508,13 +508,15 @@ pub fn utf8_esc(buff: &mut [u8; UTF8_BUF_SZ], x: u32) -> usize {
 // Number → string conversion
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Formats `f` as C's `printf("%.14g", f)` would, returning the bytes.
+/// Formats `f` as C's `printf("%.*g", precision, f)` would, returning the bytes.
 ///
 /// PORT NOTE: Rust has no built-in `%g` format. This replicates the C99
-/// `%g` algorithm with precision 14: pick scientific or fixed-point based
-/// on the value's exponent, strip trailing zeros, normalize the exponent
-/// to `e[+-]NN` with at least two digits (matching C's output).
-fn fmt_g14(f: f64) -> Vec<u8> {
+/// `%g` algorithm: pick scientific or fixed-point based on the value's
+/// exponent, strip trailing zeros, normalize the exponent to `e[+-]NN` with at
+/// least two digits (matching C's output). The precision is the float
+/// `tostring` precision: 14 for Lua 5.1-5.4 (`%.14g`), 17 for 5.5
+/// (`LUA_NUMBER_FMT_N` = `%.17g`, the shortest round-trip form).
+fn fmt_g(f: f64, precision: i32) -> Vec<u8> {
     if f.is_nan() {
         return b"nan".to_vec();
     }
@@ -525,7 +527,6 @@ fn fmt_g14(f: f64) -> Vec<u8> {
         return if f.is_sign_negative() { b"-0".to_vec() } else { b"0".to_vec() };
     }
 
-    let precision: i32 = 14;
     let abs = f.abs();
     let exp = abs.log10().floor() as i32;
 
@@ -551,6 +552,25 @@ fn fmt_g14(f: f64) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Lua 5.5 float `tostring` (`tostringbuffFloat`): format with `%.15g`
+/// (`LUA_NUMBER_FMT`), read it back, and only if that doesn't round-trip to the
+/// same double reformat with `%.17g` (`LUA_NUMBER_FMT_N`). This yields the
+/// shortest of the two that is exact — e.g. `3.14`/`1e+16` stay short while
+/// `1/3` needs the 17-digit form. Pre-5.5 uses plain `%.14g` (no readback).
+fn fmt_float_55(f: f64) -> Vec<u8> {
+    let short = fmt_g(f, 15);
+    if f.is_finite() {
+        let round_trips = std::str::from_utf8(&short)
+            .ok()
+            .and_then(|t| t.parse::<f64>().ok())
+            .map_or(false, |back| back == f);
+        if !round_trips {
+            return fmt_g(f, 17);
+        }
+    }
+    short
+}
+
 fn strip_fixed_trailing_zeros(s: &str) -> String {
     if !s.contains('.') {
         return s.to_string();
@@ -568,7 +588,7 @@ fn strip_fixed_trailing_zeros(s: &str) -> String {
 /// Formats the numeric `LuaValue` `val` (must be Int or Float) into a byte
 /// buffer and returns it.
 ///
-fn number_to_str_buf(val: &LuaValue) -> Vec<u8> {
+fn number_to_str_buf(val: &LuaValue, lua55_floats: bool) -> Vec<u8> {
     debug_assert!(
         matches!(val, LuaValue::Int(_) | LuaValue::Float(_)),
         "number_to_str_buf: value is not a number"
@@ -583,7 +603,11 @@ fn number_to_str_buf(val: &LuaValue) -> Vec<u8> {
             s.into_bytes()
         }
         LuaValue::Float(f) => {
-            let mut bytes = fmt_g14(*f);
+            let mut bytes = if lua55_floats {
+                fmt_float_55(*f)
+            } else {
+                fmt_g(*f, 14)
+            };
 
             let looks_like_int = bytes.iter().all(|&b| b == b'-' || b.is_ascii_digit());
             if looks_like_int {
@@ -603,10 +627,18 @@ fn number_to_str_buf(val: &LuaValue) -> Vec<u8> {
 ///
 /// in place; in Rust we return the string because holding `&mut LuaValue`
 /// across a `state.intern_str` call would borrow `state` twice.
+/// True when the active Lua version uses the 5.5 float `tostring` algorithm
+/// (`%.15g`-then-round-trip-`%.17g`); false for 5.1-5.4 (plain `%.14g`). Drives
+/// every `tostring`/`print`/concat float rendering.
+fn uses_lua55_floats(state: &LuaState) -> bool {
+    state.global().lua_version == lua_types::LuaVersion::V55
+}
+
 pub fn num_to_string(state: &mut LuaState, val: &LuaValue) -> Result<GcRef<LuaString>, LuaError> {
     //    int len = tostringbuff(obj, buff);
     //    setsvalue(L, obj, luaS_newlstr(L, buff, len));
-    let bytes = number_to_str_buf(val);
+    let lua55 = uses_lua55_floats(state);
+    let bytes = number_to_str_buf(val, lua55);
     state.intern_str(&bytes)
 }
 
@@ -701,7 +733,8 @@ fn addstr2buff(buf: &mut BufFs, state: &mut LuaState, str_bytes: &[u8]) -> Resul
 fn addnum2buff(buf: &mut BufFs, state: &mut LuaState, num: &LuaValue) -> Result<(), LuaError> {
     //    int len = tostringbuff(num, numbuff);
     //    addsize(buff, len);
-    let bytes = number_to_str_buf(num);
+    let lua55 = uses_lua55_floats(state);
+    let bytes = number_to_str_buf(num, lua55);
     addstr2buff(buf, state, &bytes)
 }
 
