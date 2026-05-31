@@ -57,6 +57,61 @@ fn err_contains(version: LuaVersion, code: &str, needle: &str) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Shared-core item A: an upvalue (e.g. `_ENV`) indexed by a relational/jump
+// key. `luaK_exp2val` must force the jump result into a register *before*
+// `luaK_indexed` discharges the table upvalue, or the boolean materialization
+// and the GETUPVAL collide and the table operand ends up holding a number.
+//
+// Version split confirmed against the reference binaries: 5.3 and 5.5 return
+// `nil` (our shared register-based GETTABUP needs the `VJMP` clause to match),
+// while 5.4's reference *genuinely* raises "attempt to index a number value"
+// (an upstream 5.4 bug 5.5 later fixed by adding `e->k == VJMP` to
+// `luaK_exp2val`). The fix reproduces all three faithfully.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v53_v55_env_relational_index_returns_nil() {
+    for v in [LuaVersion::V53, LuaVersion::V55] {
+        // _ENV (upvalue 0) indexed by a folded relational constant.
+        eq(v, "return _ENV[1 < 2]", "nil");
+        // A captured local upvalue indexed by the same.
+        eq(v, "local up = {}; return (function() return up[1 < 2] end)()", "nil");
+        // Non-folded comparison (two locals) through an upvalue.
+        eq(v,
+            "local x, y = 1, 1; local up = {}; \
+             return (function() return up[x == y] end)()",
+            "nil");
+        // Store side: `_ENV[1<2] = v` must index correctly too.
+        eq(v, "_ENV[1 < 2] = 7; return _ENV[true]", "7");
+    }
+}
+
+#[test]
+fn v54_env_relational_index_errors_like_reference() {
+    // Guard the deliberate 5.4-only divergence: the reference 5.4 binary raises
+    // on this exact construct; our port must not "improve" on it.
+    err_contains(LuaVersion::V54, "return _ENV[1 < 2]", "index a number value");
+    err_contains(
+        LuaVersion::V54,
+        "local up = {}; return (function() return up[1 < 2] end)()",
+        "index a number value",
+    );
+}
+
+#[test]
+fn all_versions_register_table_relational_index_unaffected() {
+    // Regression guard: a *register* table (GETTABLE, not GETTABUP) was always
+    // correct on every version. The fix must leave it untouched.
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        eq(v, "local t = { [true] = 99 }; return t[1 < 2]", "99");
+        // Literal boolean key through an upvalue keeps working (no jump list).
+        eq(v, "_ENV[true] = 42; return _ENV[true]", "42");
+        // String-key upvalue index (the VKStr fast path) is a no-op for the fix.
+        eq(v, "xyz = 5; return _ENV.xyz", "5");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // 5.5 global declarations (F1/F2/F8 + enforcement) and language changes (F3/F4)
 // ─────────────────────────────────────────────────────────────────────────
 

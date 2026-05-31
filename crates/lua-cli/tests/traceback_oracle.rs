@@ -363,3 +363,64 @@ fn v55_global_already_defined_traceback_matches_reference() {
 
     let _ = std::fs::remove_file(&script);
 }
+
+/// Shared-core item A: `_ENV` (an upvalue) indexed by a relational/jump key.
+/// The CLI-level oracle for the version split. 5.3 and 5.5 print `nil` and exit
+/// 0; 5.4's reference *genuinely* raises "attempt to index a number value" and
+/// exits 1 (the upstream 5.4 `luaK_exp2val` bug that 5.5 fixed). When the
+/// reference binary is present we diff our normalized stderr/stdout against it.
+#[test]
+fn env_relational_index_matches_reference_per_version() {
+    const PROG: &str = "print(_ENV[1<2])";
+    for &v in VERSIONS {
+        let out = lua_rs()
+            .env("LUA_RS_VERSION", v)
+            .arg("-e")
+            .arg(PROG)
+            .output()
+            .expect("spawn lua-rs -e");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr_norm = normalize(&out.stderr, "");
+
+        if v == "5.4" {
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "[envrel/5.4] reference raises here; we must too:\n{stderr_norm}"
+            );
+            assert!(
+                stderr_norm.contains("attempt to index a number value"),
+                "[envrel/5.4] expected the index-a-number error:\n{stderr_norm}"
+            );
+        } else {
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "[envrel/{v}] must exit 0:\n{stderr_norm}"
+            );
+            assert_eq!(
+                stdout.trim_end(),
+                "nil",
+                "[envrel/{v}] must print nil, got stdout `{stdout}` stderr `{stderr_norm}`"
+            );
+        }
+
+        if let Some(refbin) = reference_binary(v) {
+            let rout = Command::new(&refbin)
+                .arg("-e")
+                .arg(PROG)
+                .output()
+                .expect("spawn reference");
+            assert_eq!(
+                rout.status.code(),
+                out.status.code(),
+                "[envrel/{v}] exit code must match reference"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&rout.stdout).trim_end(),
+                stdout.trim_end(),
+                "[envrel/{v}] stdout must match reference"
+            );
+        }
+    }
+}
