@@ -817,6 +817,53 @@ fn v_argerror_funcname_value_crossversion() {
 }
 
 #[test]
+fn v_argerror_pack_unpack_funcname_crossversion() {
+    // Item B remainder (shared-core): the string.pack / string.unpack /
+    // string.packsize argument-error family used the state-less
+    // `LuaError::arg_error` constructor, dropping the `to '<fn>'` qualifier on
+    // every version. They must now resolve the function name like the rest of
+    // the faithful arg_error path. Cases below error identically on 5.3/5.4/5.5
+    // (pos-0 acceptance differs by version, so it is asserted separately).
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        // string.unpack: data string too short.
+        err_contains(v, r#"return string.unpack("i4", "ab")"#, "to 'unpack'");
+        err_contains(v, r#"return string.unpack("i4", "ab")"#, "data string too short");
+        // string.pack: unsigned overflow.
+        err_contains(v, r#"return string.pack("B", 999)"#, "to 'pack'");
+        err_contains(v, r#"return string.pack("B", 999)"#, "unsigned overflow");
+        // string.pack: integer overflow.
+        err_contains(v, r#"return string.pack("i2", 99999)"#, "to 'pack'");
+        err_contains(v, r#"return string.pack("i2", 99999)"#, "integer overflow");
+        // string.pack: string longer than given size.
+        err_contains(v, r#"return string.pack("c2", "abcd")"#, "to 'pack'");
+        err_contains(v, r#"return string.pack("c2", "abcd")"#, "string longer than given size");
+        // string.pack: invalid next option for 'X' (getdetails helper, now state-threaded).
+        err_contains(v, r#"return string.pack("Xc1", 1)"#, "to 'pack'");
+        err_contains(v, r#"return string.pack("Xc1", 1)"#, "invalid next option");
+        // string.pack: alignment not power of 2 (getdetails helper).
+        err_contains(v, r#"return string.pack("!3i4", 1)"#, "to 'pack'");
+        err_contains(v, r#"return string.pack("!3i4", 1)"#, "alignment not power of 2");
+        // string.packsize: variable-length format.
+        err_contains(v, r#"return string.packsize("s")"#, "to 'packsize'");
+        err_contains(v, r#"return string.packsize("s")"#, "variable-length format");
+        // string.format: %s with embedded zeros + modifiers (was state-less too).
+        err_contains(v, r#"return string.format("%5s", "a\0b")"#, "to 'format'");
+        err_contains(v, r#"return string.format("%5s", "a\0b")"#, "string contains zeros");
+
+        // Guard: the bare truncated `bad argument #N (` form (no `to '<fn>'`)
+        // must NOT survive for these callsites on any version.
+        let e = run(v, r#"return string.pack("B", 999)"#).unwrap_err();
+        assert!(e.contains("to 'pack'"),
+            "v{v:?} string.pack argerror lost funcname: {e}");
+    }
+    // pos-0 lower-bound rejection is 5.3-only; when it fires, it must also carry
+    // the funcname. (5.4/5.5 accept pos 0, asserted elsewhere.)
+    err_contains(LuaVersion::V53, r#"return string.unpack("c0", "abc", 0)"#, "to 'unpack'");
+    err_contains(LuaVersion::V53, r#"return string.unpack("c0", "abc", 0)"#,
+        "initial position out of string");
+}
+
+#[test]
 fn v_argerror_perversion_wording() {
     // Item B per-version wording splits.
     // utf8.offset: 5.3 says "out of range"; 5.4/5.5 say "out of bounds".

@@ -564,6 +564,17 @@ fn argerror_funcname_first_line_matches_reference() {
         r#"table.insert({}, 5, 5)"#,
         r#"math.random(5, 2)"#,
         r#"string.rep("x", 1.5)"#,
+        // Item B remainder: string.pack / string.unpack / string.packsize
+        // arg-error family. Called via a global lookup so the name resolves to
+        // the dotted `'string.pack'` etc. — the full first line (incl. funcname
+        // and location prefix) must equal the reference on every version.
+        r#"string.unpack("i4", "ab")"#,
+        r#"string.pack("B", 999)"#,
+        r#"string.pack("c2", "abcd")"#,
+        r#"string.pack("Xc1", 1)"#,
+        r#"string.pack("!3i4", 1)"#,
+        r#"string.packsize("s")"#,
+        "string.format(\"%5s\", \"a\\0b\")",
     ];
     for &v in VERSIONS {
         let Some(refbin) = reference_binary(v) else {

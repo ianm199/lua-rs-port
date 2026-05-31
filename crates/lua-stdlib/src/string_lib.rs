@@ -436,7 +436,7 @@ pub fn str_char(state: &mut LuaState) -> Result<usize, LuaError> {
     for i in 1..=n {
         let c = state.check_arg_integer(i)? as u64;
         if c > u8::MAX as u64 {
-            return crate::auxlib::arg_error(state, i, b"value out of range");
+            return Err(lua_vm::debug::arg_error_impl(state, i, b"value out of range"));
         }
         buf.push(c as u8);
     }
@@ -2201,10 +2201,7 @@ pub fn str_format(state: &mut LuaState) -> Result<usize, LuaError> {
                 let s = state.to_display_string(arg)?;
                 let has_modifiers = spec.width != 0 || spec.precision.is_some();
                 if has_modifiers && s.contains(&0u8) {
-                    return Err(LuaError::arg_error(
-                        arg,
-                        "string contains zeros",
-                    ));
+                    return Err(lua_vm::debug::arg_error_impl(state, arg, b"string contains zeros"));
                 }
                 pad_str(&mut buf, &s, &spec);
                 state.pop_n(1);
@@ -2324,6 +2321,7 @@ fn getoption(h: &mut Header, fmt: &[u8], pos: &mut usize, size: &mut usize) -> R
 /// Get full details about the next format option, including alignment padding.
 ///
 fn getdetails(
+    state: &mut LuaState,
     h: &mut Header,
     total_size: usize,
     fmt: &[u8],
@@ -2336,13 +2334,13 @@ fn getdetails(
 
     if opt == KOption::Paddalign {
         if *pos >= fmt.len() {
-            return Err(LuaError::arg_error(1, "invalid next option for option 'X'"));
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"invalid next option for option 'X'"));
         }
         let mut dummy_size = 0usize;
         let next_opt = getoption(h, fmt, pos, &mut dummy_size)?;
         align = dummy_size;
         if next_opt == KOption::Char || align == 0 {
-            return Err(LuaError::arg_error(1, "invalid next option for option 'X'"));
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"invalid next option for option 'X'"));
         }
     }
 
@@ -2353,7 +2351,7 @@ fn getdetails(
             align = h.max_align;
         }
         if (align & (align - 1)) != 0 {
-            return Err(LuaError::arg_error(1, "format asks for alignment not power of 2"));
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"format asks for alignment not power of 2"));
         }
         *ntoalign = (align - (total_size & (align - 1))) & (align - 1);
     }
@@ -2436,7 +2434,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
     while pos < fmt.len() {
         let mut size = 0usize;
         let mut ntoalign = 0usize;
-        let opt = getdetails(&mut h, total_size, fmt, &mut pos, &mut size, &mut ntoalign)?;
+        let opt = getdetails(state, &mut h, total_size, fmt, &mut pos, &mut size, &mut ntoalign)?;
         total_size += ntoalign + size;
         for _ in 0..ntoalign {
             buf.push(PACK_PAD_BYTE);
@@ -2449,7 +2447,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
                 if size < SZINT {
                     let lim: i64 = 1i64 << (size * NB as usize - 1);
                     if !(-lim <= n && n < lim) {
-                        return Err(LuaError::arg_error(arg, "integer overflow"));
+                        return Err(lua_vm::debug::arg_error_impl(state, arg, b"integer overflow"));
                     }
                 }
                 packint(&mut buf, n as u64, h.is_little, size, n < 0);
@@ -2459,7 +2457,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
                 if size < SZINT {
                     let lim: u64 = 1u64 << (size * NB as usize);
                     if (n as u64) >= lim {
-                        return Err(LuaError::arg_error(arg, "unsigned overflow"));
+                        return Err(lua_vm::debug::arg_error_impl(state, arg, b"unsigned overflow"));
                     }
                 }
                 packint(&mut buf, n as u64, h.is_little, size, false);
@@ -2485,7 +2483,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
             KOption::Char => {
                 let s = state.check_arg_string(arg)?.to_vec();
                 if s.len() > size {
-                    return Err(LuaError::arg_error(arg, "string longer than given size"));
+                    return Err(lua_vm::debug::arg_error_impl(state, arg, b"string longer than given size"));
                 }
                 buf.extend_from_slice(&s);
                 let pad = size - s.len();
@@ -2497,7 +2495,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
                 let s = state.check_arg_string(arg)?.to_vec();
                 let len = s.len();
                 if size < SZINT && len >= (1usize << (size * 8)) {
-                    return Err(LuaError::arg_error(arg, "string length does not fit in given size"));
+                    return Err(lua_vm::debug::arg_error_impl(state, arg, b"string length does not fit in given size"));
                 }
                 packint(&mut buf, len as u64, h.is_little, size, false);
                 buf.extend_from_slice(&s);
@@ -2506,7 +2504,7 @@ pub fn str_pack(state: &mut LuaState) -> Result<usize, LuaError> {
             KOption::Zstr => {
                 let s = state.check_arg_string(arg)?.to_vec();
                 if s.contains(&0) {
-                    return Err(LuaError::arg_error(arg, "string contains zeros"));
+                    return Err(lua_vm::debug::arg_error_impl(state, arg, b"string contains zeros"));
                 }
                 buf.extend_from_slice(&s);
                 buf.push(0);
@@ -2538,13 +2536,13 @@ pub fn str_packsize(state: &mut LuaState) -> Result<usize, LuaError> {
     while pos < fmt.len() {
         let mut size = 0usize;
         let mut ntoalign = 0usize;
-        let opt = getdetails(&mut h, total_size, fmt, &mut pos, &mut size, &mut ntoalign)?;
+        let opt = getdetails(state, &mut h, total_size, fmt, &mut pos, &mut size, &mut ntoalign)?;
         if opt == KOption::Kstring || opt == KOption::Zstr {
-            return Err(LuaError::arg_error(1, "variable-length format"));
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"variable-length format"));
         }
         let space = ntoalign + size;
         if total_size > PACK_MAXSIZE - space {
-            return Err(LuaError::arg_error(1, "format result too large"));
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"format result too large"));
         }
         total_size += space;
     }
@@ -2566,7 +2564,7 @@ pub fn str_unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     };
 
     if pos > ld {
-        return Err(LuaError::arg_error(3, "initial position out of string"));
+        return Err(lua_vm::debug::arg_error_impl(state, 3, b"initial position out of string"));
     }
 
     let fmt = &fmt_bytes[..];
@@ -2578,10 +2576,10 @@ pub fn str_unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     while fmt_pos < fmt.len() {
         let mut size = 0usize;
         let mut ntoalign = 0usize;
-        let opt = getdetails(&mut h, pos, fmt, &mut fmt_pos, &mut size, &mut ntoalign)?;
+        let opt = getdetails(state, &mut h, pos, fmt, &mut fmt_pos, &mut size, &mut ntoalign)?;
 
         if ntoalign + size > ld - pos {
-            return Err(LuaError::arg_error(2, "data string too short"));
+            return Err(lua_vm::debug::arg_error_impl(state, 2, b"data string too short"));
         }
         pos += ntoalign;
         state.ensure_stack(2, "too many results")?;
@@ -2620,16 +2618,19 @@ pub fn str_unpack(state: &mut LuaState) -> Result<usize, LuaError> {
             KOption::Kstring => {
                 let len = unpackint(state, &data[pos..pos + size], h.is_little, size, false)? as usize;
                 if len > ld - pos - size {
-                    return Err(LuaError::arg_error(2, "data string too short"));
+                    return Err(lua_vm::debug::arg_error_impl(state, 2, b"data string too short"));
                 }
                 state.push_bytes(&data[pos + size..pos + size + len])?;
                 pos += len;
             }
             KOption::Zstr => {
-                let end = data[pos..].iter().position(|&b| b == 0)
-                    .ok_or_else(|| LuaError::arg_error(2, "unfinished string for format 'z'"))?;
+                let found = data[pos..].iter().position(|&b| b == 0);
+                let end = match found {
+                    Some(e) => e,
+                    None => return Err(lua_vm::debug::arg_error_impl(state, 2, b"unfinished string for format 'z'")),
+                };
                 if pos + end >= ld {
-                    return Err(LuaError::arg_error(2, "unfinished string for format 'z'"));
+                    return Err(lua_vm::debug::arg_error_impl(state, 2, b"unfinished string for format 'z'"));
                 }
                 state.push_bytes(&data[pos..pos + end])?;
                 pos += end + 1;
