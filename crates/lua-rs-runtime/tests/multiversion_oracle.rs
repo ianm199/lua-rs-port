@@ -268,3 +268,83 @@ fn issue77_string_find_no_spurious_capture() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// #79 error-message fidelity (R-D/E/F/G). Shared-core: must match every
+// version reference (5.3/5.4/5.5). Sub-item (d) — the `[C]: in ?` traceback
+// tail — is deferred (architectural) and not asserted here.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v_argerror_to_fnname() {
+    // (a1) bad-argument carries the resolved function name `to '<fn>'`.
+    // The harness invokes these as inline field-access calls
+    // (`string.char(...)`), so the name resolves from the call instruction to
+    // the bare field `'char'` (exactly like the C reference for the inline
+    // form); the `pcall(string.char, ...)` global-lookup form resolves to the
+    // dotted `'string.char'`. Either way the `to '<fn>'` qualifier — the #79
+    // defect — must be present.
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "return string.char(256)", "to 'char'");
+        err_contains(v, "return string.char(256)", "value out of range");
+        err_contains(v, "return utf8.char(0x80000000)", "to 'char'");
+        err_contains(v, "return utf8.char(0x80000000)", "value out of range");
+    }
+}
+
+#[test]
+fn v_argerror_no_value() {
+    // (a2) absent argument => `got no value`, not `got nil`.
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "return string.sub()", "got no value");
+        err_contains(v, "return string.rep('x')", "got no value");
+    }
+}
+
+#[test]
+fn v_length_concat_location_prefix() {
+    // (b) `#` and `..` carry the chunk-location prefix and the message body.
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "return #nil", "attempt to get length of a nil value");
+        err_contains(v, "return ({})..({})", "attempt to concatenate a table value");
+        // a `:<line>:` prefix appears before the message.
+        let e = run(v, "return #nil").unwrap_err();
+        let at = e.find("attempt").expect("message body present");
+        assert!(e[..at].contains(':'), "v{v:?} #nil missing location prefix: {e}");
+        let e = run(v, "return ({})..({})").unwrap_err();
+        let at = e.find("attempt").expect("message body present");
+        assert!(e[..at].contains(':'), "v{v:?} concat missing location prefix: {e}");
+    }
+}
+
+#[test]
+fn v54_v55_string_arith_coercion_failure() {
+    // (b)+(c) string-arith failure: prefix present, operands labeled correctly.
+    // 5.4/5.5 share the string arithmetic metamethods and the
+    // `<op> a 'X' with a 'Y'` wording. (5.3 has no string-arith metamethods and
+    // uses the legacy `perform arithmetic on a <type> value` wording from a
+    // different VM path — version-gating that registration is out of #79 scope.)
+    for v in [LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "return ({}) - 'y'", "attempt to sub a 'table' with a 'string'");
+        err_contains(v, "return -'x'", "attempt to unm a 'string' with a 'string'");
+        // location prefix present on the string-arith path.
+        let e = run(v, "return ({}) - 'y'").unwrap_err();
+        let at = e.find("attempt").expect("message body present");
+        assert!(e[..at].contains(':'), "v{v:?} string-arith missing prefix: {e}");
+    }
+}
+
+#[test]
+fn v_table_concat_invalid_value_type_name() {
+    // (e) plain type name, no internal byte-array leak.
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "return table.concat({ {} })",
+            "invalid value (table) at index 1 in table for 'concat'");
+        // negative guard: the internal byte-array repr (e.g. `[116, 97, ...]`)
+        // must NOT appear. (The chunk-name prefix `[string "..."]` legitimately
+        // contains brackets, so look specifically for the comma-separated digit
+        // list that the old `{:?}` Debug-format on `&[u8]` produced.)
+        let e = run(v, "return table.concat({ {} })").unwrap_err();
+        assert!(!e.contains("116, 97"), "v{v:?} concat leaked byte-array: {e}");
+    }
+}

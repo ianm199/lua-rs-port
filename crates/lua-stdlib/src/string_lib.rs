@@ -420,7 +420,7 @@ pub fn str_char(state: &mut LuaState) -> Result<usize, LuaError> {
     for i in 1..=n {
         let c = state.check_arg_integer(i)? as u64;
         if c > u8::MAX as u64 {
-            return Err(LuaError::arg_error(i, "value out of range"));
+            return crate::auxlib::arg_error(state, i, b"value out of range");
         }
         buf.push(c as u8);
     }
@@ -496,17 +496,21 @@ fn trymt(state: &mut LuaState, mtname: &[u8]) -> Result<(), LuaError> {
     // would wipe the call frame's arguments. `lua_settop` is frame-relative
     // — keep the first two args of the current C function.
     lua_vm::api::set_top(state, 2)?;
-    //        luaL_error(...)
     let t2_is_string = state.type_at(2) == LuaType::String;
-    let has_mm = state.get_meta_field(2, mtname)?;
-    if t2_is_string || !has_mm {
+    // C: `if (lua_type(L,2)==LUA_TSTRING || !luaL_getmetafield(L,2,mtname))`.
+    // The `||` short-circuits: when arg2 is a string, `get_meta_field` is never
+    // called, so the stack stays `[arg1, arg2]` for the error formatter. Calling
+    // it unconditionally would push the string metatable's own metamethod and
+    // shift the operands read by `type_name_at(-2)/(-1)`.
+    if t2_is_string || !state.get_meta_field(2, mtname)? {
         let op = &mtname[2..]; // skip "__"
-        return Err(LuaError::runtime(format_args!(
+        let msg = format!(
             "attempt to {} a '{}' with a '{}'",
             op.escape_ascii(),
             state.type_name_at(-2).escape_ascii(),
             state.type_name_at(-1).escape_ascii(),
-        )));
+        );
+        return crate::auxlib::lua_error(state, msg.as_bytes()).map(|_| ());
     }
     state.insert(-3)?;
     state.call(2, 1)?;

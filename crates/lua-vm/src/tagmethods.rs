@@ -490,7 +490,9 @@ pub(crate) fn try_concat_tm(state: &mut LuaState) -> Result<(), LuaError> {
     let p1 = state.get_at(top - 2).clone();
     let p2 = state.get_at(top - 1).clone();
     if !call_bin_tm(state, &p1, &p2, top - 2, TagMethod::Concat)? {
-        return Err(LuaError::concat_error(&p1, &p2));
+        let p1_ok = matches!(p1, LuaValue::Str(_) | LuaValue::Int(_) | LuaValue::Float(_));
+        let (bad, bad_idx) = if p1_ok { (&p2, top - 1) } else { (&p1, top - 2) };
+        return Err(crate::debug::type_error(state, bad, bad_idx, b"concatenate"));
     }
     Ok(())
 }
