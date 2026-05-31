@@ -56,25 +56,39 @@ OS_NAME="$(uname -sr)"
 ARCH="$(uname -m)"
 CPU="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//' || echo 'unknown')"
 
-# /usr/bin/time -lp on macOS prints:
-#   real         0.12
-#   user         0.10
-#   sys          0.01
-#        16777216  maximum resident set size
-# We extract real (seconds) and maximum-RSS (bytes).
+# macOS (BSD time) and Linux (GNU time) have incompatible flags and output
+# formats, so measure_one branches on the OS:
 #
-# On Linux, /usr/bin/time -v gives different output. We fall back to a Python
-# helper there. macOS is the primary target.
+#   macOS `/usr/bin/time -lp` prints (RSS in BYTES):
+#     real         0.12
+#     user         0.10
+#          16777216  maximum resident set size
+#
+#   Linux `/usr/bin/time -f '%e %M'` prints one line to stderr (RSS in KB):
+#     0.12 16384
+#   which we normalize to bytes (KB * 1024) so the ledger stays byte-keyed
+#   regardless of which runner produced the row.
 
 measure_one() {
     local bin="$1"
     local workload="$2"
     local tmp
     tmp=$(mktemp)
-    /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
-    local real rss
-    real=$(awk '$1=="real" {print $2}' "$tmp" | head -1)
-    rss=$(awk '/maximum resident set size/ {print $1}' "$tmp" | head -1)
+    local real rss rss_kb parsed
+    case "$(uname -s)" in
+        Darwin)
+            /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
+            real=$(awk '$1=="real" {print $2}' "$tmp" | head -1)
+            rss=$(awk '/maximum resident set size/ {print $1}' "$tmp" | head -1)
+            ;;
+        *)
+            /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
+            parsed=$(awk '/^[0-9.]+ [0-9]+$/ {r=$1; k=$2} END {if (r != "") print r, k}' "$tmp")
+            real=$(printf '%s' "$parsed" | awk '{print $1}')
+            rss_kb=$(printf '%s' "$parsed" | awk '{print $2}')
+            [ -n "$rss_kb" ] && rss=$((rss_kb * 1024))
+            ;;
+    esac
     rm -f "$tmp"
     if [ -z "$real" ] || [ -z "$rss" ]; then
         echo "[err] failed to parse /usr/bin/time output for $bin $workload" >&2
