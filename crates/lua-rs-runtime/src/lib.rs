@@ -279,33 +279,18 @@ impl HostHooks {
 /// borrowed at the embedding boundary only; opcode dispatch still runs with
 /// direct `&mut LuaState` access. Captured Rust callbacks will need a call-path
 /// adapter that releases this boundary borrow before invoking user code.
-/// Internal backend dispatch. The set of Lua versions is closed and known at
-/// compile time, so a `#[cfg]`-gateable enum models it exactly (see
-/// `specs/WEBLUA_MULTIVERSION_API_SPEC.md` §4.1). Today exactly one variant —
-/// `V54` — exists, wrapping the current single-version runtime state. Adding
-/// 5.3/5.5 means adding sibling variants here, each owning that backend's
-/// concrete VM state, without touching the version-invariant embedding API.
-///
-/// `V54` is a unit variant for now: the runtime state still lives in
-/// `LuaInner.state` (the existing 5.4 wiring is untouched). When a second
-/// backend lands, the per-version concrete state moves into these variants.
-enum Engine {
-    V54,
-}
-
-impl Engine {
-    fn for_version(version: LuaVersion) -> Self {
-        match version {
-            LuaVersion::V54 => Engine::V54,
-            // TODO(multiversion): no 5.1/5.2/5.3/5.5 backend exists yet. Until
-            // one is built, every non-5.4 version is served by the 5.4 engine
-            // so the version seam is observable end-to-end without claiming
-            // unimplemented behavior. Replace with the real backend variant
-            // (and a feature gate) as each version lands.
-            _ => Engine::V54,
-        }
-    }
-}
+// VERSION SEAM (architecture decision, 2026-05): there is one shared runtime
+// (`LuaInner.state`) and the active Lua version is a flag — `LuaInner.version`,
+// mirrored onto `GlobalState.lua_version` — that the cold-path seams read
+// (lexer `global`-contextuality, parser global/for-const rules, per-version
+// stdlib roster, float `tostring` precision). It is deliberately NOT the
+// `enum Engine` / monomorphized `Semantics` the spec sketched: every version
+// difference implemented so far lives off the VM dispatch loop, so the flag
+// costs nothing on the hot path and a typed seam would be premature
+// abstraction. If/when a version difference must live *inside* the opcode
+// dispatch loop, introduce a monomorphized `Semantics` parameter at that point
+// (and revisit `specs/WEBLUA_MULTIVERSION_API_SPEC.md` §4.1). See
+// `specs/MULTIVERSION_PRELIM_REVIEW.md` M1/M2.
 
 #[derive(Clone)]
 pub struct Lua {
@@ -314,11 +299,9 @@ pub struct Lua {
 
 struct LuaInner {
     /// The Lua language version this instance speaks. Fixed for the instance's
-    /// life (the monomorphic-instance rule, spec §1.2).
+    /// life (the monomorphic-instance rule, spec §1.2). Mirrored onto
+    /// `GlobalState.lua_version`, which the version seams actually read.
     version: LuaVersion,
-    /// Backend dispatch for the active version. Currently a single 5.4 variant.
-    #[allow(dead_code)]
-    engine: Engine,
     state: RefCell<LuaState>,
     active_state: Cell<*mut LuaState>,
     pending_external_unroots: RefCell<Vec<ExternalRootKey>>,
@@ -825,7 +808,6 @@ impl Lua {
         Lua {
             inner: Rc::new(LuaInner {
                 version,
-                engine: Engine::for_version(version),
                 state: RefCell::new(state),
                 active_state: Cell::new(std::ptr::null_mut()),
                 pending_external_unroots: RefCell::new(Vec::new()),
