@@ -424,3 +424,73 @@ fn env_relational_index_matches_reference_per_version() {
         }
     }
 }
+
+/// Shared-core item D: the `\u{...}` codepoint upper bound. On 5.3 the lexer
+/// caps at 0x10FFFF (rejecting `\u{110000}` and `\u{7FFFFFFF}`); on 5.4/5.5 it
+/// caps at the wider 0x7FFFFFFF (accepting `\u{7FFFFFFF}`, rejecting only
+/// `\u{80000000}`). This is a lexer (compile-time) error reported on stderr, so
+/// we assert exit code and message at the CLI boundary, and diff against the
+/// reference binary when present.
+#[test]
+fn utf8_escape_bound_matches_reference_per_version() {
+    struct Case {
+        prog: &'static str,
+        rejected_on: &'static [&'static str],
+    }
+    const CASES: &[Case] = &[
+        Case { prog: r#"print(#"\u{10FFFF}")"#, rejected_on: &[] },
+        Case { prog: r#"print(#"\u{110000}")"#, rejected_on: &["5.3"] },
+        Case { prog: r#"print(#"\u{7FFFFFFF}")"#, rejected_on: &["5.3"] },
+        Case { prog: r#"print(#"\u{80000000}")"#, rejected_on: &["5.3", "5.4", "5.5"] },
+    ];
+
+    for case in CASES {
+        for &v in VERSIONS {
+            let out = lua_rs()
+                .env("LUA_RS_VERSION", v)
+                .arg("-e")
+                .arg(case.prog)
+                .output()
+                .expect("spawn lua-rs -e");
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            let stderr_norm = normalize(&out.stderr, "");
+            let ctx = format!("utf8esc/{v}/`{}`", case.prog);
+
+            if case.rejected_on.contains(&v) {
+                assert_eq!(
+                    out.status.code(),
+                    Some(1),
+                    "[{ctx}] must reject (exit 1):\n{stderr_norm}"
+                );
+                assert!(
+                    stderr_norm.contains("UTF-8 value too large"),
+                    "[{ctx}] expected the 'UTF-8 value too large' lexer error:\n{stderr_norm}"
+                );
+            } else {
+                assert_eq!(
+                    out.status.code(),
+                    Some(0),
+                    "[{ctx}] must accept (exit 0):\n{stderr_norm}"
+                );
+            }
+
+            if let Some(refbin) = reference_binary(v) {
+                let rout = Command::new(&refbin)
+                    .arg("-e")
+                    .arg(case.prog)
+                    .output()
+                    .expect("spawn reference");
+                assert_eq!(
+                    rout.status.code(),
+                    out.status.code(),
+                    "[{ctx}] exit code must match reference"
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&rout.stdout).trim_end(),
+                    stdout.trim_end(),
+                    "[{ctx}] stdout must match reference"
+                );
+            }
+        }
+    }
+}

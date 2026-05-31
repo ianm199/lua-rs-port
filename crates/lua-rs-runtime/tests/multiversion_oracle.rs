@@ -920,3 +920,35 @@ fn v53_v54_error_nil_stays_nil() {
             "boom");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Shared-core item D: the `\u{...}` codepoint upper bound in the lexer.
+// `llex.c readutf8esc` caps the value differently by family: 5.3 bounds the
+// running value at 0x10FFFF (per-digit, *after* the shift), while 5.4/5.5
+// bound it at 0x7FFFFFFF (per-digit, *before* the shift). The fix version-gates
+// only the 5.3 path; 5.4/5.5 are unchanged. (5.1/5.2 have no `\u{}` escape.)
+// Reproduced against the reference binaries via `specs/oracle/diff_one.sh`.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v53_utf8_escape_caps_at_10ffff() {
+    // 0x10FFFF is the largest accepted codepoint on 5.3.
+    eq(LuaVersion::V53, r#"return #"\u{10FFFF}""#, "4");
+    // One past the cap, and the legacy 5.4/5.5 ceiling, both reject on 5.3.
+    err_contains(LuaVersion::V53, r#"return #"\u{110000}""#, "UTF-8 value too large");
+    err_contains(LuaVersion::V53, r#"return #"\u{110001}""#, "UTF-8 value too large");
+    err_contains(LuaVersion::V53, r#"return #"\u{7FFFFFFF}""#, "UTF-8 value too large");
+}
+
+#[test]
+fn v54_v55_utf8_escape_caps_at_7fffffff() {
+    // Guard that the unaffected versions keep the wider 0x7FFFFFFF ceiling:
+    // values 5.3 rejects (>0x10FFFF up to 0x7FFFFFFF) are still accepted here,
+    // and only values above 0x7FFFFFFF are rejected.
+    for v in [LuaVersion::V54, LuaVersion::V55] {
+        eq(v, r#"return #"\u{10FFFF}""#, "4");
+        eq(v, r#"return #"\u{110000}""#, "4");
+        eq(v, r#"return #"\u{7FFFFFFF}""#, "6");
+        err_contains(v, r#"return #"\u{80000000}""#, "UTF-8 value too large");
+    }
+}
