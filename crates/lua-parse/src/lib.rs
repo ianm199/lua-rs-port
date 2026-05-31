@@ -67,10 +67,6 @@ pub const TK_FLT: TokenKind = 290;
 pub const TK_INT: TokenKind = 291;
 pub const TK_NAME: TokenKind = 292;
 pub const TK_STRING: TokenKind = 293;
-/// `global` — Lua 5.5 reserved word. Out-of-band id mirroring
-/// [`lua_lex::TK_GLOBAL`]; only ever emitted on the `LuaVersion::V55` lexer
-/// path, so 5.1-5.4 are unaffected and `global` stays a valid identifier there.
-pub const TK_GLOBAL: TokenKind = 294;
 
 // ── Parser constants ────────────────────────────────────────────────────────
 
@@ -4307,11 +4303,29 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             lex_next(ls, state)?; // skip 'goto'
             gotostat(ls, state)?;
         }
-        TK_GLOBAL => {
-            globalstat(ls, state)?;
-        }
         _ => {
-            exprstat(ls, state)?;
+            // Lua 5.5 with the upstream-default LUA_COMPAT_GLOBAL: `global` is
+            // NOT a reserved word. It introduces a declaration only when, at
+            // statement start, the name `global` is followed by a Name, `*`, or
+            // `<` (the collective `global <const> *` form). Otherwise it is an
+            // ordinary identifier and the statement is a normal assignment/call.
+            let is_global_decl = state.global().lua_version == lua_types::LuaVersion::V55
+                && ls.t.token == TK_NAME
+                && ls
+                    .t
+                    .seminfo
+                    .ts
+                    .as_ref()
+                    .map_or(false, |s| s.as_bytes() == b"global")
+                && {
+                    let nxt = lex_lookahead(ls, state)?;
+                    nxt == TK_NAME || nxt == b'*' as TokenKind || nxt == b'<' as TokenKind
+                };
+            if is_global_decl {
+                globalstat(ls, state)?;
+            } else {
+                exprstat(ls, state)?;
+            }
         }
     }
     debug_assert!(
