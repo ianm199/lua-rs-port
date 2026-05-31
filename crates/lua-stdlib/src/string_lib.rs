@@ -1055,17 +1055,25 @@ fn get_one_capture<'a>(
     Ok(CaptureInfo::Bytes(&ms.src[cap.init..cap.init + len]))
 }
 
-/// Push all captures (or whole match if none) onto the stack.
-/// Returns the number of values pushed.
+/// Push all captures onto the stack, returning the number of values pushed.
+///
+/// `span` mirrors upstream's `const char *s` argument: `Some((s, e))` means a
+/// whole-match span is available (so a zero-capture pattern pushes the whole
+/// match), while `None` mirrors a `NULL s` and pushes nothing when there are no
+/// explicit captures. Upstream guard: `nlevels = (ms->level == 0 && s) ? 1 : ms->level`.
 ///
 fn push_captures(
     state: &mut LuaState,
     ms: &MatchState,
-    s: usize,
-    e: usize,
+    span: Option<(usize, usize)>,
 ) -> Result<usize, LuaError> {
-    let nlevels = if ms.level == 0 { 1 } else { ms.level as usize };
+    let nlevels = if ms.level == 0 && span.is_some() {
+        1
+    } else {
+        ms.level as usize
+    };
     state.ensure_stack(nlevels as i32, "too many captures")?;
+    let (s, e) = span.unwrap_or((0, 0));
     for i in 0..nlevels {
         match get_one_capture(ms, i, s, e)? {
             CaptureInfo::Position(n) => state.push(LuaValue::Int(n)),
@@ -1145,10 +1153,10 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
             if find {
                 state.push(LuaValue::Int((s1 + 1) as i64));
                 state.push(LuaValue::Int(res as i64));
-                let nc = push_captures(state, &ms, 0, 0)?;
+                let nc = push_captures(state, &ms, None)?;
                 return Ok(nc + 2);
             } else {
-                return push_captures(state, &ms, s1, res);
+                return push_captures(state, &ms, Some((s1, res)));
             }
         }
     }
@@ -1251,7 +1259,7 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
         let e_val = LuaValue::Int((e + 1) as i64);
         tbl.raw_set_int(state, 3, e_val.clone())?;
         tbl.raw_set_int(state, 4, e_val)?;
-        return push_captures(state, &ms, src, e);
+        return push_captures(state, &ms, Some((src, e)));
     }
 
     Ok(0)
@@ -1365,7 +1373,7 @@ fn add_value(
     match tr {
         LuaType::Function => {
             state.push_value_at(3)?;
-            let n = push_captures(state, ms, s, e)?;
+            let n = push_captures(state, ms, Some((s, e)))?;
             state.call(n as i32, 1)?;
         }
         LuaType::Table => {

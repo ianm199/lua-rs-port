@@ -217,3 +217,54 @@ fn issue76_math_fail_returns_nil() {
         );
     }
 }
+
+/// #77 (R-A): `string.find` on the pattern-matching path with zero explicit
+/// captures must return exactly `start, end` — no spurious trailing empty
+/// string. Upstream's `push_captures` uses `nlevels = (ms->level==0 && s) ? 1
+/// : ms->level`; the `&& s` guard means *find* (s == NULL) pushes nothing when
+/// there are no captures, while *match*/*gmatch*/*gsub* (s != NULL) still push
+/// the whole match. Pre-existing 5.4 port bug, cross-version.
+#[test]
+fn issue77_string_find_no_spurious_capture() {
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        // bug: find with magic-char pattern, no captures → arity 2 (was 3).
+        eq(v, "return select('#', string.find('hello','l+'))", "2");
+        eq(
+            v,
+            "local a,b,c = string.find('hello','l+'); \
+             return tostring(a)..','..tostring(b)..','..tostring(c)",
+            "3,4,nil",
+        );
+        // anchored magic pattern, no captures → still arity 2.
+        eq(v, "return select('#', string.find('hello','^h+'))", "2");
+
+        // regression fences — these were already correct, lock them in:
+        // explicit capture → arity 3, capture present.
+        eq(v, "return select('#', string.find('hello','(l+)'))", "3");
+        eq(
+            v,
+            "local a,b,c = string.find('hello','(l+)'); \
+             return tostring(a)..','..tostring(b)..','..tostring(c)",
+            "3,4,ll",
+        );
+        // match still returns the whole match (s != NULL path).
+        eq(v, "return string.match('hello','l+')", "ll");
+        // plain/literal path is unaffected → arity 2.
+        eq(v, "return select('#', string.find('hello','ll'))", "2");
+        // gsub count unaffected.
+        eq(v, "return ({string.gsub('hello','l+','L')})[2]", "1");
+        // gsub function-replacement: whole match still passed (s != NULL path).
+        eq(
+            v,
+            "return (string.gsub('hello','l+',function(w) return '['..w..']' end))",
+            "he[ll]o",
+        );
+        // gmatch with no captures still yields the whole match each step.
+        eq(
+            v,
+            "local t={}; for w in string.gmatch('a,b,c','%a+') do t[#t+1]=w end; \
+             return table.concat(t,'|')",
+            "a|b|c",
+        );
+    }
+}
