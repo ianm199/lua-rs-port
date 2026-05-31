@@ -193,3 +193,27 @@ fn v54_unchanged() {
     // for-loop var is assignable on 5.4.
     eq(LuaVersion::V54, "for i = 1, 1 do i = 10 end; return 'ok'", "ok");
 }
+
+/// #76: math.type / math.tointeger return `nil` (not `false`) on failure.
+/// luaL_pushfail = lua_pushnil in the default 5.3/5.4/5.5 builds (oracle
+/// contract pins LUA_FAILISFALSE off). Pre-existing 5.4 port bug.
+#[test]
+fn issue76_math_fail_returns_nil() {
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        eq(v, "return math.type('x')", "nil");
+        eq(v, "return math.type(true)", "nil");
+        eq(v, "return math.tointeger(3.5)", "nil");
+        eq(v, "return math.tointeger(2^63)", "nil");
+        // guard the success paths still work (regression fence):
+        eq(v, "return math.tointeger('7')", "7");
+        eq(v, "return math.type(1)", "integer");
+        eq(v, "return math.type(1.0)", "float");
+        // truthiness fence — lock the semantic intent, not just tostring:
+        eq(v, "return math.type('x') == nil", "true");
+        eq(
+            v,
+            "if math.tointeger(3.5) then return 'truthy' else return 'falsey' end",
+            "falsey",
+        );
+    }
+}
