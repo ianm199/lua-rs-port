@@ -8,7 +8,7 @@ use `mlua`.
 
 ```toml
 [dependencies]
-lua-rs-runtime = "0.0.21"
+lua-rs-runtime = "0.0.22"
 ```
 
 ## Calling Rust from Lua

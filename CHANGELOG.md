@@ -4,6 +4,56 @@ All notable changes to `lua-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.22] - 2026-06-01
+
+### Added — Lua 5.1 and 5.2; one API now spans Lua 5.1–5.5
+
+`lua-rs` now runs **Lua 5.1, 5.2, 5.3, 5.4, and 5.5** from a single embedding
+API, selected per instance (`Lua::new_versioned(LuaVersion::V51 …)` /
+`LUA_RS_VERSION=5.1…5.5`). Every version is verified against its unmodified
+upstream reference binary; all five share one core, and the bytecode dispatch
+loop carries no per-version cost (3/4/5 are byte-identical in benchmarks; the
+only measurable delta is 5.1/5.2 integer-arithmetic, an inherent consequence of
+their float-only number model).
+
+- **5.2 (the bridge)**: float-only numbers on the modern `_ENV` globals model;
+  `bit32`, compat-math, `module`; `//`/bitwise/`<const>` rejected; `math.type`/
+  `utf8`/`string.pack` absent.
+- **5.1 (the legacy family)**: float-only **plus fenv globals** —
+  `getfenv`/`setfenv` over a per-closure environment; `__len`-on-tables inert;
+  `loadstring`, global `unpack`, `table.getn`/`foreach`, `newproxy`, `gcinfo`,
+  1-arg `math.log`; `goto`/`bit32`/`string.pack`/`utf8` absent. C-`rand()` PRNG
+  sequence is a documented divergence (the contract — ranges/arg-errors — matches).
+
+5.3 and 5.5 graduate from **alpha to beta**: their long tails are closed
+(compat-math, bitwise string coercion, error wording, `global` declarations,
+named varargs, `utf8.offset`, `collectgarbage` params, traceback fidelity).
+
+### Fixed
+
+- **Cross-version fidelity** (improves 2–3 versions at once): `_ENV[<relational>]`
+  index codegen, arg-error `to '<fn>'` qualifier + offending value + location
+  prefix, `print`→global `tostring` (5.1–5.3), `\u{}`/`utf8.char` ceilings,
+  `string.unpack`/`format`/`pack` boundaries, `math.random` interval guards.
+- **The trailing `[C]: in ?` traceback frame** on uncaught errors, cross-version
+  (#79) — official `math.lua` now runs clean.
+- **goto label scoping** (block-scoped on 5.2/5.3 vs function-wide on 5.4/5.5).
+- **`__gc` finalizer error disposition** (propagate on 5.2/5.3, warn on 5.4/5.5)
+  — and the previously-unwired `warn`/`@on`/`@off` subsystem now emits.
+- A **panic** in the table downward-resize path (`index out of bounds`) — now
+  clamps to the physical array length per upstream `luaH_resize`.
+
+### Changed
+
+- CI: the release perf-dashboard step's `/usr/bin/time` parsing is now portable
+  to the Linux runner (#82).
+
+### Docs
+
+- `specs/MULTIVERSION_PLAYBOOK.md` — the reusable "how to add a Lua version"
+  methodology (oracle/contract, adversarial-first, the iteration ladder, the
+  version seam, the per-phase workflow).
+
 ## [0.0.21] - 2026-05-31
 
 ### Added — Lua 5.3 fidelity (toward #19)
