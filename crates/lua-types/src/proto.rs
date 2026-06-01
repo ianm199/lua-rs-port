@@ -1,10 +1,12 @@
 //! `LuaProto` — compiled function prototype. Mirrors C-Lua's `Proto` struct
 //! but uses Rust idioms (Vec instead of pointer+size pairs).
 
+use crate::closure::LuaLClosure;
 use crate::gc::GcRef;
 use crate::opcode::Instruction;
 use crate::string::LuaString;
 use crate::value::LuaValue;
+use core::cell::RefCell;
 
 #[derive(Debug)]
 pub struct LuaProto {
@@ -21,6 +23,14 @@ pub struct LuaProto {
     pub linedefined: i32,
     pub lastlinedefined: i32,
     pub source: Option<GcRef<LuaString>>,
+    /// Last closure instantiated from this proto, reused by `OP_CLOSURE` when a
+    /// new instantiation would capture the identical upvalues. Mirrors C-Lua's
+    /// `Proto.cache` (5.2/5.3 only — added in 5.2, removed in 5.4), which is why
+    /// loop-built closures with shared upvalues compare `==` on those versions.
+    /// Populated only under 5.2/5.3 in `push_closure`; `None` otherwise. Traced
+    /// (so it cannot dangle); unlike C's GC-cleared weak cache this pins the one
+    /// cached closure to the proto's lifetime, which is bounded and safe.
+    pub cache: RefCell<Option<GcRef<LuaLClosure>>>,
 }
 
 impl LuaProto {
@@ -39,6 +49,7 @@ impl LuaProto {
             linedefined: 0,
             lastlinedefined: 0,
             source: None,
+            cache: RefCell::new(None),
         }
     }
 }

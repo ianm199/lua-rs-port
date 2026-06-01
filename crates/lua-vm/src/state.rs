@@ -2608,13 +2608,34 @@ impl LuaState {
             };
             upvals.push(std::cell::Cell::new(uv));
         }
+        // LUA_COMPAT closure caching (5.2/5.3 only): if the last closure built
+        // from this proto captured the identical upvalues, reuse it so the two
+        // compare `==` (C's `getcached`). 5.1 never cached; 5.4/5.5 removed it.
+        let cache_enabled = matches!(
+            self.global().lua_version,
+            lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
+        );
+        if cache_enabled {
+            if let Some(cached) = child_proto.cache.borrow().as_ref() {
+                if cached.upvals.len() == nup
+                    && (0..nup).all(|i| GcRef::ptr_eq(&cached.upvals[i].get(), &upvals[i].get()))
+                {
+                    let reused = cached.clone();
+                    self.set_at(ra, LuaValue::Function(LuaClosure::Lua(reused)));
+                    return Ok(());
+                }
+            }
+        }
         // TODO(D-1c-bridge): upvals are pre-populated from parent frame; state.new_lclosure
         // fills with fresh Nil upvals which would drop the captured bindings.
         self.mark_gc_check_needed();
         let new_cl = GcRef::new(LuaClosureLua {
-            proto: child_proto,
+            proto: child_proto.clone(),
             upvals,
         });
+        if cache_enabled {
+            *child_proto.cache.borrow_mut() = Some(new_cl.clone());
+        }
         self.set_at(ra, LuaValue::Function(LuaClosure::Lua(new_cl)));
         Ok(())
     }

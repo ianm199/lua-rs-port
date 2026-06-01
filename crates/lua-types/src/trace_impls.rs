@@ -151,6 +151,9 @@ impl Trace for LuaProto {
         for lv in self.locvars.iter() {
             lv.varname.trace(m);
         }
+        if let Some(c) = self.cache.borrow().as_ref() {
+            c.trace(m);
+        }
     }
 }
 
