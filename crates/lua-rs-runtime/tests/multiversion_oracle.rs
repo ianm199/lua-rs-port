@@ -1912,3 +1912,85 @@ fn v55_table_downward_resize_no_panic() {
         "done",
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// goto label scoping in disjoint / nested blocks (shared-core item H1).
+//
+// The scope of the "label already defined" check changed at 5.3 -> 5.4.
+// Upstream 5.2/5.3 `checkrepeated` scans only the *current block*
+// (`fs->bl->firstlabel`), so a label inside an inner block does NOT collide
+// with a same-named label in an enclosing block, and `gotostat`'s `findlabel`
+// likewise resolves a goto against the current block only (a non-matching goto
+// stays pending and is resolved by `solvegotos` / `movegotosout`). Upstream
+// 5.4/5.5 rewrote `checkrepeated` and `findlabel` to scan the whole function
+// (`fs->firstlabel`), so any repeated label name in a function is an error.
+//
+// Captured from the reference binaries (lua5.2.4 / lua5.3.6 accept; lua5.4.7 /
+// lua5.5.0 reject with "label 'l3' already defined on line 1"). 5.1 has no
+// goto/labels.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v52_v53_disjoint_block_label_shadows_outer() {
+    // `::l3::` then `do goto l3; ::l3:: end`: the inner label is a distinct
+    // block scope; the `goto l3` binds forward to the inner label, not the
+    // outer one (which would loop). Accepted on 5.2/5.3, runs to completion.
+    let prog = "local s = ''\n\
+                ::l3:: s = s .. 'a'\n\
+                do goto l3done; ::l3:: end\n\
+                ::l3done:: return s";
+    eq(LuaVersion::V52, prog, "a");
+    eq(LuaVersion::V53, prog, "a");
+}
+
+#[test]
+fn v54_v55_disjoint_block_label_rejected() {
+    let prog = "::l3:: print('a')\n\
+                do goto l3; ::l3:: end\n\
+                print('ok')";
+    err_contains(LuaVersion::V54, prog, "label 'l3' already defined");
+    err_contains(LuaVersion::V55, prog, "label 'l3' already defined");
+}
+
+#[test]
+fn v52_v53_deeply_nested_label_shadows_outer() {
+    let prog = "local s=''\n\
+                ::l:: s = s .. 'a'\n\
+                do do goto ldone; ::l:: end end\n\
+                ::ldone:: return s";
+    eq(LuaVersion::V52, prog, "a");
+    eq(LuaVersion::V53, prog, "a");
+}
+
+#[test]
+fn v54_v55_deeply_nested_label_rejected() {
+    let prog = "::l:: print('a')\n\
+                do do goto l; ::l:: end end\n\
+                print('ok')";
+    err_contains(LuaVersion::V54, prog, "label 'l' already defined");
+    err_contains(LuaVersion::V55, prog, "label 'l' already defined");
+}
+
+#[test]
+fn same_block_duplicate_label_rejected_all_versions() {
+    // A duplicate label in the *same* block is an error on every version that
+    // has goto (5.2+).
+    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        err_contains(v, "::l:: ::l:: print('x')", "label 'l' already defined");
+    }
+}
+
+#[test]
+fn v52_v53_backward_goto_to_enclosing_block_label() {
+    // A backward goto from inside a nested block to a label in the enclosing
+    // block must resolve (via `movegotosout` re-resolution on 5.2/5.3), not be
+    // reported as "no visible label". Mirrors goto.lua's `goto l3a` shape.
+    let prog = "local n = 0\n\
+                ::top:: n = n + 1\n\
+                if n < 3 then do goto top end end\n\
+                return n";
+    eq(LuaVersion::V52, prog, "3");
+    eq(LuaVersion::V53, prog, "3");
+    eq(LuaVersion::V54, prog, "3");
+    eq(LuaVersion::V55, prog, "3");
+}

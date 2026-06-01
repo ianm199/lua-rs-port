@@ -75,14 +75,21 @@ fragile reference quirk — DEFERRED.
 
 ### Item H — architectural candidates (all DEFERRED, documented)
 
-- **goto label scoping in disjoint/nested blocks** (`goto.lua`): rs's label
-  table is too global. Minimal repro: `::l3:: do goto l3; ::l3:: end` — rs
-  errors "label 'l3' already defined" on **both** versions; the reference 5.3
-  accepts it (inner `l3` is a distinct block scope) while 5.5 also errors. The
-  scope rules themselves differ 5.3 vs 5.5. Re-entry: per-block label scope
-  tracking in `crates/lua-parse` goto/label resolution, version-gated; interacts
-  with the `<close>`/goto-over-local rules. Genuinely a parser-scope change, not
-  a localized fix.
+- **goto label scoping in disjoint/nested blocks** (`goto.lua`): **FIXED**
+  (version-gated in `crates/lua-parse/src/lib.rs`). 5.2/5.3 scan repeated-label
+  detection (`checkrepeated`) and goto resolution (`findlabel_for_goto`) over the
+  **current block only** (`bl.firstlabel`), and `movegotosout` re-resolves
+  backward gotos to enclosing-block labels on block exit (mirroring upstream
+  5.3's `movegotosout` -> `findlabel` loop); 5.4/5.5 keep the function-wide scan.
+  `::l3:: do goto l3; ::l3:: end` now accepts on 5.2/5.3 (inner `l3` is a
+  distinct scope, goto binds forward to it) and rejects on 5.4/5.5, matching all
+  references. CI: `multiversion_oracle.rs` `v52_v53_disjoint_block_label_*`,
+  `v54_v55_*_rejected`, `same_block_duplicate_label_rejected_all_versions`,
+  `v52_v53_backward_goto_to_enclosing_block_label`. NOTE: `goto.lua` itself still
+  DIFFs for *other* reasons after this fix — 5.3 fails at `goto.lua:180`
+  (closure upvalue-id sharing, the loop-closure item below), 5.5 at
+  `goto.lua:427` (`global<const>` assignability, a separate 5.5 `global`-keyword
+  item). The label-scoping blocker is gone; those are independent.
 - **loop-built-closure equality caching** (`closure.lua:48`): **5.3-only**. With
   closures sharing identical upvalues (`function(x) return x + a + _ENV end` in a
   loop), 5.3 caches and returns the same `LClosure` (`a[3]==a[4]==a[5]` → true);
