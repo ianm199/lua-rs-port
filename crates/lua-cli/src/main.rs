@@ -743,8 +743,7 @@ fn dynlib_symbol(
             // failure with the unsupported-ABI message. The library outlives
             // the pointer because `DYNLIB_REGISTRY` retains it for the
             // process lifetime.
-            let resolved: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
-                unsafe { lib.get(symbol) };
+            let resolved: Result<libloading::Symbol<*const ()>, _> = unsafe { lib.get(symbol) };
             return match resolved {
                 Ok(_) => Ok(DynamicSymbol::LuaCAbi(std::ptr::null())),
                 Err(err) => Err(LuaError::runtime(format_args!(
@@ -974,15 +973,14 @@ fn main() -> ExitCode {
 //   confidence:    high
 //   todos:         0
 //   port_notes:    0
-//   unsafe_blocks: 3  (libloading-backed dynlib backend, Phase D-3.5;
-//                      budget counts 4 due to one `unsafe extern "C" fn()`
-//                      type parameter on `Symbol<...>`).
+//   unsafe_blocks: 5  (2 timezone libc calls + 3 libloading-backed dynlib
+//                      backend calls; see harness/unsafe-budgets.toml).
 //   notes:         drives new_state → open_libs → load_string → pcall_k.
 //                  Designed to surface the first todo!() panic on a hello-
 //                  world program, not to be a complete interpreter. Hosts the
 //                  libloading-backed implementation of the three
-//                  dynlib_*_hook hooks on GlobalState (Phase D-3.5); ceiling
-//                  in harness/unsafe-budgets.toml = 3. Also installs
+//                  dynlib_*_hook hooks on GlobalState (Phase D-3.5). Also
+//                  installs
 //                  popen_hook (Phase F): spawns /bin/sh -c <cmd> via
 //                  std::process::Command, wraps the resulting pipe in
 //                  PopenFile (a LuaFileHandle) so io.popen and the LStream

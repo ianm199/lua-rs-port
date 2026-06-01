@@ -34,15 +34,9 @@
                     # mark-and-sweep architecture.
 "lua-coro"   = 0    # no active unsafe implementation; raise only with a
                     # future stackful coroutine backend.
-"lua-cli"    = 5    # libloading-backed dynlib backend — Phase D-3.5.
-                    # 2026-05-23: raised 4 to 5. Real `unsafe { ... }` blocks
-                    # in dynlib_*_hook: Library::new + 2× Symbol::get = 3
-                    # blocks. The hook also counts the `unsafe extern "C" fn`
-                    # type form used in `Symbol<unsafe extern "C" fn()>` —
-                    # twice now (resolver + invoker call sites), each as a
-                    # type annotation rather than an `unsafe { }` scope. The
-                    # ceiling tracks the hook's regex count, not a semantic
-                    # block count. Each real block carries `// SAFETY: ...`.
+"lua-cli"    = 5    # Host integration FFI: 2 timezone libc blocks plus 3
+                    # libloading-backed dynlib blocks (Library::new and two
+                    # Symbol::get calls). Each block carries `// SAFETY: ...`.
 "lua-wasm"   = 19   # WASM import/export pointer ABI only. Host callbacks and
                     # exported alloc/run/error functions cross linear-memory
                     # pointer boundaries; the VM/runtime crates stay at zero.
