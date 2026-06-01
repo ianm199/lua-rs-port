@@ -2123,3 +2123,98 @@ fn v51_v54_v55_gc_finalizer_error_swallowed() {
         assert_eq!(got, "ok", "version {v:?}: __gc error must not propagate");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Triage-fix regression guards (PR #106). Each pins a bug fixed after
+// verifying against the reference binary for the version(s) involved.
+// ─────────────────────────────────────────────────────────────────────────
+
+// #97 — `__le` derived from `__lt` must survive a yield inside `__lt`
+// (LUA_COMPAT_LT_LE: 5.1–5.4 derive and negate; 5.5 dropped the derivation).
+// The CIST_LEQ mark carries the "negate on resume" intent across the yield.
+const LE_ACROSS_YIELD: &str = "\
+local mt = { __lt = function(a,b) coroutine.yield(0); return a.v < b.v end }\n\
+local function drive(f) local co = coroutine.wrap(f); local r = co(); while r == 0 do r = co() end; return r end\n\
+local a = setmetatable({v=1}, mt); local b = setmetatable({v=2}, mt)\n\
+return tostring(drive(function() return a <= b end)) .. ',' .. tostring(drive(function() return b <= a end))";
+
+#[test]
+fn v51_v54_derived_le_survives_yield() {
+    for v in [LuaVersion::V51, LuaVersion::V52, LuaVersion::V53, LuaVersion::V54] {
+        eq(v, LE_ACROSS_YIELD, "true,false");
+    }
+}
+
+#[test]
+fn v55_le_without_metamethod_errors_no_derivation() {
+    err_contains(LuaVersion::V55, LE_ACROSS_YIELD, "attempt to compare two table values");
+}
+
+// #95 — `break` outside a loop: the error wording is version-specific.
+#[test]
+fn break_outside_loop_wording_per_version() {
+    err_contains(LuaVersion::V51, "break", "no loop to break");
+    err_contains(LuaVersion::V52, "break", "not inside a loop");
+    err_contains(LuaVersion::V53, "break", "not inside a loop");
+    err_contains(LuaVersion::V54, "break", "break outside loop at line");
+    err_contains(LuaVersion::V55, "break", "break outside loop near 'break'");
+}
+
+// #96 — closures built in a loop over identical upvalues compare `==` on
+// 5.2/5.3 (proto closure cache), distinct on 5.1 and 5.4/5.5.
+const LOOP_CLOSURE_EQ: &str = "\
+local up = 42; local t = {}\n\
+for i = 1, 3 do t[i] = function() return up end end\n\
+return tostring(t[1] == t[2]) .. ',' .. tostring(t[2] == t[3])";
+
+#[test]
+fn v52_v53_loop_closures_cache_equal() {
+    eq(LuaVersion::V52, LOOP_CLOSURE_EQ, "true,true");
+    eq(LuaVersion::V53, LOOP_CLOSURE_EQ, "true,true");
+}
+
+#[test]
+fn v51_v54_v55_loop_closures_distinct() {
+    for v in [LuaVersion::V51, LuaVersion::V54, LuaVersion::V55] {
+        eq(v, LOOP_CLOSURE_EQ, "false,false");
+    }
+}
+
+#[test]
+fn v53_distinct_upvalues_not_cached() {
+    // Different captured upvalue per iteration ⇒ distinct closures even on 5.3.
+    eq(
+        LuaVersion::V53,
+        "local t = {}\nfor i = 1, 2 do local x = i; t[i] = function() return x end end\nreturn tostring(t[1] == t[2])",
+        "false",
+    );
+}
+
+// #94 — 5.5 named varargs `function f(...t)` share storage: `...` unpacks live
+// from the table `t`, so mutating `t` is observable through a later `...`.
+#[test]
+fn v55_named_vararg_table_aliases_dots() {
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) t[1] = 99; return ... end\nreturn table.concat({f(1,2,3)}, ',')",
+        "99,2,3",
+    );
+}
+
+#[test]
+fn v55_named_vararg_count_follows_n_field() {
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) t.n = 2; return ... end\nreturn table.concat({f(1,2,3)}, ',')",
+        "1,2",
+    );
+}
+
+#[test]
+fn v55_named_vararg_survives_dump_roundtrip() {
+    eq(
+        LuaVersion::V55,
+        "local f = function(...t) t[1] = 99; return ... end\nlocal g = load(string.dump(f))\nreturn table.concat({g(1,2,3)}, ',')",
+        "99,2,3",
+    );
+}
