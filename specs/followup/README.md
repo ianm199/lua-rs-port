@@ -30,6 +30,7 @@ throwaway process scaffolding and are not retained.
 - **shared core**: `sharedcore-triage-1.md`, `-2.md`, `-3.md`
 - **traceback**: `79d-design.md`
 - **confirmations** (the #76–79 adversarial confirms): `confirm-76.md` … `confirm-79.md`
+- **GC**: `issue-93-generational-gc-plan.md`
 
 ## The remaining architectural backlog
 
