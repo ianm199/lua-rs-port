@@ -469,6 +469,14 @@ fn math_ult(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 fn math_log(state: &mut LuaState) -> Result<usize, LuaError> {
     let x = state.check_number(1)?;
+    // Lua 5.1's `math.log` takes a single argument and silently ignores any
+    // second; the two-argument base form is a 5.2 addition. Verified against
+    // lua5.1.5: `math.log(8,2) == math.log(8) == ln(8)`, and a second arg never
+    // errors. See specs/followup/5.1-roster-syntax.md §1.
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        state.push(LuaValue::Float(x.ln()));
+        return Ok(1);
+    }
     let res = if matches!(state.type_at(2), LuaType::None | LuaType::Nil) {
         x.ln()
     } else {
@@ -806,7 +814,10 @@ pub fn luaopen_math(state: &mut LuaState) -> Result<usize, LuaError> {
     // etc. == "function" on 5.2.4). 5.5 drops them.
     if matches!(
         state.global().lua_version,
-        lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53 | lua_types::LuaVersion::V54
+        lua_types::LuaVersion::V51
+            | lua_types::LuaVersion::V52
+            | lua_types::LuaVersion::V53
+            | lua_types::LuaVersion::V54
     ) {
         const COMPAT_MATH_FUNCS: &[(&[u8], LuaCFunction)] = &[
             (b"atan2",  math_atan),
@@ -817,6 +828,15 @@ pub fn luaopen_math(state: &mut LuaState) -> Result<usize, LuaError> {
             (b"log10",  math_log10),
         ];
         state.set_funcs_with_upvalues(COMPAT_MATH_FUNCS, 0)?;
+    }
+
+    // Lua 5.1 carries `math.mod`, a compat alias of `fmod` predating the rename
+    // (`math.mod(7,3) == 1`). It was removed in 5.2. Verified against
+    // lua5.1.5: `type(math.mod)` == "function". See
+    // specs/followup/5.1-roster-syntax.md §1.
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        state.push_c_function(math_fmod)?;
+        state.set_field(-2, b"mod")?;
     }
 
     state.push(LuaValue::Float(PI));

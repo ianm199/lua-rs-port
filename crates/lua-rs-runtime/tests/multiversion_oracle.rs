@@ -19,8 +19,12 @@ use lua_rs_runtime::{Lua, LuaVersion};
 /// outer wrapper runs in implicit-global mode and always has the builtins.
 fn run(version: LuaVersion, code: &str) -> Result<String, String> {
     let lua = Lua::new_versioned(version);
+    // Lua 5.1's `load` takes a reader function only — string loading is
+    // `loadstring`'s job (a V51 roster gate). 5.2+ `load` accepts a string. Pick
+    // the loader the running version exposes for a string chunk.
+    let loader = if version == LuaVersion::V51 { "loadstring" } else { "load" };
     let wrapper = format!(
-        "local f, e = load([==[\n{code}\n]==])\n\
+        "local f, e = {loader}([==[\n{code}\n]==])\n\
          if not f then return 'E\\0' .. e end\n\
          local ok, r = pcall(f)\n\
          if not ok then return 'E\\0' .. tostring(r) end\n\
@@ -1648,4 +1652,143 @@ fn v52_plus_no_fenv_globals() {
             "99",
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5.1 — roster / syntax / metamethod axis (the legacy stdlib roster, the
+// pre-5.2 syntax rejections, and the body-behavior deltas). Every expected
+// value captured from /tmp/lua-refs/bin/lua5.1.5. See
+// specs/followup/5.1-roster-syntax.md.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v51_global_roster() {
+    // unpack is a GLOBAL; table.unpack/pack/move are absent.
+    eq(LuaVersion::V51, "return unpack({10,20,30})", "10");
+    eq(LuaVersion::V51, "return type(table.unpack)", "nil");
+    eq(LuaVersion::V51, "return type(table.pack)", "nil");
+    eq(LuaVersion::V51, "return type(table.move)", "nil");
+    // legacy table roster present.
+    eq(LuaVersion::V51, "return table.getn({1,2,3})", "3");
+    eq(LuaVersion::V51, "return table.maxn({[1]=1,[5]=2,[3]=3})", "5");
+    eq(LuaVersion::V51, "return type(table.foreach)", "function");
+    eq(LuaVersion::V51, "return type(table.foreachi)", "function");
+    // table.setn is a gravestone raising the obsolete message.
+    err_contains(LuaVersion::V51, "return table.setn({}, 3)", "'setn' is obsolete");
+    // 5.1 holdover globals.
+    eq(LuaVersion::V51, "return type(gcinfo())", "number");
+    eq(LuaVersion::V51, "return type(newproxy)", "function");
+    eq(LuaVersion::V51, "return type(newproxy())", "userdata");
+    eq(LuaVersion::V51, "return type(loadstring)", "function");
+    // absent in 5.1.
+    eq(LuaVersion::V51, "return type(bit32)", "nil");
+    eq(LuaVersion::V51, "return type(utf8)", "nil");
+    eq(LuaVersion::V51, "return type(rawlen)", "nil");
+    eq(LuaVersion::V51, "return type(math.type)", "nil");
+}
+
+#[test]
+fn v51_math_roster() {
+    // 5.1 compat math functions present; math.log ignores a 2nd arg (no base).
+    eq(LuaVersion::V51, "return type(math.log10)", "function");
+    eq(LuaVersion::V51, "return type(math.atan2)", "function");
+    eq(LuaVersion::V51, "return type(math.pow)", "function");
+    eq(LuaVersion::V51, "return type(math.mod)", "function");
+    eq(LuaVersion::V51, "return math.mod(7,3)", "1");
+    // math.log(8,2) == math.log(8) == ln(8); the base is silently ignored.
+    eq(LuaVersion::V51, "return math.log(8,2) == math.log(8)", "true");
+}
+
+#[test]
+fn v51_string_and_package_roster() {
+    eq(LuaVersion::V51, "return type(string.gfind)", "function");
+    eq(LuaVersion::V51, "return type(module)", "function");
+    eq(LuaVersion::V51, "return type(package.seeall)", "function");
+    eq(LuaVersion::V51, "return type(package.loaders)", "table");
+    // package.searchers is the 5.2 rename; absent in 5.1.
+    eq(LuaVersion::V51, "return type(package.searchers)", "nil");
+    // module() creates/initializes a module table and sets the caller env.
+    eq(
+        LuaVersion::V51,
+        "module('foo', package.seeall); return _NAME .. ',' .. tostring(_M == foo)",
+        "foo,true",
+    );
+}
+
+#[test]
+fn v51_body_behavior_deltas() {
+    // load takes a reader function ONLY; a string errors. loadstring loads it.
+    err_contains(LuaVersion::V51, "return load('return 1')", "function expected, got string");
+    eq(LuaVersion::V51, "return loadstring('return 7')()", "7");
+    // xpcall(f, h) does NOT forward extra args; f is called with zero args.
+    eq(
+        LuaVersion::V51,
+        "local n; xpcall(function(...) n = select('#', ...) end, function(e) return e end, 1, 2, 3); return n",
+        "0",
+    );
+    // collectgarbage rejects the 5.4-only options under V51.
+    err_contains(LuaVersion::V51, "return collectgarbage('isrunning')", "invalid option 'isrunning'");
+    // coroutine.running() returns nil in the main coroutine.
+    eq(LuaVersion::V51, "return coroutine.running()", "nil");
+    eq(LuaVersion::V51, "return type(coroutine.isyieldable)", "nil");
+}
+
+#[test]
+fn v51_syntax_rejections() {
+    // goto is NOT reserved in 5.1 — it stays a valid identifier.
+    eq(LuaVersion::V51, "local goto = 5; return goto", "5");
+    // The goto STATEMENT and ::label:: do not parse (goto lexes as a name, so
+    // `goto done` is a name beginning an assignment → "'=' expected").
+    err_contains(LuaVersion::V51, "do goto done; ::done:: end", "'=' expected");
+    err_contains(LuaVersion::V51, "::lbl::", "unexpected symbol near ':'");
+    // 5.3 integer operators and 5.4 attribs do not parse in 5.1.
+    err_contains(LuaVersion::V51, "return 7//2", "unexpected symbol near '/'");
+    err_contains(LuaVersion::V51, "return 6 & 3", "near '&'");
+    err_contains(LuaVersion::V51, "return 1 << 4", "unexpected symbol near '<'");
+    err_contains(LuaVersion::V51, "local x <const> = 1", "unexpected symbol near '<'");
+}
+
+#[test]
+fn v51_escape_leniency() {
+    // 5.1 does NOT recognize \x, \z, \u and does NOT raise on unknown escapes:
+    // it drops the backslash and keeps the next char. \x41 → "x41", \z → "z".
+    eq(LuaVersion::V51, "return '\\x41'", "x41");
+    eq(LuaVersion::V51, "return '\\z'", "z");
+    eq(LuaVersion::V51, "return '\\q'", "q");
+    // Decimal escapes still work; \65 → "A".
+    eq(LuaVersion::V51, "return '\\65'", "A");
+    // A decimal escape > 255 errors (5.1 wording: "escape sequence too large").
+    err_contains(LuaVersion::V51, "return '\\999'", "escape sequence too large");
+}
+
+#[test]
+fn v52_plus_roster_unchanged_by_v51_work() {
+    // Non-regression guards for the SHARED code paths the V51 gates touched:
+    // they must remain version-correct off V51.
+    //  - xpcall forwards extra args in 5.2+ (added in 5.2).
+    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        eq(
+            v,
+            "local n; xpcall(function(...) n = select('#', ...) end, function(e) return e end, 1, 2, 3); return n",
+            "3",
+        );
+    }
+    //  - coroutine.running returns thread + is-main boolean in 5.2+.
+    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        eq(v, "local _, m = coroutine.running(); return tostring(m)", "true");
+    }
+    //  - 5.2 keeps isyieldable absent (added in 5.3); 5.3+ has it.
+    eq(LuaVersion::V52, "return type(coroutine.isyieldable)", "nil");
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        eq(v, "return type(coroutine.isyieldable)", "function");
+    }
+    //  - 5.2 keeps load accepting a string (the reader-only restriction is V51).
+    eq(LuaVersion::V52, "return load('return 1')()", "1");
+    //  - 5.2 collectgarbage still accepts isrunning (added in 5.2).
+    eq(LuaVersion::V52, "return type(collectgarbage('isrunning'))", "boolean");
+    //  - math.log honors a base argument in 5.2+ (float-only: prints "3").
+    eq(LuaVersion::V52, "return math.log(8, 2)", "3");
+    //  - 5.2 keeps table.unpack/pack present (V51 drops them).
+    eq(LuaVersion::V52, "return type(table.unpack)", "function");
+    eq(LuaVersion::V52, "return type(table.pack)", "function");
 }

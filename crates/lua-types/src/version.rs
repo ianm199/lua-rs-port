@@ -57,16 +57,23 @@ impl LuaVersion {
     }
 
     /// Whether this version has a real backend. The modern family (5.3/5.4/5.5)
-    /// and 5.2 (float-only + `_ENV`) are complete. 5.1 is **alpha**: it reuses
-    /// the 5.2 float-only core and the fenv-globals axis is done and faithful —
-    /// `getfenv`/`setfenv` (the per-function environment model, Option B over the
-    /// reused `_ENV` upvalue; see `specs/followup/5.1-fenv.md`) plus the
-    /// metamethod flip that `#t` never consults a table `__len`. The remaining
-    /// 5.1 gaps are separate roster/syntax axes NOT yet landed: `table.unpack`
-    /// should be absent; `math.log10`/`atan2`/`pow`/`mod`, `module`,
-    /// `package.loaders`, and `string.gfind` are missing; and `goto`/labels
-    /// must be rejected (they wrongly parse today). V51 is constructible so the
-    /// fenv work is exercised by CI, but it is not yet a complete 5.1.
+    /// and 5.2 (float-only + `_ENV`) are complete. 5.1 reuses the 5.2 float-only
+    /// core plus three faithful 5.1-specific axes:
+    /// - **fenv globals** — `getfenv`/`setfenv` (the per-function environment
+    ///   model, Option B over the reused `_ENV` upvalue; `specs/followup/5.1-fenv.md`).
+    /// - **metamethod diffs** — `#t` never consults a table `__len`, no
+    ///   `__pairs`/`__ipairs`, no `__gc` on tables (userdata only).
+    /// - **roster + syntax** — `unpack` is global (no `table.unpack`/`pack`/
+    ///   `move`); `loadstring` + reader-only `load`; `table.getn`/`setn`(stub)/
+    ///   `maxn`/`foreach`/`foreachi`; `module`/`package.seeall`/`package.loaders`
+    ///   (no `package.searchers`); `string.gfind`; `math.log` 1-arg +
+    ///   `log10`/`atan2`/`pow`/`mod` (no `math.type`); `gcinfo`; `newproxy`;
+    ///   `xpcall`-no-extra-args; `coroutine.running` nil in main; no `bit32`/
+    ///   `utf8`/`rawlen`; `goto`/labels/`//`/bitwise/`<const>`/`\x`-`\z` escapes
+    ///   rejected (`goto` stays a valid identifier). See
+    ///   `specs/followup/5.1-roster-syntax.md`. Documented divergences: the
+    ///   `math.random` C-`rand()` sequence and `os.execute` raw-status byte are
+    ///   host-dependent (contract matches; exact bytes do not).
     pub fn is_supported(self) -> bool {
         matches!(
             self,
@@ -139,6 +146,7 @@ mod tests {
 //   port_notes:    0
 //   unsafe_blocks: 0
 //   notes:         LuaVersion + NumberModel. Default = V54 preserves the
-//                  existing single-version behavior. V52-V55 complete; V51 is
-//                  alpha (fenv-globals axis done; roster/syntax gaps remain).
+//                  existing single-version behavior. V51-V55 complete; V51
+//                  reuses the 5.2 float-only core plus the fenv-globals,
+//                  metamethod-diff, and roster/syntax axes (all V51-gated).
 // ──────────────────────────────────────────────────────────────────────────

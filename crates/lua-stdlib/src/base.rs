@@ -435,7 +435,22 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
     // The option set is version-gated. 5.4/5.3 expose `setpause`/`setstepmul`;
     // 5.5 removed both and added `param` (lbaselib.c). The version that owns
     // the running state decides which list/mapping applies.
-    let is_v55 = state.global().lua_version == lua_types::LuaVersion::V55;
+    let version = state.global().lua_version;
+    let is_v55 = version == lua_types::LuaVersion::V55;
+    // Lua 5.1's `collectgarbage` accepts only `collect/stop/restart/count/step/
+    // setpause/setstepmul`; the 5.2 `isrunning`/`generational`, the 5.4
+    // `incremental`, and the 5.5 `param` must be rejected with `invalid option`.
+    // Verified against lua5.1.5: `collectgarbage("isrunning")` errors. (5.2 DOES
+    // accept `isrunning`/`generational`, so it stays on OPTS_54.) See
+    // specs/followup/5.1-roster-syntax.md §1.
+    static OPTS_51: &[&[u8]] = &[
+        b"stop", b"restart", b"collect",
+        b"count", b"step", b"setpause", b"setstepmul",
+    ];
+    static OPTS_NUM_51: &[GcOp] = &[
+        GcOp::Stop, GcOp::Restart, GcOp::Collect,
+        GcOp::Count, GcOp::Step, GcOp::SetPause, GcOp::SetStepMul,
+    ];
     static OPTS_54: &[&[u8]] = &[
         b"stop", b"restart", b"collect",
         b"count", b"step", b"setpause", b"setstepmul",
@@ -458,6 +473,8 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
     ];
     let (opts, opts_num): (&[&[u8]], &[GcOp]) = if is_v55 {
         (OPTS_55, OPTS_NUM_55)
+    } else if matches!(version, lua_types::LuaVersion::V51) {
+        (OPTS_51, OPTS_NUM_51)
     } else {
         (OPTS_54, OPTS_NUM_54)
     };
@@ -737,6 +754,28 @@ pub(crate) fn setfenv_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
+/// Set the environment of the Lua closure `level` frames up the running stack
+/// to `new_env`, the internal equivalent of `setfenv(level, new_env)`.
+///
+/// Used by `module` (5.1 `package` library), which sets its caller's
+/// environment to the module table. A non-Lua function (or a closure with no
+/// `_ENV` upvalue) is left unchanged, matching the inert-set behavior of
+/// `setfenv`. See specs/followup/5.1-fenv.md.
+pub(crate) fn set_func_env_at_level(
+    state: &mut LuaState,
+    level: i64,
+    new_env: LuaValue,
+) -> Result<(), LuaError> {
+    let func = fenv_getfunc(state, level)?;
+    if let LuaValue::Function(LuaClosure::Lua(lcl)) = &func {
+        if let Some(idx) = fenv_env_upval_index(lcl) {
+            let uv = state.new_upval_closed(new_env);
+            lcl.set_upval(idx, uv);
+        }
+    }
+    Ok(())
+}
+
 // ── next ──────────────────────────────────────────────────────────────────────
 
 /// Table traversal iterator: given a table and a key, pushes the next key-value
@@ -868,6 +907,13 @@ fn generic_reader(state: &mut LuaState) -> Result<Option<Vec<u8>>, LuaError> {
 /// Loads a Lua chunk from a string or a reader function.
 ///
 pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    // Lua 5.1's `load` takes a *reader function only* — string loading is
+    // `loadstring`'s job. `load("...")` errors with `function expected, got
+    // string`. The string-or-function overload is a 5.2 addition. Verified
+    // against lua5.1.5; see specs/followup/5.1-roster-syntax.md §1.
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        state.check_arg_type(1, LuaType::Function)?;
+    }
     // Determine whether argument 1 is a string (load from buffer) or a
     // function (load from reader).
     let is_string = matches!(state.type_at(1), LuaType::String | LuaType::Number);
@@ -892,6 +938,69 @@ pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
         state.load_with_reader(generic_reader, &chunkname, &mode)?
     };
     load_aux(state, status_ok, env)
+}
+
+/// `loadstring(s [, chunkname])` — Lua 5.1 only.
+///
+/// Loads a string as a Lua chunk. In 5.1 this is the string-loading counterpart
+/// to `load` (which takes a reader function only). The second argument is the
+/// chunk name. Verified against lua5.1.5; see
+/// specs/followup/5.1-roster-syntax.md §1.
+pub(crate) fn loadstring_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    let chunk: Vec<u8> = state.check_arg_string(1)?;
+    let chunkname: Vec<u8> = if state.is_none_or_nil(2) {
+        chunk.clone()
+    } else {
+        state.check_arg_string(2)?
+    };
+    let status_ok = state.load_buffer_ex(&chunk, &chunkname, b"bt")?;
+    load_aux(state, status_ok, 0)
+}
+
+/// `gcinfo()` — Lua 5.1 only. Returns the amount of memory in use by Lua, in
+/// kilobytes. A deprecated holdover of `collectgarbage("count")` that returns
+/// just the integer KB count. Verified against lua5.1.5: returns a number. See
+/// specs/followup/5.1-roster-syntax.md §1.
+pub(crate) fn gcinfo_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    let k = state.gc_count()?;
+    state.push(LuaValue::Int(k as i64));
+    Ok(1)
+}
+
+/// `newproxy([boolean | proxy])` — Lua 5.1 only.
+///
+/// Creates a zero-size userdata (a "proxy"). With no argument or `false`, the
+/// proxy has no metatable. With `true`, it gets a fresh empty metatable (so a
+/// host can install `__gc`/`__len`, the userdata idiom these metamethods need
+/// in 5.1). With another proxy, it shares that proxy's metatable. Mirrors
+/// `luaB_newproxy` in 5.1 `lbaselib.c`; see specs/followup/5.1-roster-syntax.md
+/// §1. The C version validates the proxy argument against a weak table of
+/// metatables it created; this port instead accepts any userdata that carries a
+/// metatable, which is observably equivalent for the proxy idiom.
+pub(crate) fn newproxy_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    lua_vm::api::set_top(state, 1)?;
+    // The new userdata is pushed at stack position 2.
+    state.new_userdata_typed(b"", 0, 0)?;
+    if !state.to_boolean(1) {
+        return Ok(1); // no metatable
+    }
+    if matches!(state.type_at(1), LuaType::Boolean) {
+        // `true`: create and attach a fresh empty metatable.
+        let mt = state.new_table();
+        state.push(LuaValue::Table(mt));
+        state.set_metatable(2)?;
+    } else {
+        // A proxy argument: share its metatable. Validate it is a userdata that
+        // carries one (the C version checks a weak table of valid metatables).
+        let is_proxy =
+            matches!(state.type_at(1), LuaType::UserData) && state.get_metatable(1)?;
+        if !is_proxy {
+            return Err(lua_vm::debug::arg_error_impl(state, 1, b"boolean or proxy expected"));
+        }
+        // get_metatable pushed arg1's metatable on top; attach it to the proxy.
+        state.set_metatable(2)?;
+    }
+    Ok(1)
 }
 
 // ── dofile ────────────────────────────────────────────────────────────────────
@@ -1005,6 +1114,14 @@ fn finish_pcall_k(state: &mut LuaState, status: i32, extra: isize) -> Result<usi
 /// Protected call with a separate error-handler function.
 ///
 pub(crate) fn xpcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    // Lua 5.1's `xpcall(f, h)` does NOT forward extra arguments to `f` — `f` is
+    // always called with zero arguments. The extra-argument forwarding is a 5.2
+    // addition. Verified against lua5.1.5: `xpcall(fn, h, 1,2,3)` calls `fn`
+    // with `select("#",...) == 0`. Drop any args past the handler. See
+    // specs/followup/5.1-roster-syntax.md §1.
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) && state.top() > 2 {
+        lua_vm::api::set_top(state, 2)?;
+    }
     let n = state.top() as i32;
     state.check_arg_type(2, LuaType::Function)?;
     // Stack before rotate: [f, err, a1, …, aN, true, f]
@@ -1106,8 +1223,27 @@ pub fn open(state: &mut LuaState) -> Result<usize, LuaError> {
     ) {
         state.push_c_function(crate::table_lib::unpack)?;
         state.set_field(-2, b"unpack")?;
+    }
+    // `loadstring` aliases `load` in 5.2 (whose `load` accepts a string), but in
+    // 5.1 `load` is reader-only, so `loadstring` is a distinct string-loader.
+    // Both are absent in 5.3+. See specs/followup/5.1-roster-syntax.md §1.
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V52) {
         state.push_c_function(load_fn)?;
         state.set_field(-2, b"loadstring")?;
+    }
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        state.push_c_function(loadstring_fn)?;
+        state.set_field(-2, b"loadstring")?;
+        // `gcinfo()` and `newproxy()` are 5.1 holdovers absent in 5.2+.
+        state.push_c_function(gcinfo_fn)?;
+        state.set_field(-2, b"gcinfo")?;
+        state.push_c_function(newproxy_fn)?;
+        state.set_field(-2, b"newproxy")?;
+        // `rawlen` is a Lua 5.2 addition; it is absent in 5.1. Verified against
+        // lua5.1.5: `type(rawlen)` == "nil". It lives in BASE_FUNCS (registered
+        // for every version), so withhold it under V51.
+        state.push(LuaValue::Nil);
+        state.set_field(-2, b"rawlen")?;
     }
     // Lua 5.1's fenv-based globals model: `getfenv`/`setfenv` read and write a
     // function's environment (its `_ENV` upvalue under the reused modern core)
