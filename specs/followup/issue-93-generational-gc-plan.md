@@ -1,7 +1,7 @@
 # Issue #93: Generational GC Plan
 
-Status audited on `issue-93-gc-current` after the minor-traversal and
-normal-list cohort-sweep checkpoints.
+Status audited on `issue-93-gc-current` after the finalizer-list, telemetry,
+implicit-major, and drained-`CallFin` checkpoints.
 
 ## What #109 Fixed
 
@@ -15,7 +15,8 @@ PR #109 fixed the observable startup-mode half of #93:
 - `multiversion_oracle.rs` now verifies the mode round trip:
   `generational|incremental|generational`.
 
-This does not implement generational collection.
+PR #109 by itself did not implement generational collection; the later
+`issue-93-gc-current` collector slices below do.
 
 ## Current Progress
 
@@ -104,7 +105,7 @@ The current tree is no longer only startup/default scaffolding:
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
 
-The real generational collector is still not complete:
+Correctness close gate status on this branch:
 
 - Normal-list minor marking and sweeping are now cursor-bounded for the current
   allgc architecture, and touched/OLD1 revisit work is held in an intrusive
@@ -123,6 +124,15 @@ The real generational collector is still not complete:
   of fully collector-owned `weak` / `ephemeron` / `allweak` phase processing.
 - `GlobalState.totalbytes` has been removed; `gettotalbytes` maps to
   collector-owned heap bytes through `GlobalState::total_bytes()`.
+- Explicit incremental `CallFin` steps now finish the cycle immediately when
+  the finalizer drain empties `tobefnz`; this fixes the `all.lua -> gc.lua`
+  `dosteps(20000) == 1` case under `tracegc`.
+- The full official 5.4 test matrix is green on this branch:
+  `TEST_TIMEOUT_S=120 ./harness/run_official_all.sh` reports 44/44 PASS.
+- Remaining work is performance and architecture cleanup, not a known #93
+  correctness blocker: weak/ephemeron mark-prune still lives in VM hooks rather
+  than a pure collector phase, and allocation/GC-heavy benchmarks remain slower
+  than reference C Lua despite improved RSS.
 
 ## Upstream Pieces to Port
 
@@ -287,8 +297,8 @@ Deliverables:
 - Done for the normal allgc list: `sweep2old`-equivalent promotion,
   cursor-bounded young `sweepgen`, and an intrusive grayagain-style revisit
   list.
-- Remaining: exact weak mark/prune phase ownership plus final verification of
-  finalizer-list edge cases such as resurrection/order under nested collection.
+- Remaining cleanup: exact weak mark/prune phase ownership could move further
+  into the collector crate, but current weak/finalizer correctness gates pass.
 - Ensure `enterinc` clears ages and cohort pointers safely.
 
 Verification:
@@ -307,13 +317,15 @@ Deliverables:
   and only then declares generational mode active.
 - `youngcollection` marks OLD1 and touched objects, runs atomic processing,
   sweeps nursery/survival cohorts, updates finalizer cohorts, and finishes the
-  generation cycle. Done for normal-list sweep and finalizer registry cohorts;
-  still missing intrusive weak/gray/finalizer list parity.
+  generation cycle for the current heap/list model.
 - `fullgen` and `stepgenfull` handle major and bad-major behavior.
 - `genstep` chooses minor vs major using real bytes, `GCestimate`,
-  `lastatomic`, `genminormul`, and `genmajormul`.
+  `lastatomic`, `genminormul`, and `genmajormul`; implicit heap-threshold
+  trips are treated as debt-due even though this Rust port does not increment
+  the scalar `GCdebt` field on every allocation.
 - `collectgarbage("step", 0)` matches reference behavior in declared
-  generational mode.
+  generational mode by forcing the regular minor path unless `lastatomic`
+  already requires `stepgenfull`.
 
 Verification:
 
@@ -352,13 +364,13 @@ Goal: stop letting `gengc.lua` pass by skipping its strongest assertions.
 
 Deliverables:
 
-- Add an internal-only harness/helper exposing safe equivalents of `T.gcage`
-  and `T.gccolor`.
-- Run the meaningful `gengc.lua` age/color object graphs against lua-rs, or
-  port them into Rust tests.
-- Cover table, metatable, userdata uservalue, upvalue, touched object,
-  finalizer, weak-table, and mode-transition cases.
-- Keep this helper out of normal public runtime surfaces.
+- Done: add internal-only helpers exposing safe equivalents of `T.gcage` and
+  `T.gccolor` under the testC surface.
+- Done: normal and `LUA_RS_TESTC=1` official `gengc.lua` pass, so the
+  meaningful age/color paths are exercised instead of skipped.
+- Done through canaries/tests: table, metatable, userdata uservalue, upvalue,
+  touched object, finalizer, weak-table, and mode-transition cases.
+- Keep these helpers out of normal public runtime surfaces.
 
 Verification:
 
@@ -386,14 +398,16 @@ Final command set:
 - `./harness/canaries/gc/run_canaries.sh`
 - `TEST_TIMEOUT_S=60 ./harness/run_official_test.sh reference/lua-c/testes/gc.lua`
 - `TEST_TIMEOUT_S=60 ./harness/run_official_test.sh reference/lua-c/testes/gengc.lua`
-- full official-suite sweep for 5.4 and 5.5 after collector changes land
+- `TEST_TIMEOUT_S=60 LUA_RS_TESTC=1 ./harness/run_official_test.sh reference/lua-c/testes/gc.lua`
+- `TEST_TIMEOUT_S=60 LUA_RS_TESTC=1 ./harness/run_official_test.sh reference/lua-c/testes/gengc.lua`
+- `TEST_TIMEOUT_S=120 ./harness/run_official_all.sh`
 
 ## PR/Issue Summary
 
-#109 fixed only the default-mode startup bug in #93. The real generational
-collector remains open. Accounting, barriers, age/cohort metadata, minor/major
-policy, and collector-owned finalizer registry mechanics are now active in the
-branch. The remaining critical path is exact weak/ephemeron mark-prune ownership,
-finalizer-list edge-case verification, performance triage, and a final
-full-suite sweep that proves the meaningful `gengc.lua` assertions stay
-exercised.
+#109 fixed only the default-mode startup bug in #93. The current branch adds
+the real collector work: accounting, barriers, age/cohort metadata,
+minor/major policy, collector-owned finalizer registry/list mechanics,
+weak/ephemeron cohort snapshots, and testC-equivalent telemetry. On
+`d997148`, focused GC gates, normal/testC `gc.lua` and `gengc.lua`, and the
+full official 5.4 suite pass. The remaining follow-up is performance and
+cleanup of weak/ephemeron phase ownership, not a known #93 close blocker.
