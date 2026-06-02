@@ -1456,15 +1456,7 @@ fn metatable_has_gc(state: &LuaState, mt: &GcRef<LuaTable>) -> bool {
 }
 
 fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
-    let id = object.identity();
-    let already = state
-        .global()
-        .pending_finalizers
-        .iter()
-        .any(|o| o.identity() == id);
-    if !already {
-        state.global_mut().pending_finalizers.push(object);
-    }
+    state.global_mut().finalizers.push_pending_unique(object);
 }
 
 /// Drain objects already promoted from `pending_finalizers` to
@@ -1502,11 +1494,9 @@ pub fn run_pending_finalizers_inner(
         // `to_be_finalized` was populated by the most recent mark phase.
         // Drain in LIFO order so the most recently dead object runs its `__gc`
         // first, matching C-Lua's `finobj`/`tobefnz` ordering.
-        let target_idx = {
-            let to_fin = &state.global().to_be_finalized;
-            if to_fin.is_empty() { None } else { Some(to_fin.len() - 1) }
-        };
-        let Some(i) = target_idx else { break; };
+        if !state.global().finalizers.has_to_be_finalized() {
+            break;
+        }
         // The Phase-A pre-finalizer weak-value sweep (mirroring C-Lua's
         // `clearbyvalues(g, g->weak, NULL)` from `atomic()`) is no longer
         // needed: under D-2, weak-table sweeping runs inside the post-mark
@@ -1516,7 +1506,11 @@ pub fn run_pending_finalizers_inner(
         // ordering (finalizer-visible state) still requires reachability-
         // based detection of which finalizable tables are about to die — a
         // gap tracked under D-2 ephemeron/finalizer follow-up.
-        let object = state.global_mut().to_be_finalized.swap_remove(i);
+        let object = state
+            .global_mut()
+            .finalizers
+            .pop_to_be_finalized()
+            .expect("to-be-finalized checked non-empty");
         let mt = object.metatable();
         let gc_fn = match mt {
             Some(ref m) => {
@@ -1631,7 +1625,7 @@ pub fn run_pending_finalizers_inner(
 /// we — the freshly-registered entries are left in `pending_finalizers` and
 /// simply dropped with the state.
 pub fn run_close_finalizers(state: &mut LuaState) {
-    let pending: Vec<FinalizerObject> = std::mem::take(&mut state.global_mut().pending_finalizers);
+    let pending: Vec<FinalizerObject> = state.global_mut().finalizers.take_pending();
     if pending.is_empty() {
         return;
     }
@@ -1640,7 +1634,7 @@ pub fn run_close_finalizers(state: &mut LuaState) {
         let mut g = state.global_mut();
         for object in pending {
             if seen.insert(object.identity()) {
-                g.to_be_finalized.push(object);
+                g.finalizers.push_to_be_finalized(object);
             }
         }
     }

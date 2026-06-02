@@ -1091,9 +1091,9 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     ) = {
         let g = state.global();
         let (pendingfinyoung, pendingfinold) =
-            testc_finalizer_age_counts(&g.pending_finalizers);
+            testc_finalizer_age_counts(g.finalizers.pending());
         let (tobefinyoung, tobefinold) =
-            testc_finalizer_age_counts(&g.to_be_finalized);
+            testc_finalizer_age_counts(g.finalizers.to_be_finalized());
         (
             if g.is_gen_mode() { "generational" } else { "incremental" },
             String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
@@ -1103,8 +1103,8 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             g.heap.allgc_count(),
             g.heap.collections(),
             g.weak_tables_registry.len(),
-            g.pending_finalizers.len(),
-            g.to_be_finalized.len(),
+            g.finalizers.pending_len(),
+            g.finalizers.to_be_finalized_len(),
             pendingfinyoung,
             pendingfinold,
             tobefinyoung,

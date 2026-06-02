@@ -153,6 +153,61 @@ impl FinalizerObject {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct FinalizerRegistry {
+    pending: Vec<FinalizerObject>,
+    to_be_finalized: Vec<FinalizerObject>,
+}
+
+impl FinalizerRegistry {
+    pub fn pending(&self) -> &[FinalizerObject] {
+        &self.pending
+    }
+
+    pub fn to_be_finalized(&self) -> &[FinalizerObject] {
+        &self.to_be_finalized
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn to_be_finalized_len(&self) -> usize {
+        self.to_be_finalized.len()
+    }
+
+    pub fn has_to_be_finalized(&self) -> bool {
+        !self.to_be_finalized.is_empty()
+    }
+
+    pub fn push_pending_unique(&mut self, object: FinalizerObject) {
+        let id = object.identity();
+        if !self.pending.iter().any(|o| o.identity() == id) {
+            self.pending.push(object);
+        }
+    }
+
+    pub fn take_pending(&mut self) -> Vec<FinalizerObject> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub fn retain_pending_not_in(&mut self, ids: &std::collections::HashSet<usize>) {
+        self.pending.retain(|object| !ids.contains(&object.identity()));
+    }
+
+    pub fn push_to_be_finalized(&mut self, object: FinalizerObject) {
+        self.to_be_finalized.push(object);
+    }
+
+    pub fn extend_to_be_finalized(&mut self, objects: Vec<FinalizerObject>) {
+        self.to_be_finalized.extend(objects);
+    }
+
+    pub fn pop_to_be_finalized(&mut self) -> Option<FinalizerObject> {
+        self.to_be_finalized.pop()
+    }
+}
+
 // ─── Constants (from macros.tsv) ──────────────────────────────────────────────
 
 // macros.tsv: EXTRA_STACK → const EXTRA_STACK: u32 = 5
@@ -1289,17 +1344,9 @@ pub struct GlobalState {
     /// Lua-style generational lists land.
     pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
 
-    /// Finalizable tables and userdata whose metatable carried `__gc` when
-    /// installed. This mirrors C-Lua's `finobj` list: entries are deliberately
-    /// not traced as roots, so a mark phase can detect when an object is
-    /// reachable only through the finalizer registry.
-    pub pending_finalizers: Vec<FinalizerObject>,
-
-    /// Finalizable objects promoted by the most recent atomic mark phase
-    /// because they were otherwise unreachable. This mirrors C-Lua's
-    /// `tobefnz` list and is traced as a temporary root so the object survives
-    /// until its `__gc` call runs.
-    pub to_be_finalized: Vec<FinalizerObject>,
+    /// Finalizable tables/userdata split into pending `finobj`-like entries
+    /// and `tobefnz`-like entries waiting for their `__gc` call.
+    pub finalizers: FinalizerRegistry,
 
     /// Error raised by a `__gc` finalizer during an explicit `collectgarbage`
     /// on 5.2 / 5.3, parked here for the `collectgarbage` wrapper to re-raise.
@@ -1313,10 +1360,10 @@ pub struct GlobalState {
     /// paths never do (matching `GCTM(L, 0)` and the dispatch-loop swallow).
     pub gc_finalizer_error: Option<LuaValue>,
 
-    // Phase-D NOTE: tobefnz + fixedgc removed (dead since Phase A — see
-    // sibling note above re allgc et al). Pending finalizers live in
-    // `pending_finalizers` above; fixed objects live in heap.allgc with the
-    // GC's own `fixed` bit.
+    // Phase-D NOTE: fixedgc removed (dead since Phase A — see sibling note
+    // above re allgc et al). Pending/to-be-finalized objects live in
+    // `finalizers` above; fixed objects live in heap.allgc with the GC's own
+    // `fixed` bit.
 
     // Generational cohort markers — Phase D only
     // types.tsv: global_State.survival/old1/reallyold/firstold1/finobjsur/finobjold1/finobjrold
@@ -3274,7 +3321,7 @@ impl LuaState {
             return None;
         }
         let should_collect = g.heap.would_collect();
-        let has_finalizers = !g.to_be_finalized.is_empty();
+        let has_finalizers = g.finalizers.has_to_be_finalized();
         if should_collect || has_finalizers {
             Some((should_collect, has_finalizers))
         } else {
@@ -3287,7 +3334,7 @@ impl LuaState {
         if self.gc_check_needed {
             return true;
         }
-        if !self.global().to_be_finalized.is_empty() {
+        if self.global().finalizers.has_to_be_finalized() {
             self.gc_check_needed = true;
             return true;
         }
@@ -3320,7 +3367,7 @@ impl LuaState {
         }
         let should_keep_checking = {
             let g = self.global();
-            g.heap.would_collect() || !g.to_be_finalized.is_empty()
+            g.heap.would_collect() || g.finalizers.has_to_be_finalized()
         };
         self.gc_check_needed = should_keep_checking;
     }
@@ -3345,7 +3392,7 @@ impl LuaState {
         }
         let should_keep_checking = {
             let g = self.global();
-            g.heap.would_collect() || !g.to_be_finalized.is_empty()
+            g.heap.would_collect() || g.finalizers.has_to_be_finalized()
         };
         self.gc_check_needed = should_keep_checking;
     }
@@ -3871,7 +3918,7 @@ impl<'a> GcHandle<'a> {
         // alive by the finalizer registry."
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.pending_finalizers.clone()
+            g.finalizers.pending().to_vec()
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4000,9 +4047,8 @@ impl<'a> GcHandle<'a> {
         // Move newly-unreachable finalizables from `pending_finalizers` to
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
-        g.pending_finalizers
-            .retain(|t| !promote_ids.contains(&t.identity()));
-        g.to_be_finalized.extend(promote);
+        g.finalizers.retain_pending_not_in(&promote_ids);
+        g.finalizers.extend_to_be_finalized(promote);
     }
 
     /// Run one generational collection step.
@@ -4097,7 +4143,7 @@ impl<'a> GcHandle<'a> {
 
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.pending_finalizers.clone()
+            g.finalizers.pending().to_vec()
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4221,9 +4267,8 @@ impl<'a> GcHandle<'a> {
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals
                 .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
-            g.pending_finalizers
-                .retain(|t| !promote_ids.contains(&t.identity()));
-            g.to_be_finalized.extend(promote);
+            g.finalizers.retain_pending_not_in(&promote_ids);
+            g.finalizers.extend_to_be_finalized(promote);
         }
 
         matches!(outcome, StepOutcome::Paused)
@@ -5090,8 +5135,7 @@ pub fn new_state() -> Option<LuaState> {
         gc55_params: [20, 50, 68, 250, 200, 9600],
         sweepgc_cursor: 0,
         weak_tables_registry: Vec::new(),
-        pending_finalizers: Vec::new(),
-        to_be_finalized: Vec::new(),
+        finalizers: FinalizerRegistry::default(),
         gc_finalizer_error: None,
         twups: Vec::new(),
         panic: None,
