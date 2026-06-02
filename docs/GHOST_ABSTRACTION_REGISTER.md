@@ -152,29 +152,26 @@ Reference C macros: `keepinvariant(g)`, `issweepphase(g)` in `lgc.h`.
 ```yaml
 name: gcweak-always-some
 files:
-  - crates/lua-types/src/gc.rs:85
-  - crates/lua-types/src/gc.rs:90
-  - crates/lua-types/src/gc.rs:95
+  - crates/lua-types/src/gc.rs
+  - crates/lua-gc/src/heap.rs
 patterns:
   - "pub fn upgrade.*-> Option"
-  - "Phase D-1 placeholder"
-  - "always returns 1 .no"
-  - "no-op wrapper: .upgrade. always returns"
-canonical_owner: crates/lua-types/src/gc.rs:85
-why: Weak references are stubbed as strong references; GcWeak::upgrade() always returns Some, so dead objects are never observed as collected.
-retirement_trigger: Real weak ref semantics land in Phase D-2; upgrade returns None after GC collects the target.
-test_gate: A weak-table test that asserts an unreferenced entry is collected (returns nil after collectgarbage()).
+  - "contains_allocation"
+canonical_owner: crates/lua-types/src/gc.rs
+why: Retired. Heap-tracked GcWeak handles remember their heap, target identity, and heap allocation token; upgrade returns None after sweep removes that exact allocation.
+retirement_trigger: Met by heap identity/token checks in GcWeak::upgrade.
+test_gate: lua-types weak upgrade test plus weak-table canaries.
 priority: 4
-status: active
+status: retired
 ```
 
-`GcWeak<T>` is currently a thin newtype wrapper around `Gc<T>` — the
-pointer it holds will never be null. `upgrade()` thus always returns
-`Some(...)` and `strong_count()` always returns `1`. This means any code
-that calls `upgrade()` and tests for `None` to detect collection will never
-see the `None` path. The `weak_tables_registry` in `GlobalState` uses these
-weak handles; if `upgrade()` never fails, tables registered there are never
-pruned from the registry even after all user references drop.
+`GcWeak<T>` now stores the target identity, heap allocation token, and the
+heap that was active when the handle was created. `upgrade()` asks that heap
+whether the same identity/token pair is still live; once sweep removes the
+box, upgrade returns `None` without dereferencing the freed pointer. The
+token prevents allocator address reuse from reviving a stale weak handle.
+Legacy uncollected boxes still upgrade forever, matching their
+process-lifetime allocation model.
 
 Reference C source: `lstate.h` weak-pointer handling, `lgc.c` weak table
 clearing in `clearbykeys`.
@@ -542,16 +539,12 @@ a post-mark hook analogous to the finalizer hook that removes dead thread
 registry entries. Estimated cost: 1–2 agent sessions; the shape is already
 visible in the finalizer post-mark hook at line 2507 of `state.rs`.
 
-**4. GcWeak Always Returns Some (gcweak-always-some)**
+**4. GcWeak Always Returns Some (gcweak-always-some) — retired**
 
-Defer until a concrete test exposes the failure. Current programs do not
-exercise weak-table semantics deeply enough to fail on this ghost. Retirement:
-implement true weak-pointer semantics in Phase D-2; `Gc<T>` gets a
-reference-count field and `GcWeak` stores an unowned pointer that the sweep
-zeroes. `upgrade()` then checks the count. The `weak_tables_registry` and
-`interned-string-strong-root-override` ghosts are both resolved together
-with this work. Estimated cost: 4–6 agent sessions; this is Phase D-2 scope
-and depends on the GC state machine (item 2 above).
+Heap-tracked `GcWeak` handles now upgrade only while their target identity and
+heap allocation token are still live on the owning heap. This retires the
+always-`Some` behavior for weak-table registry entries. The separate
+`interned-string-strong-root-override` ghost remains active.
 
 **5. Extension Trait Shim Layer (extension-trait-shim-layer)**
 

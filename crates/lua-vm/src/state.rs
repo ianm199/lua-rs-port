@@ -1267,14 +1267,14 @@ pub struct GlobalState {
     // sweepgc_cursor stayed because non-list bookkeeping kept it.
     pub sweepgc_cursor: usize,
 
-    /// Phase-B cross-table weak-sweep registry.
+    /// Cross-table weak-sweep registry.
     ///
-    /// `lua_types::value::sweep_weak_tables` iterates this list at
-    /// `collectgarbage("collect")` time to clear entries whose weak target
-    /// is held only by other weak slots. Holds `Weak<LuaTable>` so the
-    /// registry itself does not pin tables that the user has dropped.
-    /// Replaced by the proper `weak` / `ephemeron` / `allweak` lists when
-    /// Phase D's incremental sweep lands.
+    /// Heap collection snapshots this list before mark, then the post-mark
+    /// weak-table pass clears entries whose weak target is held only by other
+    /// weak slots. The registry holds `GcWeak<LuaTable>` so it does not pin
+    /// dead weak tables after sweep removes their heap allocation token.
+    /// Replaced by proper `weak` / `ephemeron` / `allweak` cohorts once the
+    /// Lua-style generational lists land.
     pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
 
     /// Finalizable tables and userdata whose metatable carried `__gc` when
@@ -3862,10 +3862,8 @@ impl<'a> GcHandle<'a> {
         }
 
         // After collect, drop weak-table-registry entries whose target was
-        // swept. Without this filter the registry leaks one dangling
-        // `GcWeak<LuaTable>` per dead weak table; the next collect would
-        // upgrade those handles (current placeholder GcWeak always returns
-        // Some) and the prune walk would deref freed memory.
+        // swept. This keeps the registry bounded and avoids retaining weak
+        // handles whose target can no longer upgrade.
         let alive_set = alive_ids.into_inner();
         let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
         let promote_ids: std::collections::HashSet<usize> =
@@ -3873,7 +3871,7 @@ impl<'a> GcHandle<'a> {
         let alive_thread_ids = alive_thread_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
         g.weak_tables_registry
-            .retain(|w| alive_set.contains(&w.0.identity()));
+            .retain(|w| alive_set.contains(&w.identity()));
         let main_thread_id = g.main_thread_id;
         g.threads.retain(|id, _| alive_thread_ids.contains(id));
         g.cross_thread_upvals
@@ -4057,7 +4055,7 @@ impl<'a> GcHandle<'a> {
             let alive_thread_ids = alive_thread_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
             g.weak_tables_registry
-                .retain(|w| alive_set.contains(&w.0.identity()));
+                .retain(|w| alive_set.contains(&w.identity()));
             let main_thread_id = g.main_thread_id;
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals

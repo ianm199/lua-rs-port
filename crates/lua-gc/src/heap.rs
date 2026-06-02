@@ -38,6 +38,7 @@
 //! `state.heap().allocate(value)` so the new box joins the allgc chain.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -107,6 +108,27 @@ pub fn with_current_heap<R>(f: impl for<'a> FnOnce(Option<&'a Heap>) -> R) -> R 
         let heap = ptr.map(|ptr| unsafe { &*ptr.as_ptr() });
         f(heap)
     })
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct HeapRef {
+    ptr: NonNull<Heap>,
+}
+
+impl HeapRef {
+    pub fn from_heap(heap: &Heap) -> Self {
+        HeapRef {
+            ptr: NonNull::from(heap),
+        }
+    }
+
+    pub fn contains_allocation(self, identity: usize, token: usize) -> bool {
+        // SAFETY: `HeapRef` is created only from a live `&Heap`. Runtime-owned
+        // weak handles store it inside `GlobalState`, whose heap field outlives
+        // those handles. The method only traverses heap metadata and never
+        // dereferences the weak target pointer.
+        unsafe { self.ptr.as_ref() }.contains_allocation(identity, token)
+    }
 }
 
 /// A traced color in the tri-color invariant.
@@ -594,6 +616,12 @@ pub struct Heap {
     head: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// Total bytes allocated (sum of header sizes; rough).
     bytes: Cell<usize>,
+    /// Heap-owned allocation tokens keyed by box address. Weak handles store
+    /// these tokens so address reuse after sweep cannot resurrect a stale weak
+    /// target.
+    allocation_tokens: RefCell<HashMap<usize, usize>>,
+    /// Next non-zero token for a collected allocation.
+    next_allocation_token: Cell<usize>,
     /// Threshold above which `step` triggers a collection.
     threshold: Cell<usize>,
     /// Multiplier on bytes_used to set next threshold after collection.
@@ -626,6 +654,8 @@ impl Heap {
         Self {
             head: Cell::new(None),
             bytes: Cell::new(0),
+            allocation_tokens: RefCell::new(HashMap::new()),
+            next_allocation_token: Cell::new(1),
             threshold: Cell::new(64 * 1024), // initial threshold: 64 KB
             pause_multiplier: Cell::new(200), // 200% = collect when bytes 2x threshold
             state: Cell::new(GcState::Pause),
@@ -659,6 +689,11 @@ impl Heap {
         let ptr: NonNull<GcBox<T>> =
             NonNull::new(raw).expect("Box::into_raw is non-null");
         let dyn_ptr: NonNull<GcBox<dyn Trace>> = ptr;
+        let identity = ptr.as_ptr() as *const () as usize;
+        let token = self.next_token();
+        self.allocation_tokens
+            .borrow_mut()
+            .insert(identity, token);
         self.head.set(Some(dyn_ptr));
         self.bytes.set(self.bytes.get() + size);
         Gc {
@@ -713,6 +748,13 @@ impl Heap {
         self.collections.get()
     }
 
+    fn next_token(&self) -> usize {
+        let token = self.next_allocation_token.get().max(1);
+        let next = token.checked_add(1).unwrap_or(1).max(1);
+        self.next_allocation_token.set(next);
+        token
+    }
+
     fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
         let mut cursor = self.head.get();
         while let Some(ptr) = cursor {
@@ -724,6 +766,22 @@ impl Heap {
 
     fn header_from_ptr<'a>(&'a self, ptr: NonNull<GcBox<dyn Trace>>) -> &'a GcHeader {
         unsafe { &(*ptr.as_ptr()).header }
+    }
+
+    /// Return the current heap token for a live allocation identity.
+    ///
+    /// Weak handles use this before sweep to capture their target allocation
+    /// without dereferencing stale pointers later.
+    pub fn allocation_token(&self, identity: usize) -> Option<usize> {
+        self.allocation_tokens.borrow().get(&identity).copied()
+    }
+
+    /// Return true when `identity` still names the same heap allocation.
+    ///
+    /// The token check prevents allocator address reuse from making a stale
+    /// weak handle look live again.
+    pub fn contains_allocation(&self, identity: usize, token: usize) -> bool {
+        self.allocation_token(identity) == Some(token)
     }
 
     /// Forward write barrier: invoked when `parent` (already-traced black
@@ -1074,6 +1132,9 @@ impl Heap {
                 Color::White => {
                     prev_cell.set(next);
                     freed_bytes += header.size.get();
+                    self.allocation_tokens
+                        .borrow_mut()
+                        .remove(&(ptr.as_ptr() as *const () as usize));
                     unsafe {
                         let _ = Box::from_raw(ptr.as_ptr());
                     }
@@ -1106,6 +1167,9 @@ impl Heap {
             if header.color.get() == Color::White && !header.age.get().is_old() {
                 prev_cell.set(next);
                 freed_bytes += header.size.get();
+                self.allocation_tokens
+                    .borrow_mut()
+                    .remove(&(ptr.as_ptr() as *const () as usize));
                 unsafe {
                     let _ = Box::from_raw(ptr.as_ptr());
                 }
@@ -1172,12 +1236,14 @@ impl Heap {
         self.state.set(GcState::Pause);
         let mut cursor = self.head.get();
         self.head.set(None);
+        self.allocation_tokens.borrow_mut().clear();
         while let Some(ptr) = cursor {
             // SAFETY: same chain invariant as full_collect's sweep.
-            let next = unsafe { (*ptr.as_ptr()).header.next.get() };
-            unsafe {
+            let next = unsafe {
+                let next = (*ptr.as_ptr()).header.next.get();
                 let _ = Box::from_raw(ptr.as_ptr());
-            }
+                next
+            };
             cursor = next;
         }
         self.bytes.set(0);
@@ -1317,6 +1383,27 @@ mod tests {
         });
         assert_eq!(obj.age(), GcAge::New);
         assert_eq!(obj.color(), Color::White);
+    }
+
+    #[test]
+    fn allocation_tokens_track_exact_live_box() {
+        let heap = Heap::new();
+        heap.unpause();
+        let obj = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let id = obj.identity();
+        let token = heap
+            .allocation_token(id)
+            .expect("heap allocation should get a token");
+
+        assert!(heap.contains_allocation(id, token));
+        assert!(!heap.contains_allocation(id, token + 1));
+
+        heap.full_collect(&OneRoot(None));
+        assert_eq!(heap.allocation_token(id), None);
+        assert!(!heap.contains_allocation(id, token));
     }
 
     #[test]
