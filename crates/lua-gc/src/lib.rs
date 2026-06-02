@@ -10,8 +10,9 @@
 pub mod heap;
 
 pub use heap::{
-    with_current_heap, Color, FinalizerEntry, FinalizerRegistry, Gc, GcAge, GcBox, GcHeader,
-    GcState, Heap, HeapGuard, HeapRef, Marker, StepBudget, StepOutcome, Trace,
+    with_current_heap, Color, FinalizerEntry, FinalizerRegistry, FinalizerRegistryStats, Gc,
+    GcAge, GcBox, GcHeader, GcState, Heap, HeapGuard, HeapRef, Marker, StepBudget, StepOutcome,
+    Trace,
 };
 
 // ──────────────────────────────────────────────────────────────────────────

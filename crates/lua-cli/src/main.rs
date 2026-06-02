@@ -21,8 +21,7 @@ use lua_types::gc::GcRef;
 use lua_types::upval::UpVal;
 use lua_types::value::LuaValue;
 use lua_vm::state::{
-    new_state, DynLibId, DynamicSymbol, FinalizerObject, GcKind, LuaState, OsExecuteReason,
-    OsExecuteResult,
+    new_state, DynLibId, DynamicSymbol, GcKind, LuaState, OsExecuteReason, OsExecuteResult,
 };
 
 mod interp;
@@ -1060,16 +1059,6 @@ fn testc_checkmemory(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(0)
 }
 
-fn testc_finalizer_age_counts(objects: &[FinalizerObject]) -> (usize, usize) {
-    objects.iter().fold((0usize, 0usize), |(young, old), object| {
-        if object.age().is_old() {
-            (young, old + 1)
-        } else {
-            (young + 1, old)
-        }
-    })
-}
-
 fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     let (
         mode,
@@ -1090,10 +1079,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         sweepstats,
     ) = {
         let g = state.global();
-        let (pendingfinyoung, pendingfinold) =
-            testc_finalizer_age_counts(g.finalizers.pending());
-        let (tobefinyoung, tobefinold) =
-            testc_finalizer_age_counts(g.finalizers.to_be_finalized());
+        let finstats = g.finalizers.stats();
         (
             if g.is_gen_mode() { "generational" } else { "incremental" },
             String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
@@ -1105,10 +1091,10 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             g.weak_tables_registry.len(),
             g.finalizers.pending_len(),
             g.finalizers.to_be_finalized_len(),
-            pendingfinyoung,
-            pendingfinold,
-            tobefinyoung,
-            tobefinold,
+            finstats.pending_young,
+            finstats.pending_old,
+            finstats.to_be_finalized_young,
+            finstats.to_be_finalized_old,
             g.heap.last_mark_stats(),
             g.heap.last_sweep_stats(),
         )

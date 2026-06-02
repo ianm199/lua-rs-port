@@ -202,6 +202,14 @@ pub struct FinalizerRegistry<T: FinalizerEntry> {
     to_be_finalized: Vec<T>,
 }
 
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct FinalizerRegistryStats {
+    pub pending_young: usize,
+    pub pending_old: usize,
+    pub to_be_finalized_young: usize,
+    pub to_be_finalized_old: usize,
+}
+
 impl<T: FinalizerEntry> Default for FinalizerRegistry<T> {
     fn default() -> Self {
         Self {
@@ -234,6 +242,27 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
 
     pub fn has_to_be_finalized(&self) -> bool {
         !self.to_be_finalized.is_empty()
+    }
+
+    pub fn stats(&self) -> FinalizerRegistryStats {
+        fn count_by_age<T: FinalizerEntry>(objects: &[T]) -> (usize, usize) {
+            objects.iter().fold((0usize, 0usize), |(young, old), object| {
+                if object.age().is_old() {
+                    (young, old + 1)
+                } else {
+                    (young + 1, old)
+                }
+            })
+        }
+        let (pending_young, pending_old) = count_by_age(&self.pending);
+        let (to_be_finalized_young, to_be_finalized_old) =
+            count_by_age(&self.to_be_finalized);
+        FinalizerRegistryStats {
+            pending_young,
+            pending_old,
+            to_be_finalized_young,
+            to_be_finalized_old,
+        }
     }
 
     pub fn push_pending_unique(&mut self, object: T) {
