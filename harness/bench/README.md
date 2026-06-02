@@ -16,6 +16,7 @@ workload is the only fair comparison.
 harness/bench/
 ├── README.md            <- this file
 ├── compare.sh           <- main ledgered bench: run all workloads vs reference
+├── compare_bins.sh      <- direct A/B bench for two arbitrary Lua binaries
 ├── gc-profile.sh        <- end-of-run collector counters
 ├── opcode-profile.sh    <- feature-gated opcode execution counters
 ├── profile-inventory.sh <- repo + host profiler/tool availability
@@ -90,6 +91,27 @@ To rebuild the dashboard after a bench run:
 python3 harness/bench/history.py        # writes harness/bench/history/index.html
 python3 harness/bench/history.py --open # also opens it in your browser
 ```
+
+For direct Rust-vs-Rust packet validation, compare two built binaries without
+touching the evidence ledger:
+
+```bash
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-base \
+  --b target/release/lua-rs \
+  --label-a base \
+  --label-b candidate \
+  --runs 20 \
+  --workloads gc_pressure,binarytrees
+```
+
+Output:
+- `harness/bench/results/<UTC>-<sha>-bin-ab.tsv`
+- `harness/bench/results/<UTC>-<sha>-bin-ab.json`
+
+This runner checks that both binaries produce byte-identical workload output
+and reports `candidate_over_base` wall/RSS ratios. Use it for local packet
+evidence; use `compare.sh` for reference-C ratios and dashboard history.
 
 ## How to read the numbers
 
@@ -234,13 +256,15 @@ unsafe representation ceilings.
 4. `gc-profile.sh` covers collector counters and start/end cadence deltas. It
    does not provide allocation stack attribution or cumulative per-phase
    timing.
-5. `compare.sh` appends ledger rows directly. Typed bench runner entries in
+5. `compare_bins.sh` covers direct Rust-vs-Rust A/B checks for small packets
+   without appending ledger rows.
+6. `compare.sh` appends ledger rows directly. Typed bench runner entries in
    `harness/runners.toml` are still useful future cleanup, but not required
    for evidence-backed perf work.
-6. `profile-inventory.sh` and `value-layout.sh` are telemetry probes. They do
+7. `profile-inventory.sh` and `value-layout.sh` are telemetry probes. They do
    not write ledger rows and should be cited as design evidence, not speed
    claims.
-7. Backfill remains future work for answering "when did this regress?" across
+8. Backfill remains future work for answering "when did this regress?" across
    older commits.
-8. Keep `results/` and `profiles/` generated artifacts ignored unless a run is
+9. Keep `results/` and `profiles/` generated artifacts ignored unless a run is
    deliberately promoted into committed evidence.
