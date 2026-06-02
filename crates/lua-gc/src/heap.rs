@@ -2,21 +2,20 @@
 //!
 //! This module is the production GC for the Lua runtime, replacing the
 //! `Rc<T>`-backed `GcRef<T>` placeholder used through Phase B/C. It is a
-//! single-threaded, stop-the-world, precise tracing collector with a
-//! forward write barrier. Incremental marking is a future enhancement;
-//! the current implementation does a full collect each time `step` decides
-//! it's time.
+//! single-threaded precise tracing collector with incremental and
+//! generational paths plus forward/backward write barriers.
 //!
 //! # Vocabulary
 //!
 //! - **Gc<T>**: a pointer-sized handle. `Copy + Clone`. Replaces `GcRef<T>`.
 //! - **GcBox<T>**: the heap allocation; contains a header and the value.
 //! - **GcHeader**: per-object metadata (color, age, finalized flag, intrusive
-//!   `next` pointer for the allgc list, and grayagain revisit link).
+//!   `next` pointer for exactly one heap owner list, and grayagain revisit link).
 //! - **Trace**: trait every GC-rooted type implements. The `trace` method
 //!   walks all `Gc<_>` fields and calls `Marker::mark` on each.
 //! - **Marker**: passed to `trace`; carries the gray queue.
-//! - **Heap**: owns the allgc list head, byte counters, GC state machine.
+//! - **Heap**: owns the allgc/finobj/tobefnz list heads, byte counters, and
+//!   GC state machine.
 //!
 //! # Safety model
 //!
@@ -24,8 +23,9 @@
 //! The invariants are:
 //!
 //! 1. Every `Gc<T>` points to a valid, allocated, not-yet-swept `GcBox<T>`.
-//! 2. The allgc intrusive list is consistent: traversing `header.next` from
-//!    `Heap.head` reaches every live `GcBox` exactly once.
+//! 2. The intrusive heap lists are consistent: traversing `header.next` from
+//!    `Heap.head`, `Heap.finobj`, and `Heap.tobefnz` reaches every live
+//!    heap-owned `GcBox` exactly once.
 //! 3. After `Heap::full_collect(roots)`, every `Gc<T>` reachable from `roots`
 //!    is still valid; unreachable boxes are dropped and deallocated.
 //!
@@ -35,7 +35,7 @@
 //! `Gc<T>`). Legacy call sites like `GcRef::new(value)` route through
 //! `Gc::new_uncollected` which allocates a `GcBox` but does NOT register it
 //! in any heap. Phase D-1b agent work converts these to
-//! `state.heap().allocate(value)` so the new box joins the allgc chain.
+//! `state.heap().allocate(value)` so the new box joins the heap owner lists.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -193,6 +193,9 @@ impl GcAge {
 /// finalizer-list bookkeeping.
 pub trait FinalizerEntry: Clone {
     fn identity(&self) -> usize;
+    fn heap_ptr(&self) -> Option<NonNull<GcBox<dyn Trace>>> {
+        None
+    }
     fn age(&self) -> GcAge;
     fn is_finalized(&self) -> bool;
     fn set_finalized(&self, finalized: bool);
@@ -485,15 +488,18 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
         }
     }
 
-    pub fn push_pending_unique(&mut self, object: T) {
+    pub fn push_pending_unique(&mut self, object: T) -> bool {
         if object.is_finalized() {
-            return;
+            return false;
         }
         let id = object.identity();
         if !self.pending.iter().any(|o| o.identity() == id) {
             object.set_finalized(true);
             self.pending.push(object);
             self.debug_assert_pending_cohorts();
+            true
+        } else {
+            false
         }
     }
 
@@ -540,20 +546,22 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
         self.to_be_finalized.push(object);
     }
 
-    fn extend_to_be_finalized(&mut self, objects: Vec<T>) {
-        for object in objects {
+    fn extend_to_be_finalized(&mut self, objects: Vec<T>) -> Vec<T> {
+        let drain_order: Vec<T> = objects.into_iter().rev().collect();
+        for object in drain_order.iter().cloned() {
             self.push_to_be_finalized(object);
         }
+        drain_order
     }
 
-    pub fn promote_pending_to_finalized(&mut self, objects: Vec<T>) {
+    pub fn promote_pending_to_finalized(&mut self, objects: Vec<T>) -> Vec<T> {
         if objects.is_empty() {
-            return;
+            return Vec::new();
         }
         let ids: std::collections::HashSet<usize> =
             objects.iter().map(|object| object.identity()).collect();
         self.retain_pending_not_in(&ids);
-        self.extend_to_be_finalized(objects);
+        self.extend_to_be_finalized(objects)
     }
 
     pub fn promote_all_pending_to_old(&mut self) {
@@ -577,7 +585,11 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
     }
 
     pub fn pop_to_be_finalized(&mut self) -> Option<T> {
-        let object = self.to_be_finalized.pop();
+        let object = if self.to_be_finalized.is_empty() {
+            None
+        } else {
+            Some(self.to_be_finalized.remove(0))
+        };
         if let Some(ref object) = object {
             object.set_finalized(false);
         }
@@ -594,7 +606,7 @@ pub struct GcHeader {
     /// pending/to-be-finalized list. Cleared when the object is popped for its
     /// `__gc` call.
     finalized: Cell<bool>,
-    /// True iff this box is linked into a heap's allgc chain, so it will be
+    /// True iff this box is linked into one of a heap's owner lists, so it will be
     /// swept and its `size` refunded. `new_uncollected` boxes leave this
     /// false: they never join a chain, are never swept, and so must never
     /// have buffer bytes charged against the pacer (the charge would never be
@@ -603,7 +615,7 @@ pub struct GcHeader {
     /// Kept separate from `size`: `collected` controls whether buffer charges
     /// are refundable; `size` remains the exact byte count refunded by sweep.
     collected: Cell<bool>,
-    /// Intrusive link into the heap's allgc chain.
+    /// Intrusive link into exactly one heap owner list.
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// Intrusive link into the collector's grayagain-style revisit list.
     gray_next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
@@ -692,7 +704,7 @@ impl<T: Trace + 'static> Gc<T> {
     /// Allocate a `GcBox<T>` outside any heap registry. Used by legacy
     /// `GcRef::new` call sites until Phase D-1b migrates them. The returned
     /// `Gc<T>` is reachable only through the caller's own retention path;
-    /// without joining a heap's allgc chain, it will never be swept (so
+    /// without joining a heap owner list, it will never be swept (so
     /// effectively leaks until process exit — same as Rc behavior).
     pub fn new_uncollected(value: T) -> Self {
         let size = std::mem::size_of::<T>();
@@ -704,6 +716,11 @@ impl<T: Trace + 'static> Gc<T> {
             ptr: NonNull::new(Box::into_raw(boxed)).expect("Box::into_raw is non-null"),
             _marker: PhantomData,
         }
+    }
+
+    /// Erased heap-list pointer for collector-owned intrusive bookkeeping.
+    pub fn as_trace_ptr(self) -> NonNull<GcBox<dyn Trace>> {
+        self.ptr
     }
 }
 
@@ -763,7 +780,7 @@ impl<T: ?Sized> Gc<T> {
     /// object's owned heap buffers against the pacer, keeping `header.size`
     /// as the single source of truth for what sweep will refund.
     ///
-    /// No-op when `delta == 0` or when this box is not on a heap allgc chain
+    /// No-op when `delta == 0` or when this box is not on a heap owner list
     /// (`collected == false`): an uncollected box is never swept, so charging
     /// it would permanently inflate the byte counter. On the collected path,
     /// `header.size` and the heap's byte counter move together, so after sweep
@@ -975,8 +992,8 @@ impl Marker {
     /// Per-cycle dedup uses `visited` (a HashSet of box identities) rather
     /// than the color flag. Color-based dedup would silently skip
     /// `new_uncollected` boxes left Black by the previous cycle — those
-    /// allocations are NOT on the heap's allgc chain, so the start-of-mark
-    /// "reset all allgc to White" loop does not reach them, and a Black
+    /// allocations are NOT on a heap owner list, so the start-of-mark
+    /// "reset heap-owned objects to White" loop does not reach them, and a Black
     /// uncollected box would be skipped without re-tracing its children
     /// (causing reachable allgc descendants to be swept). The visited set
     /// is rebuilt every `full_collect` (Marker::new), so this dedup is
@@ -1073,8 +1090,8 @@ impl Marker {
 /// - `EnterAtomic` → `Atomic` (atomic phase is about to run).
 /// - `Atomic` → `SweepAllGc` (post-mark hook has run; sweep cursor is initialized).
 /// - `SweepAllGc` → `SweepFinObj` (allgc sweep cursor reached the end).
-/// - `SweepFinObj` → `SweepToBeFnz` (current overlay has no separate finobj sweep).
-/// - `SweepToBeFnz` → `SweepEnd` (current overlay has no separate tobefnz sweep).
+/// - `SweepFinObj` → `SweepToBeFnz` (finobj sweep cursor reached the end).
+/// - `SweepToBeFnz` → `SweepEnd` (tobefnz sweep cursor reached the end).
 /// - `SweepEnd` → `CallFin` (finish sweep bookkeeping).
 /// - `CallFin` → `Pause` (cycle is complete).
 ///
@@ -1164,8 +1181,13 @@ impl StepBudget {
 const GC_MIN_THRESHOLD: usize = 1024 * 1024;
 
 pub struct Heap {
-    /// Head of the singly-linked allgc list (every live `GcBox`).
+    /// Head of the singly-linked allgc list (heap-owned objects not currently
+    /// registered for finalization).
     head: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// Head of the singly-linked finobj list (objects registered for `__gc`).
+    finobj: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// Head of the singly-linked tobefnz list (objects awaiting `__gc`).
+    tobefnz: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// First object that survived one minor collection. Objects before this
     /// cursor are the current nursery/new generation.
     survival: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
@@ -1178,6 +1200,12 @@ pub struct Heap {
     /// First OLD1 object when one may appear before the `old1` cursor due to
     /// barriers aging objects in younger list segments.
     firstold1: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// First survival object in the finobj list.
+    finobjsur: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// First old1 object in the finobj list.
+    finobjold1: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// First really-old object in the finobj list.
+    finobjrold: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// Total bytes allocated (sum of header sizes; rough).
     bytes: Cell<usize>,
     /// White bit used for new allocations and for survivors after a sweep.
@@ -1227,10 +1255,15 @@ impl Heap {
     pub fn new() -> Self {
         Self {
             head: Cell::new(None),
+            finobj: Cell::new(None),
+            tobefnz: Cell::new(None),
             survival: Cell::new(None),
             old1: Cell::new(None),
             reallyold: Cell::new(None),
             firstold1: Cell::new(None),
+            finobjsur: Cell::new(None),
+            finobjold1: Cell::new(None),
+            finobjrold: Cell::new(None),
             bytes: Cell::new(0),
             current_white: Cell::new(Color::White0),
             allocation_tokens: RefCell::new(HashMap::new()),
@@ -1361,13 +1394,23 @@ impl Heap {
         self.current_white.set(self.other_white());
     }
 
-    fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
-        let mut cursor = self.head.get();
+    fn for_each_list_header(
+        &self,
+        head: Option<NonNull<GcBox<dyn Trace>>>,
+        f: &mut impl FnMut(&GcHeader),
+    ) {
+        let mut cursor = head;
         while let Some(ptr) = cursor {
             let header = self.header_from_ptr(ptr);
             cursor = header.next.get();
             f(header);
         }
+    }
+
+    fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
+        self.for_each_list_header(self.head.get(), &mut f);
+        self.for_each_list_header(self.finobj.get(), &mut f);
+        self.for_each_list_header(self.tobefnz.get(), &mut f);
     }
 
     fn header_from_ptr<'a>(&'a self, ptr: NonNull<GcBox<dyn Trace>>) -> &'a GcHeader {
@@ -1379,6 +1422,9 @@ impl Heap {
         self.old1.set(None);
         self.reallyold.set(None);
         self.firstold1.set(None);
+        self.finobjsur.set(None);
+        self.finobjold1.set(None);
+        self.finobjrold.set(None);
         self.clear_grayagain();
     }
 
@@ -1388,6 +1434,10 @@ impl Heap {
         self.old1.set(head);
         self.reallyold.set(head);
         self.firstold1.set(None);
+        let finobj = self.finobj.get();
+        self.finobjsur.set(finobj);
+        self.finobjold1.set(finobj);
+        self.finobjrold.set(finobj);
         self.clear_grayagain();
     }
 
@@ -1408,7 +1458,108 @@ impl Heap {
         if self.firstold1.get() == Some(removed) {
             self.firstold1.set(next);
         }
+        if self.finobjsur.get() == Some(removed) {
+            self.finobjsur.set(next);
+        }
+        if self.finobjold1.get() == Some(removed) {
+            self.finobjold1.set(next);
+        }
+        if self.finobjrold.get() == Some(removed) {
+            self.finobjrold.set(next);
+        }
         self.unlink_grayagain(removed);
+    }
+
+    fn unlink_from_list(
+        &self,
+        list: &Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+        ptr: NonNull<GcBox<dyn Trace>>,
+    ) -> bool {
+        let mut prev_cell = list;
+        loop {
+            let Some(current) = prev_cell.get() else {
+                return false;
+            };
+            let header = self.header_from_ptr(current);
+            let next = header.next.get();
+            if std::ptr::addr_eq(current.as_ptr(), ptr.as_ptr()) {
+                prev_cell.set(next);
+                let prev_next_ptr = NonNull::from(prev_cell);
+                let removed_next_ptr = NonNull::from(&self.header_from_ptr(ptr).next);
+                if self.sweep_prev_next.get() == Some(removed_next_ptr) {
+                    self.sweep_prev_next.set(Some(prev_next_ptr));
+                }
+                self.correct_generation_pointers(ptr, next);
+                header.next.set(None);
+                return true;
+            }
+            prev_cell = &header.next;
+        }
+    }
+
+    fn link_to_head(
+        &self,
+        list: &Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+        ptr: NonNull<GcBox<dyn Trace>>,
+    ) {
+        let header = self.header_from_ptr(ptr);
+        header.next.set(list.get());
+        list.set(Some(ptr));
+    }
+
+    fn link_to_tail(
+        &self,
+        list: &Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+        ptr: NonNull<GcBox<dyn Trace>>,
+    ) {
+        let mut last_cell = list;
+        loop {
+            let Some(current) = last_cell.get() else {
+                let header = self.header_from_ptr(ptr);
+                header.next.set(None);
+                last_cell.set(Some(ptr));
+                return;
+            };
+            last_cell = &self.header_from_ptr(current).next;
+        }
+    }
+
+    pub fn move_allgc_to_finobj(&self, ptr: NonNull<GcBox<dyn Trace>>) -> bool {
+        let header = self.header_from_ptr(ptr);
+        if !header.collected.get() {
+            return false;
+        }
+        if !self.unlink_from_list(&self.head, ptr) {
+            return false;
+        }
+        if self.state.get().is_sweep() {
+            header.color.set(self.current_white());
+        }
+        self.link_to_head(&self.finobj, ptr);
+        true
+    }
+
+    pub fn move_finobj_to_tobefnz(&self, ptr: NonNull<GcBox<dyn Trace>>) -> bool {
+        if !self.unlink_from_list(&self.finobj, ptr) {
+            return false;
+        }
+        self.link_to_tail(&self.tobefnz, ptr);
+        true
+    }
+
+    pub fn move_tobefnz_to_allgc(&self, ptr: NonNull<GcBox<dyn Trace>>) -> bool {
+        let header = self.header_from_ptr(ptr);
+        if !self.unlink_from_list(&self.tobefnz, ptr) {
+            return false;
+        }
+        if self.state.get().is_sweep() {
+            header.color.set(self.current_white());
+        }
+        self.link_to_head(&self.head, ptr);
+        if header.age.get() == GcAge::Old1 {
+            self.firstold1.set(Some(ptr));
+        }
+        true
     }
 
     fn remember_minor_revisit(&self, ptr: NonNull<GcBox<dyn Trace>>) {
@@ -1615,7 +1766,7 @@ impl Heap {
     }
 
     /// Stop-the-world full collect. Marks every reachable object from
-    /// `roots`, then sweeps white (unreachable) boxes from the allgc chain.
+    /// `roots`, then sweeps white (unreachable) boxes from the heap owner lists.
     pub fn full_collect(&self, roots: &dyn Trace) {
         self.full_collect_with_post_mark(roots, |_: &mut Marker| {});
     }
@@ -1831,6 +1982,7 @@ impl Heap {
                     did_work = did_work || work > 0;
                     if self.sweep_prev_next.get().is_none() {
                         self.state.set(GcState::SweepFinObj);
+                        self.sweep_prev_next.set(Some(NonNull::from(&self.finobj)));
                         if stop_at == Some(GcState::SweepFinObj) {
                             return did_work;
                         }
@@ -1839,18 +1991,29 @@ impl Heap {
                     }
                 }
                 GcState::SweepFinObj => {
-                    self.state.set(GcState::SweepToBeFnz);
-                    budget.remaining_work -= 1;
-                    did_work = true;
-                    if stop_at == Some(GcState::SweepToBeFnz) || budget.remaining_work <= 0 {
+                    let work = self.sweep_budgeted(budget.remaining_work.max(1));
+                    budget.remaining_work -= work as isize;
+                    did_work = did_work || work > 0;
+                    if self.sweep_prev_next.get().is_none() {
+                        self.state.set(GcState::SweepToBeFnz);
+                        self.sweep_prev_next.set(Some(NonNull::from(&self.tobefnz)));
+                        if stop_at == Some(GcState::SweepToBeFnz) {
+                            return did_work;
+                        }
+                    } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
                 }
                 GcState::SweepToBeFnz => {
-                    self.state.set(GcState::SweepEnd);
-                    budget.remaining_work -= 1;
-                    did_work = true;
-                    if stop_at == Some(GcState::SweepEnd) || budget.remaining_work <= 0 {
+                    let work = self.sweep_budgeted(budget.remaining_work.max(1));
+                    budget.remaining_work -= work as isize;
+                    did_work = did_work || work > 0;
+                    if self.sweep_prev_next.get().is_none() {
+                        self.state.set(GcState::SweepEnd);
+                        if stop_at == Some(GcState::SweepEnd) {
+                            return did_work;
+                        }
+                    } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
                 }
@@ -2122,6 +2285,40 @@ impl Heap {
             &mut stats,
         );
 
+        let finobjsur = self.finobjsur.get();
+        let finobjold1 = self.finobjold1.get();
+        let mut dummy_firstold1 = None;
+        let (pfinobjsur, new_finobjold1) = self.sweep_young_range(
+            NonNull::from(&self.finobj),
+            finobjsur,
+            &mut next_revisit,
+            &mut next_revisit_seen,
+            &mut processed,
+            &mut dummy_firstold1,
+            &mut freed_bytes,
+            &mut stats,
+        );
+        self.sweep_young_range(
+            pfinobjsur,
+            finobjold1,
+            &mut next_revisit,
+            &mut next_revisit_seen,
+            &mut processed,
+            &mut dummy_firstold1,
+            &mut freed_bytes,
+            &mut stats,
+        );
+        self.sweep_young_range(
+            NonNull::from(&self.tobefnz),
+            None,
+            &mut next_revisit,
+            &mut next_revisit_seen,
+            &mut processed,
+            &mut dummy_firstold1,
+            &mut freed_bytes,
+            &mut stats,
+        );
+
         for ptr in old_revisit {
             if processed.contains(&(ptr.as_ptr() as *const () as usize)) {
                 continue;
@@ -2151,6 +2348,9 @@ impl Heap {
         self.old1.set(new_old1);
         self.survival.set(self.head.get());
         self.firstold1.set(firstold1);
+        self.finobjrold.set(finobjold1);
+        self.finobjold1.set(new_finobjold1);
+        self.finobjsur.set(self.finobj.get());
         self.last_sweep_stats.set(stats);
     }
 
@@ -2201,8 +2401,8 @@ impl Heap {
         self.state.get()
     }
 
-    /// Approximate number of live GC boxes, computed by walking the allgc
-    /// chain. Linear in heap size; used for cycle-cost estimation and tests.
+    /// Approximate number of live GC boxes, computed by walking all heap owner
+    /// lists. Linear in heap size; used for cycle-cost estimation and tests.
     pub fn allgc_count(&self) -> usize {
         let mut count = 0usize;
         self.for_each_header(|_| {
@@ -2232,9 +2432,16 @@ impl Heap {
         self.sweep_prev_next.set(None);
         self.clear_generation_cursors();
         self.state.set(GcState::Pause);
-        let mut cursor = self.head.get();
-        self.head.set(None);
         self.allocation_tokens.borrow_mut().clear();
+        self.drop_list(&self.head);
+        self.drop_list(&self.finobj);
+        self.drop_list(&self.tobefnz);
+        self.bytes.set(0);
+    }
+
+    fn drop_list(&self, list: &Cell<Option<NonNull<GcBox<dyn Trace>>>>) {
+        let mut cursor = list.get();
+        list.set(None);
         while let Some(ptr) = cursor {
             // SAFETY: same chain invariant as full_collect's sweep.
             let next = unsafe {
@@ -2244,7 +2451,6 @@ impl Heap {
             };
             cursor = next;
         }
-        self.bytes.set(0);
     }
 }
 
@@ -2474,6 +2680,7 @@ mod tests {
             "minor finalizer scan must skip the old1/reallyold prefix"
         );
 
+        registry.push_to_be_finalized(FinalizerCell::new(99));
         registry.promote_pending_to_finalized(vec![
             FinalizerCell::new(1),
             FinalizerCell::new(2),
@@ -2487,8 +2694,8 @@ mod tests {
         assert_eq!(finalizer_ids(registry.pending()), vec![3, 5]);
         assert_eq!(
             finalizer_ids(registry.to_be_finalized()),
-            vec![1, 2, 4],
-            "promotion order must be preserved for LIFO finalizer draining"
+            vec![99, 4, 2, 1],
+            "new to-be-finalized batches append behind older queued finalizers"
         );
     }
 
@@ -2531,6 +2738,57 @@ mod tests {
             marker_calls: Cell::new(0),
         });
         assert!(heap.bytes_used() > 0);
+        heap.drop_all();
+        assert_eq!(heap.bytes_used(), 0);
+    }
+
+    fn list_len(heap: &Heap, mut cursor: Option<NonNull<GcBox<dyn Trace>>>) -> usize {
+        let mut count = 0usize;
+        while let Some(ptr) = cursor {
+            count += 1;
+            cursor = heap.header_from_ptr(ptr).next.get();
+        }
+        count
+    }
+
+    #[test]
+    fn finalizer_intrusive_lists_sweep_and_drop() {
+        let heap = Heap::new();
+        heap.unpause();
+        let _normal = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let finobj = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let tobefnz = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        assert!(heap.move_allgc_to_finobj(finobj.as_trace_ptr()));
+        assert!(heap.move_allgc_to_finobj(tobefnz.as_trace_ptr()));
+        assert!(heap.move_finobj_to_tobefnz(tobefnz.as_trace_ptr()));
+        assert_eq!(list_len(&heap, heap.head.get()), 1);
+        assert_eq!(list_len(&heap, heap.finobj.get()), 1);
+        assert_eq!(list_len(&heap, heap.tobefnz.get()), 1);
+        assert_eq!(heap.allgc_count(), 3);
+
+        heap.full_collect(&TwoRoots { first: Some(finobj), second: Some(tobefnz) });
+        assert_eq!(list_len(&heap, heap.head.get()), 0);
+        assert_eq!(list_len(&heap, heap.finobj.get()), 1);
+        assert_eq!(list_len(&heap, heap.tobefnz.get()), 1);
+        assert_eq!(heap.allgc_count(), 2);
+
+        assert!(heap.move_tobefnz_to_allgc(tobefnz.as_trace_ptr()));
+        heap.full_collect(&OneRoot(Some(tobefnz)));
+        assert_eq!(list_len(&heap, heap.head.get()), 1);
+        assert_eq!(list_len(&heap, heap.finobj.get()), 0);
+        assert_eq!(list_len(&heap, heap.tobefnz.get()), 0);
+        assert_eq!(heap.allgc_count(), 1);
+
         heap.drop_all();
         assert_eq!(heap.bytes_used(), 0);
     }

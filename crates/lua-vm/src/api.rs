@@ -1456,7 +1456,13 @@ fn metatable_has_gc(state: &LuaState, mt: &GcRef<LuaTable>) -> bool {
 }
 
 fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
-    state.global_mut().finalizers.push_pending_unique(object);
+    let heap_ptr = object.heap_ptr();
+    let mut g = state.global_mut();
+    if g.finalizers.push_pending_unique(object) {
+        if let Some(ptr) = heap_ptr {
+            g.heap.move_allgc_to_finobj(ptr);
+        }
+    }
 }
 
 /// Drain objects already promoted from `pending_finalizers` to
@@ -1511,9 +1517,9 @@ fn run_pending_finalizers_limited(
         if limit.map_or(false, |limit| processed >= limit) {
             break;
         }
-        // `to_be_finalized` was populated by the most recent mark phase.
-        // Drain in LIFO order so the most recently dead object runs its `__gc`
-        // first, matching C-Lua's `finobj`/`tobefnz` ordering.
+        // `to_be_finalized` is stored in tobefnz head order. Newly unreachable
+        // objects are appended behind any older queued finalizers, matching
+        // C-Lua's `finobj`/`tobefnz` ordering.
         if !state.global().finalizers.has_to_be_finalized() {
             break;
         }
@@ -1526,11 +1532,17 @@ fn run_pending_finalizers_limited(
         // ordering (finalizer-visible state) still requires reachability-
         // based detection of which finalizable tables are about to die — a
         // gap tracked under D-2 ephemeron/finalizer follow-up.
-        let object = state
-            .global_mut()
-            .finalizers
-            .pop_to_be_finalized()
-            .expect("to-be-finalized checked non-empty");
+        let object = {
+            let mut g = state.global_mut();
+            let object = g
+                .finalizers
+                .pop_to_be_finalized()
+                .expect("to-be-finalized checked non-empty");
+            if let Some(ptr) = object.heap_ptr() {
+                g.heap.move_tobefnz_to_allgc(ptr);
+            }
+            object
+        };
         processed += 1;
         let mt = object.metatable();
         let gc_fn = match mt {
@@ -1635,9 +1647,9 @@ fn run_pending_finalizers_limited(
 /// e.g. a table held by a global — still have their finalizer run; that is
 /// what emits messages like `>>> closing state <<<` from `gc.lua`.
 ///
-/// Phase-B note: the live registry of finalizable objects is
-    /// `pending_finalizers`. A single snapshot of that list is promoted into
-    /// `to_be_finalized` and drained by [`run_pending_finalizers`]. We snapshot
+/// The typed registry of finalizable objects is `pending_finalizers`. A single
+/// snapshot of that list is promoted into `to_be_finalized` and drained by
+/// [`run_pending_finalizers`]. We snapshot
 /// once (matching C's single `separatetobefnz` call): a finalizer may
 /// resurrect its object or register new finalizables via `setmetatable`, but
 /// C does not re-finalize those at close (`gcstp = GCSTPCLS`), so neither do
@@ -1651,9 +1663,13 @@ pub fn run_close_finalizers(state: &mut LuaState) {
     let mut seen = std::collections::HashSet::<usize>::new();
     {
         let mut g = state.global_mut();
-        for object in pending {
+        for object in pending.into_iter().rev() {
+            let heap_ptr = object.heap_ptr();
             if seen.insert(object.identity()) {
                 g.finalizers.push_to_be_finalized(object);
+                if let Some(ptr) = heap_ptr {
+                    g.heap.move_finobj_to_tobefnz(ptr);
+                }
             }
         }
     }

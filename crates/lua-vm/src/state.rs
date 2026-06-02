@@ -145,6 +145,13 @@ impl FinalizerObject {
         }
     }
 
+    pub fn heap_ptr(&self) -> Option<std::ptr::NonNull<lua_gc::GcBox<dyn lua_gc::Trace>>> {
+        Some(match self {
+            FinalizerObject::Table(t) => t.0.as_trace_ptr(),
+            FinalizerObject::UserData(u) => u.0.as_trace_ptr(),
+        })
+    }
+
     pub fn age(&self) -> lua_gc::GcAge {
         match self {
             FinalizerObject::Table(t) => t.0.age(),
@@ -170,6 +177,10 @@ impl FinalizerObject {
 impl lua_gc::FinalizerEntry for FinalizerObject {
     fn identity(&self) -> usize {
         FinalizerObject::identity(self)
+    }
+
+    fn heap_ptr(&self) -> Option<std::ptr::NonNull<lua_gc::GcBox<dyn lua_gc::Trace>>> {
+        FinalizerObject::heap_ptr(self)
     }
 
     fn age(&self) -> lua_gc::GcAge {
@@ -1339,13 +1350,10 @@ pub struct GlobalState {
     /// values observed on the reference `lua5.5.0` binary.
     pub gc55_params: [i64; 6],
 
-    // Phase-D NOTE: the C-Lua intrusive GC lists (allgc, sweepgc, finobj,
-    // gray, grayagain, weak, ephemeron, allweak) were declared here as
+    // Phase-D NOTE: the old C-Lua intrusive GC list mirrors were declared here as
     // `Vec<GcRef<dyn Collectable>>` during Phase A but never populated or
-    // read. The real GC owns its own allgc chain inside `self.heap`
-    // (lua_gc::Heap). Removed during D-1e-prep to clear the `?Sized` blocker
-    // for swapping `GcRef<T> = Gc<T>` (Gc requires T: Sized for unsizing).
-    // sweepgc_cursor stayed because non-list bookkeeping kept it.
+    // read. The real GC owns its allgc/finobj/tobefnz/grayagain intrusive
+    // lists inside `self.heap` (lua_gc::Heap).
     pub sweepgc_cursor: usize,
 
     /// Cross-table weak-sweep registry.
@@ -1358,8 +1366,8 @@ pub struct GlobalState {
     /// Lua-style generational lists land.
     pub weak_tables_registry: lua_gc::WeakRegistry<WeakTableEntry>,
 
-    /// Finalizable tables/userdata split into pending `finobj`-like entries
-    /// and `tobefnz`-like entries waiting for their `__gc` call.
+    /// Typed handles for finalizable tables/userdata. The heap owns the
+    /// corresponding intrusive finobj/tobefnz list placement.
     pub finalizers: lua_gc::FinalizerRegistry<FinalizerObject>,
 
     /// Error raised by a `__gc` finalizer during an explicit `collectgarbage`
@@ -1375,9 +1383,8 @@ pub struct GlobalState {
     pub gc_finalizer_error: Option<LuaValue>,
 
     // Phase-D NOTE: fixedgc removed (dead since Phase A — see sibling note
-    // above re allgc et al). Pending/to-be-finalized objects live in
-    // `finalizers` above; fixed objects live in heap.allgc with the GC's own
-    // `fixed` bit.
+    // above re allgc et al). Finalizable typed handles live in `finalizers`
+    // above; fixed objects live in heap.allgc with the GC's own `fixed` bit.
 
     // Generational cohort markers — Phase D only
     // types.tsv: global_State.survival/old1/reallyold/firstold1/finobjsur/finobjold1/finobjrold
@@ -4064,7 +4071,12 @@ impl<'a> GcHandle<'a> {
         // Move newly-unreachable finalizables from `pending_finalizers` to
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
-        g.finalizers.promote_pending_to_finalized(promote);
+        let promoted = g.finalizers.promote_pending_to_finalized(promote);
+        for object in &promoted {
+            if let Some(ptr) = object.heap_ptr() {
+                g.heap.move_finobj_to_tobefnz(ptr);
+            }
+        }
         if matches!(mode, HeapCollectMode::Minor) {
             g.finalizers.finish_minor_collection();
         }
@@ -4287,7 +4299,12 @@ impl<'a> GcHandle<'a> {
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals
                 .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
-            g.finalizers.promote_pending_to_finalized(promote);
+            let promoted = g.finalizers.promote_pending_to_finalized(promote);
+            for object in &promoted {
+                if let Some(ptr) = object.heap_ptr() {
+                    g.heap.move_finobj_to_tobefnz(ptr);
+                }
+            }
         }
 
         let mut paused = matches!(outcome, StepOutcome::Paused);

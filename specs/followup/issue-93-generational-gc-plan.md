@@ -29,9 +29,9 @@ The current tree is no longer only startup/default scaffolding:
 - The heap state machine exposes C-Lua-style collector states
   (`atomic`, `enteratomic`, `sweepallgc`, `sweepfinobj`, `sweeptobefnz`,
   `sweepend`, `callfin`) through the testC-equivalent
-  `T.gcstate()`/`T.gcstats()` surface. The finalizer sweep states are
-  currently explicit phase transitions over the registry overlay; true
-  intrusive `finobj`/`tobefnz` sweep ownership remains separate work.
+  `T.gcstate()`/`T.gcstats()` surface. `SweepFinObj` and `SweepToBeFnz`
+  now sweep heap-owned intrusive `finobj` and `tobefnz` lists, not only
+  registry overlay phase markers.
 - The Lua-facing incremental `collectgarbage("step")` path now treats
   `callfin` as a real work phase: atomic promotion can stop there with
   to-be-finalized objects, the step path dispatches up to the 5.4 `GCFINMAX`
@@ -78,10 +78,16 @@ The current tree is no longer only startup/default scaffolding:
   `tobefinold`) and exposes registry cohort counts (`finobjnew`,
   `finobjsur`, `finobjold1`, `finobjrold`, `finobjscan`). Minor finalizer
   marking now snapshots only the registry's new/survival suffix, matching
-  C-Lua's "scan until `finobjold1`" shape for the current overlay model.
+  C-Lua's "scan until `finobjold1`" shape for the typed registry model.
   `canary_m_testc_finalizer_cohorts.lua` pins that rooted old finalizers stay
   outside the minor scan while a young unreachable finalizer moves to
   to-be-finalized-young.
+- Finalizable objects now move through heap-owned intrusive `finobj` and
+  `tobefnz` lists using the same object `next` link as `allgc`. Registration
+  moves objects from `allgc` to `finobj`; atomic promotion moves unreachable
+  finalizables to `tobefnz`; `__gc` dispatch moves each object back to
+  `allgc` before running the finalizer. Major and minor sweeps now walk those
+  lists separately, and the registry stores typed handles plus queue order.
 - Weak table registry selection is now collector-crate owned through
   `lua-gc::WeakRegistry<T>`, split into C-Lua-style weak-value, ephemeron, and
   all-weak cohorts. The VM still provides the table-specific ephemeron/prune
@@ -108,9 +114,8 @@ The real generational collector is still not complete:
   cohort boundaries, and minor-scan selection owned by the collector crate.
   `lua-vm::FinalizerObject` implements the small `FinalizerEntry` trait, and
   the heap header's finalized bit now mirrors C-Lua's `FINALIZEDBIT` while an
-  object is registered in pending/to-be-finalized lists. Remaining parity gap:
-  finalizable objects are still an overlay on the heap's `allgc` chain, not a
-  true intrusive `finobj`/`tobefnz` ownership split.
+  object is registered in pending/to-be-finalized lists. The heap now owns the
+  corresponding intrusive `finobj`/`tobefnz` placement and sweeps those lists.
 - Weak/ephemeron handling is correct enough for the current gates. Weak-table
   registry mechanics and weak/ephemeron/all-weak cohort ownership are now
   collector-owned, and live snapshots preserve the split for phase-specific
@@ -235,25 +240,29 @@ Goal: stop treating finalization as an after-the-fact API drain.
 
 Deliverables:
 
-- Model `finobj` and `tobefnz` lists.
+- Done: model heap-owned intrusive `finobj` and `tobefnz` lists.
 - Done as structural slices: replace scattered raw VM vectors with a single
   `lua-gc::FinalizerRegistry<T>` abstraction, and move pending-to-finalized
   promotion mechanics into that registry.
-- Done for the registry overlay: track finalizable cohorts equivalent to
+- Done for the typed registry: track finalizable cohorts equivalent to
   `finobjsur`, `finobjold1`, and `finobjrold`, and use them to bound minor
   pending-finalizer scans.
-- Done for the registry overlay: use the heap header finalized bit as
+- Done for the typed registry: use the heap header finalized bit as
   C-Lua's `FINALIZEDBIT`, setting it on pending/to-be-finalized registration
   and clearing it when an object is popped for its `__gc` call.
-- Done for the current overlay: explicit incremental steps stop at `callfin`,
+- Done: registration, atomic promotion, close promotion, and finalizer pop
+  move objects through heap-owned `allgc`/`finobj`/`tobefnz` lists. The typed
+  registry remains the VM handle store and preserves `tobefnz` drain order.
+- Done: explicit incremental steps stop at `callfin`,
   dispatch bounded to-be-finalized work from that phase, and only finish the
   cycle after the queue is empty. `canary_o_testc_callfin_finalizers.lua` pins
   that behavior.
-- Done for the current overlay: explicit generational minor steps drain
+- Done: explicit generational minor steps drain
   pending finalizers before returning, matching `finishgencycle`. The finalizer
   cohort canary now pins that an unreachable young finalizer runs and does not
   remain queued in `tobefnz`.
-- Separate, mark, run, and sweep finalizers from collector phases.
+- Done for heap ownership: separate, run, and sweep finalizers from collector
+  phases. Mark/prune classification still runs through VM post-mark hooks.
 - Preserve per-version finalizer error behavior.
 
 Verification:
@@ -278,9 +287,8 @@ Deliverables:
 - Done for the normal allgc list: `sweep2old`-equivalent promotion,
   cursor-bounded young `sweepgen`, and an intrusive grayagain-style revisit
   list.
-- Remaining: exact weak mark/prune phase ownership plus a true
-  `finobj`/`tobefnz` split instead of the current finalizer registry overlay
-  on `allgc`.
+- Remaining: exact weak mark/prune phase ownership plus final verification of
+  finalizer-list edge cases such as resurrection/order under nested collection.
 - Ensure `enterinc` clears ages and cohort pointers safely.
 
 Verification:
@@ -386,5 +394,6 @@ Final command set:
 collector remains open. Accounting, barriers, age/cohort metadata, minor/major
 policy, and collector-owned finalizer registry mechanics are now active in the
 branch. The remaining critical path is exact weak/ephemeron mark-prune ownership,
-true intrusive `finobj`/`tobefnz` separation, and a final full-suite sweep that
-proves the meaningful `gengc.lua` assertions stay exercised.
+finalizer-list edge-case verification, performance triage, and a final
+full-suite sweep that proves the meaningful `gengc.lua` assertions stay
+exercised.
