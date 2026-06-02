@@ -787,6 +787,20 @@ Rejected follow-up:
   `table_hash_pressure`, `gc_pressure`, and `string_ops` flat, slightly
   regressed `string_ops_long` to 1.009x candidate/base, and only moved
   `binarytrees` to 0.988x. It was dropped.
+- Specializing `LuaTable::try_raw_set` for short-string keys looked plausible
+  because `table_hash_pressure_x100`
+  (`harness/bench/profiles/20260602T202042Z-41d495c-table_hash_pressure_x100/summary.txt`)
+  still showed short-string slot lookup and generic hash insertion cost. The
+  safe setter passed `cargo test -p lua-types --lib`, `cargo check -p lua-vm`,
+  `cargo test -p lua-vm --lib`, and targeted workload checks, but it did not
+  move the intended workload. Direct Rust A/B, best-of-20
+  (`harness/bench/results/20260602T204047Z-acb9fa2-bin-ab.tsv`), was flat on
+  `table_hash_pressure`, `gc_pressure`, and `string_ops_long` and slightly
+  regressed `binarytrees` to 1.013x candidate/base. A higher-resolution
+  repeated run using `compare_bins.sh --repeat-each 10`
+  (`harness/bench/results/20260602T204323Z-acb9fa2-bin-ab.tsv`) measured
+  `table_hash_pressure` at 0.57s base and 0.57s candidate, so the source
+  change was dropped.
 
 Tool gaps:
 

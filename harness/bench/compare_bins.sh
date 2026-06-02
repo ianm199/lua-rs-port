@@ -10,6 +10,8 @@
 # Usage:
 #   bash harness/bench/compare_bins.sh --a /tmp/lua-rs-base --b target/release/lua-rs \
 #     --label-a base --label-b candidate --runs 20 --workloads gc_pressure,binarytrees
+#   bash harness/bench/compare_bins.sh --a /tmp/lua-rs-base --b target/release/lua-rs \
+#     --runs 20 --workloads table_hash_pressure --repeat-each 10
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,6 +27,7 @@ LABEL_A="a"
 LABEL_B="b"
 RUNS=10
 WORKLOAD_FILTER=""
+REPEAT_EACH=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,6 +37,7 @@ while [ $# -gt 0 ]; do
         --label-b)   LABEL_B="$2";         shift 2 ;;
         --runs)      RUNS="$2";            shift 2 ;;
         --workloads) WORKLOAD_FILTER="$2"; shift 2 ;;
+        --repeat-each) REPEAT_EACH="$2";   shift 2 ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# //; s/^#//'
             exit 0 ;;
@@ -49,6 +53,10 @@ case "$RUNS" in
     ''|*[!0-9]*) echo "[err] --runs must be a positive integer" >&2; exit 2 ;;
     0)           echo "[err] --runs must be >= 1" >&2; exit 2 ;;
 esac
+case "$REPEAT_EACH" in
+    ''|*[!0-9]*) echo "[err] --repeat-each must be a positive integer" >&2; exit 2 ;;
+    0)           echo "[err] --repeat-each must be >= 1" >&2; exit 2 ;;
+esac
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -62,22 +70,37 @@ CPU="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /
 run_out() {
     local bin="$1"
     local workload="$2"
-    "$bin" "$workload" 2>&1
+    if [ "$REPEAT_EACH" -le 1 ]; then
+        "$bin" "$workload" 2>&1
+    else
+        "$bin" -e "for __bench_i = 1, $REPEAT_EACH do dofile([[$workload]]) end" 2>&1
+    fi
 }
 
 measure_one() {
     local bin="$1"
     local workload="$2"
+    local eval_src=""
     local tmp real rss parsed rss_kb
     tmp=$(mktemp)
     case "$(uname -s)" in
         Darwin)
-            /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
+            if [ "$REPEAT_EACH" -le 1 ]; then
+                /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
+            else
+                eval_src="for __bench_i = 1, $REPEAT_EACH do dofile([[$workload]]) end"
+                /usr/bin/time -lp "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
+            fi
             real=$(awk '$1=="real" {print $2; exit}' "$tmp")
             rss=$(awk '/maximum resident set size/ {print $1; exit}' "$tmp")
             ;;
         *)
-            /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
+            if [ "$REPEAT_EACH" -le 1 ]; then
+                /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
+            else
+                eval_src="for __bench_i = 1, $REPEAT_EACH do dofile([[$workload]]) end"
+                /usr/bin/time -f '%e %M' "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
+            fi
             parsed=$(awk '/^[0-9.]+ [0-9]+$/ {r=$1; k=$2} END {if (r != "") print r, k}' "$tmp")
             real=$(printf '%s' "$parsed" | awk '{print $1}')
             rss_kb=$(printf '%s' "$parsed" | awk '{print $2}')
@@ -118,6 +141,7 @@ best_of_n() {
     printf '# arch:          %s\n' "$ARCH"
     printf '# cpu:           %s\n' "$CPU"
     printf '# runs:          %d (reporting best wall-clock, max RSS)\n' "$RUNS"
+    printf '# repeat_each:   %d workload invocation(s) per measured run\n' "$REPEAT_EACH"
     printf '# %s: %s\n' "$LABEL_A" "$A_BIN"
     printf '# %s: %s\n' "$LABEL_B" "$B_BIN"
     printf '#\n'
@@ -171,6 +195,7 @@ OVERALL_RATIO=$(awk -v a="$TOTAL_B" -v b="$TOTAL_A" 'BEGIN{if (b>0) printf "%.3f
     printf '  "commit": "%s",\n' "$COMMIT"
     printf '  "os": "%s", "arch": "%s", "cpu": "%s",\n' "$OS_NAME" "$ARCH" "$CPU"
     printf '  "runs_per_workload": %d,\n' "$RUNS"
+    printf '  "repeat_each": %d,\n' "$REPEAT_EACH"
     printf '  "labels": {"a": "%s", "b": "%s"},\n' "$LABEL_A" "$LABEL_B"
     printf '  "binaries": {"%s": "%s", "%s": "%s"},\n' "$LABEL_A" "$A_BIN" "$LABEL_B" "$B_BIN"
     printf '  "totals": {"%s_wall_s": %s, "%s_wall_s": %s, "%s_over_%s_wall_ratio": %s},\n' \
