@@ -1,6 +1,6 @@
 # Issue #93: Generational GC Plan
 
-Status audited on `main` after PR #109 (`5309cd1`).
+Status audited on `main` after GC checkpoint `c5ad4c6`.
 
 ## What #109 Fixed
 
@@ -16,46 +16,45 @@ PR #109 fixed the observable startup-mode half of #93:
 
 This does not implement generational collection.
 
-## Spot-Check Findings
+## Current Progress
 
-The current public surface still has only generational scaffolding:
+The current tree is no longer only startup/default scaffolding:
 
-- `GcKind::{Incremental, Generational}` exists.
-- `collectgarbage("generational"|"incremental")` switches the mode flag.
-- `genminormul`, `genmajormul`, `lastatomic`, and `gc_estimate`-like fields
-  exist in `GlobalState`.
-- `GcArgs::Step` still always calls `state.gc().incremental_step(work_units)`.
-- Generational mode only adds `prune_weak_tables_mark_only()` after that
-  incremental step.
-- `GlobalState::is_gen_mode()` checks only `gckind == Generational`; upstream
-  `isdecGCmodegen(g)` is true when `gckind == KGC_GEN || lastatomic != 0`.
-- `keep_invariant()` and `is_sweep_phase()` are hardcoded `false`.
-- `LuaStateGc::barrier`, `barrier_back`, `obj_barrier`, and
-  `obj_barrier_back` are no-op shims, even though `lua-gc::Heap::barrier`
-  has a lower-level forward-barrier primitive.
-- `GcHeader` has `Color::{White, Gray, Black}` and a reserved `finalized` flag,
-  but no dual-white bits and no generational age bits.
-- `gengc.lua` is not a strong proof: `harness/impl/official/gengc.out`
-  records `testC not active`, and the important `T.gcage`/`T.gccolor`
-  assertions in `reference/lua-c/testes/gengc.lua` are skipped.
+- `collectgarbage("step", ...)` branches into `generational_step()` when the
+  declared mode is generational or `lastatomic != 0`.
+- `GlobalState::is_gen_mode()` now matches the upstream declared-mode rule:
+  `gckind == Generational || lastatomic != 0`.
+- `keep_invariant()` and `is_sweep_phase()` read real heap state.
+- VM stores route through active forward/backward barriers, including table
+  writes, userdata uservalues, closure upvalues, and cross-thread upvalues.
+- `lua-gc` has dual-white colors and generational age metadata; the canary and
+  testC paths exercise age/color transitions instead of only relying on the
+  official skipped path.
+- Lua-visible byte APIs now read collector-owned heap bytes. The old
+  `api.rs` `totalbytes` refill/halve shims and the long-string side tracker are
+  gone; `collectgarbage("count")`, `gcinfo()`, debt, estimate, and pacing all
+  use heap byte accounting.
+- Internal testC telemetry exists for GC state, age/color, type counts, warning
+  capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
+  `gc.lua`/`gengc.lua` currently pass.
 
-#104 is a prerequisite, but its status is nuanced:
+The real generational collector is still not complete:
 
-- Some real heap accounting primitives already exist:
-  `Gc::account_buffer`, `Heap::adjust_bytes`, `GcHeader.size: Cell<usize>`,
-  a 1 MB threshold floor, and `lua-gc` unit tests for buffer refund/no-op on
-  uncollected boxes.
-- Some table buffer bytes are already charged through `LuaTable::buffer_bytes()`
-  at construction.
-- The Lua-visible API still has Phase-B simulations: `api.rs` refills
-  `totalbytes` to a 32 KB baseline after collect and halves `totalbytes` after
-  completed steps.
-- `collectgarbage("count")` still combines `heap.bytes_used()` with the
-  hand-maintained `gc_tracked_long_strings` tracker instead of one
-  collector-owned allocation ledger.
-
-So the correct #104 framing is not "no accounting exists"; it is "finish and
-unify accounting, then delete the public observable simulations."
+- `minor_collect_with_post_mark` still traces the full root set for correctness
+  and then limits sweeping to young objects. It is not yet a cohort-list young
+  collection.
+- Normal-list cohort boundaries equivalent to `survival`, `old1`,
+  `reallyold`, and `firstold1` are not represented as collector cursors.
+- Finalizers still live in VM-side `pending_finalizers` / `to_be_finalized`
+  registries, not collector-owned `finobj` / `tobefnz` lists with generational
+  finalizer cohorts.
+- Weak/ephemeron handling is correct enough for the current gates but still runs
+  through VM snapshots and post-mark hooks instead of collector-owned weak-list
+  processing for minor and major cycles.
+- `GlobalState.totalbytes` remains as a Lua C compatibility shadow updated by
+  `set_debt`; it is no longer the source of memory truth, but it should either
+  stay documented as compatibility-only or be removed once the port no longer
+  needs the split.
 
 ## Upstream Pieces to Port
 
@@ -91,14 +90,16 @@ Goal: one real collector-owned byte model.
 
 Deliverables:
 
-- Delete the `api.rs` `totalbytes` refill and halve simulations.
-- Make `collectgarbage("count")`, `gcinfo()`, `GCdebt`, `totalbytes`,
-  `GCestimate`, and heap pacing agree on the same live-byte source.
-- Finish payload accounting for tables, strings, userdata, closures/upvalues,
-  and any other GC-owned buffers.
-- Retire or subsume `gc_tracked_long_strings` into normal collector accounting.
-- Preserve the existing uncollected-box guard so unswept boxes cannot create
+- Done: delete the `api.rs` `totalbytes` refill and halve simulations.
+- Done: make `collectgarbage("count")`, `gcinfo()`, `GCdebt`, `GCestimate`,
+  and heap pacing agree on the same live-byte source.
+- Done: retire the long-string side tracker into normal collector accounting.
+- Done: preserve the uncollected-box guard so unswept boxes cannot create
   permanent byte drift.
+- Remaining: audit payload accounting for userdata, closures/upvalues, protos,
+  and any other GC-owned buffers whose Rust-owned backing storage may grow.
+- Remaining: decide whether `GlobalState.totalbytes` stays as compatibility-only
+  shadow state or can be removed after the debt split is no longer needed.
 
 Verification:
 
@@ -107,7 +108,21 @@ Verification:
   allocate/grow/drop/full-GC
 - official `gc.lua` and `gengc.lua` without API-visible accounting shims
 - GC canaries in both public modes
+- `canary_k_testc_accounting.lua`, which compares `collectgarbage("count")`
+  against `T.totalmem()` through long-string charge, table-buffer charge, and
+  post-sweep refund
 - repeated allocation stress showing plateau, not monotonic drift
+
+## Iteration Discipline
+
+Each remaining collector slice should keep the loop short:
+
+1. Add or tighten a canary, unit test, or testC telemetry point that fails for
+   the missing behavior.
+2. Make the narrow collector/runtime change needed for that signal.
+3. Run the single targeted canary or test first.
+4. Run the focused package gate touched by the change.
+5. Run the full GC gate set only at milestone boundaries.
 
 ### 2. Make Collector State Predicates Real
 
