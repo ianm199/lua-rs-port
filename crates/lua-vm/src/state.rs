@@ -1633,10 +1633,7 @@ impl GlobalState {
     ///
     /// macros.tsv: `keepinvariant → g.keep_invariant()`
     pub fn keep_invariant(&self) -> bool {
-        matches!(
-            self.heap.gc_state(),
-            lua_gc::GcState::Propagate | lua_gc::GcState::Atomic
-        )
+        self.heap.gc_state().is_invariant()
     }
 
     /// Returns `true` while the GC is in a sweep phase.
@@ -5705,7 +5702,7 @@ mod tests {
             let heap_state = g.heap.gc_state();
             assert_eq!(
                 g.keep_invariant(),
-                matches!(heap_state, lua_gc::GcState::Propagate | lua_gc::GcState::Atomic)
+                heap_state.is_invariant()
             );
             assert_eq!(g.is_sweep_phase(), heap_state.is_sweep());
             saw_keep |= g.keep_invariant();

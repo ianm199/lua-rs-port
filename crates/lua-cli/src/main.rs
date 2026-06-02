@@ -886,7 +886,8 @@ fn testc_gc_state_name(gc_state: lua_gc::GcState) -> &'static [u8] {
     match gc_state {
         lua_gc::GcState::Pause => b"pause",
         lua_gc::GcState::Propagate => b"propagate",
-        lua_gc::GcState::Atomic => b"atomic",
+        lua_gc::GcState::EnterAtomic => b"atomic",
+        lua_gc::GcState::Atomic => b"enteratomic",
         lua_gc::GcState::SweepAllGc => b"sweepallgc",
         lua_gc::GcState::SweepFinObj => b"sweepfinobj",
         lua_gc::GcState::SweepToBeFnz => b"sweeptobefnz",
@@ -898,6 +899,7 @@ fn testc_gc_state_name(gc_state: lua_gc::GcState) -> &'static [u8] {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestcGcState {
     Propagate,
+    EnterAtomic,
     Atomic,
     SweepAllGc,
     SweepFinObj,
@@ -911,6 +913,7 @@ impl TestcGcState {
     fn heap_state(self) -> lua_gc::GcState {
         match self {
             TestcGcState::Propagate => lua_gc::GcState::Propagate,
+            TestcGcState::EnterAtomic => lua_gc::GcState::EnterAtomic,
             TestcGcState::Atomic => lua_gc::GcState::Atomic,
             TestcGcState::SweepAllGc => lua_gc::GcState::SweepAllGc,
             TestcGcState::SweepFinObj => lua_gc::GcState::SweepFinObj,
@@ -925,7 +928,8 @@ impl TestcGcState {
 fn testc_gc_state_target(bytes: &[u8]) -> Option<TestcGcState> {
     match bytes {
         b"propagate" => Some(TestcGcState::Propagate),
-        b"atomic" | b"enteratomic" => Some(TestcGcState::Atomic),
+        b"atomic" => Some(TestcGcState::EnterAtomic),
+        b"enteratomic" => Some(TestcGcState::Atomic),
         b"sweepallgc" => Some(TestcGcState::SweepAllGc),
         b"sweepfinobj" => Some(TestcGcState::SweepFinObj),
         b"sweeptobefnz" => Some(TestcGcState::SweepToBeFnz),

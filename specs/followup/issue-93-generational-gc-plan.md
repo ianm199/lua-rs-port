@@ -26,11 +26,12 @@ The current tree is no longer only startup/default scaffolding:
 - `GlobalState::is_gen_mode()` now matches the upstream declared-mode rule:
   `gckind == Generational || lastatomic != 0`.
 - `keep_invariant()` and `is_sweep_phase()` read real heap state.
-- The heap state machine exposes C-Lua-style sweep states
-  (`sweepallgc`, `sweepfinobj`, `sweeptobefnz`, `sweepend`, `callfin`) through
-  the testC-equivalent `T.gcstate()`/`T.gcstats()` surface. The finalizer sweep
-  states are currently explicit phase transitions over the registry overlay;
-  true intrusive `finobj`/`tobefnz` sweep ownership remains separate work.
+- The heap state machine exposes C-Lua-style collector states
+  (`atomic`, `enteratomic`, `sweepallgc`, `sweepfinobj`, `sweeptobefnz`,
+  `sweepend`, `callfin`) through the testC-equivalent
+  `T.gcstate()`/`T.gcstats()` surface. The finalizer sweep states are
+  currently explicit phase transitions over the registry overlay; true
+  intrusive `finobj`/`tobefnz` sweep ownership remains separate work.
 - The Lua-facing incremental `collectgarbage("step")` path now treats
   `callfin` as a real work phase: atomic promotion can stop there with
   to-be-finalized objects, the step path dispatches up to the 5.4 `GCFINMAX`
@@ -191,9 +192,9 @@ Deliverables:
   `GCSpropagate`, `GCSenteratomic`, `GCSatomic`, `GCSswpallgc`,
   `GCSswpfinobj`, `GCSswptobefnz`, `GCSswpend`, `GCScallfin`, `GCSpause`.
 - Done for sweep/finalization phase visibility: `GcState` now has distinct
-  `SweepAllGc`, `SweepFinObj`, `SweepToBeFnz`, `SweepEnd`, and `CallFin`
-  states, and `canary_g_testc_gcstate.lua` pins all of them through `T.gcstate`.
-  `GCSenteratomic` remains collapsed into the current atomic transition.
+  `EnterAtomic`, `Atomic`, `SweepAllGc`, `SweepFinObj`, `SweepToBeFnz`,
+  `SweepEnd`, and `CallFin` states, and `canary_g_testc_gcstate.lua` pins all
+  of them through `T.gcstate`.
 - Implement `keep_invariant()` as `gcstate <= GCSatomic`.
 - Implement `is_sweep_phase()` as `GCSswpallgc <= gcstate <= GCSswpend`.
 - Implement declared generational mode as upstream does:

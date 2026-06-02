@@ -13,6 +13,9 @@ local stats = T.gcstats()
 assert(type(stats) == "string" and stats:match("state=atomic"),
        "FAIL: gcstats did not report atomic state")
 
+T.gcstate("enteratomic")
+assert(T.gcstate() == "enteratomic", "FAIL: could not stop at enteratomic state")
+
 T.gcstate("sweepallgc")
 assert(T.gcstate() == "sweepallgc", "FAIL: could not stop at sweep state")
 T.gcstate("sweepfinobj")

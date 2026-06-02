@@ -1027,7 +1027,8 @@ impl Marker {
 ///
 /// Transitions:
 /// - `Pause` → `Propagate` (on first step: reset colors, trace roots).
-/// - `Propagate` → `Atomic` (when the gray queue empties).
+/// - `Propagate` → `EnterAtomic` (when the gray queue empties).
+/// - `EnterAtomic` → `Atomic` (atomic phase is about to run).
 /// - `Atomic` → `SweepAllGc` (post-mark hook has run; sweep cursor is initialized).
 /// - `SweepAllGc` → `SweepFinObj` (allgc sweep cursor reached the end).
 /// - `SweepFinObj` → `SweepToBeFnz` (current overlay has no separate finobj sweep).
@@ -1041,6 +1042,7 @@ impl Marker {
 pub enum GcState {
     Pause,
     Propagate,
+    EnterAtomic,
     Atomic,
     SweepAllGc,
     SweepFinObj,
@@ -1055,6 +1057,9 @@ impl GcState {
     }
     pub fn is_propagate(self) -> bool {
         matches!(self, GcState::Propagate)
+    }
+    pub fn is_invariant(self) -> bool {
+        matches!(self, GcState::Propagate | GcState::EnterAtomic | GcState::Atomic)
     }
     pub fn is_sweep(self) -> bool {
         matches!(
@@ -1639,6 +1644,7 @@ impl Heap {
         roots.trace(&mut marker);
         marker.drain_gray_queue();
 
+        self.state.set(GcState::EnterAtomic);
         self.state.set(GcState::Atomic);
         post_mark(&mut marker);
         marker.drain_gray_queue();
@@ -1680,10 +1686,10 @@ impl Heap {
 
     /// Run one budgeted step of the incremental collector.
     ///
-    /// The state machine advances `Pause → Propagate → Atomic → SweepAllGc →
-    /// SweepFinObj → SweepToBeFnz → SweepEnd → CallFin → Pause`. Each phase
-    /// consumes budget; the call returns when the budget runs out or the cycle
-    /// reaches `Pause`. The `post_mark`
+    /// The state machine advances `Pause → Propagate → EnterAtomic → Atomic →
+    /// SweepAllGc → SweepFinObj → SweepToBeFnz → SweepEnd → CallFin → Pause`.
+    /// Each phase consumes budget; the call returns when the budget runs out
+    /// or the cycle reaches `Pause`. The `post_mark`
     /// hook is invoked exactly once per cycle, during the `Atomic`
     /// transition (after the initial gray-queue drain, before sweep starts).
     ///
@@ -1752,11 +1758,19 @@ impl Heap {
                         m.as_ref().map(|m| m.gray_queue.is_empty()).unwrap_or(true)
                     };
                     if empty {
-                        self.state.set(GcState::Atomic);
-                        if stop_at == Some(GcState::Atomic) {
+                        self.state.set(GcState::EnterAtomic);
+                        if stop_at == Some(GcState::EnterAtomic) {
                             return did_work;
                         }
                     } else if budget.remaining_work <= 0 {
+                        return did_work;
+                    }
+                }
+                GcState::EnterAtomic => {
+                    self.state.set(GcState::Atomic);
+                    budget.remaining_work -= 1;
+                    did_work = true;
+                    if stop_at == Some(GcState::Atomic) || budget.remaining_work <= 0 {
                         return did_work;
                     }
                 }
@@ -2589,9 +2603,10 @@ mod tests {
         });
         let old_id = old_dead.identity();
 
-        let outcome = heap.incremental_step_with_post_mark(
+        let outcome = heap.incremental_run_until_state_with_post_mark(
             &OneRoot(None),
-            StepBudget::from_work(1),
+            GcState::SweepAllGc,
+            1024,
             |_| {},
         );
         assert_eq!(outcome, StepOutcome::InProgress);
