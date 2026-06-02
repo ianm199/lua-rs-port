@@ -10,7 +10,7 @@
 use std::convert::Infallible;
 #[allow(unused_imports)] use crate::prelude::*;
 
-use crate::state::{LuaState, LuaCFunction, LuaCallable, StackIdx,
+use crate::state::{FinalizerObject, LuaState, LuaCFunction, LuaCallable, StackIdx,
     LuaValueExt, LuaTypeExt, StackIdxExt,
     LuaTableRefExt, LuaUserDataRefExt};
 use lua_types::{
@@ -62,7 +62,8 @@ fn is_valid_index(state: &LuaState, idx: i32) -> bool {
         let upval_n = (LUA_REGISTRYINDEX - idx) as usize;
         let func_val = state.get_at(ci.func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
-            upval_n >= 1 && upval_n <= ccl.upvalues.len()
+            let upvalues = ccl.upvalues.borrow();
+            upval_n >= 1 && upval_n <= upvalues.len()
         } else {
             false
         }
@@ -105,8 +106,9 @@ fn index_to_value(state: &LuaState, idx: i32) -> LuaValue {
         let func_val = state.get_at(ci.func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
             // C closure upvalue
-            if upval_n >= 1 && upval_n <= ccl.upvalues.len() {
-                ccl.upvalues[upval_n - 1].clone()
+            let upvalues = ccl.upvalues.borrow();
+            if upval_n >= 1 && upval_n <= upvalues.len() {
+                upvalues[upval_n - 1].clone()
             } else {
                 LuaValue::Nil
             }
@@ -289,11 +291,19 @@ pub fn copy(state: &mut LuaState, fromidx: i32, toidx: i32) {
         let upval_n = (LUA_REGISTRYINDEX - toidx) as usize;
         let func_val = state.get_at(state.current_call_info().func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
-            // TODO(port): CClosure upvalue write requires interior mutability on GcRef<CClosure>
-            // state.gc().barrier(ccl, &fr);
-            let _ = (upval_n, ccl);
+            let wrote = {
+                let mut upvalues = ccl.upvalues.borrow_mut();
+                if upval_n >= 1 && upval_n <= upvalues.len() {
+                    upvalues[upval_n - 1] = fr.clone();
+                    true
+                } else {
+                    false
+                }
+            };
+            if wrote {
+                state.gc().barrier(ccl, &fr);
+            }
         }
-        // TODO(port): implement upvalue write for copy() to C closure upvalues
     } else if toidx == LUA_REGISTRYINDEX {
         // TODO(port): write to registry — needs GlobalState::set_registry(fr)
     } else {
@@ -822,7 +832,7 @@ impl LuaState {
         // TODO(D-1c-bridge): state.new_userdata is still todo!(); keep direct alloc
         let u = GcRef::new(LuaUserData {
             data: vec![0u8; size].into_boxed_slice(),
-            uv: vec![LuaValue::Nil; nuvalue as usize],
+            uv: std::cell::RefCell::new(vec![LuaValue::Nil; nuvalue as usize]),
             metatable: std::cell::RefCell::new(None),
             host_value: std::cell::RefCell::new(None),
         });
@@ -1150,7 +1160,7 @@ pub fn push_cclosure(
         // TODO(D-1c-bridge): state.new_c_closure is still todo!(); keep direct alloc
         let cl = LuaClosure::C(GcRef::new(lua_types::closure::LuaCClosure {
             func: idx,
-            upvalues,
+            upvalues: std::cell::RefCell::new(upvalues),
         }));
         state.push(LuaValue::Function(cl));
         state.gc().check_step();
@@ -1317,12 +1327,13 @@ pub fn get_i_uservalue(state: &mut LuaState, idx: i32, n: i32) -> LuaType {
     let o = index_to_value(state, idx);
     debug_assert!(matches!(o, LuaValue::UserData(_)), "full userdata expected");
     if let LuaValue::UserData(ref u) = o {
-        let uv_count = u.uv.len() as i32;
+        let uv = u.uv.borrow();
+        let uv_count = uv.len() as i32;
         if n <= 0 || n > uv_count {
             state.push(LuaValue::Nil);
             LuaType::None
         } else {
-            let val = u.uv[(n - 1) as usize].clone();
+            let val = uv[(n - 1) as usize].clone();
             let t = val.base_type();
             state.push(val);
             t
@@ -1440,31 +1451,20 @@ fn metatable_has_gc(state: &LuaState, mt: &GcRef<LuaTable>) -> bool {
     !matches!(mt.get_short_str(&name), LuaValue::Nil)
 }
 
-/// Pin `tbl` in `pending_finalizers` if not already present.
-fn register_finalizable_table(state: &mut LuaState, tbl: &GcRef<LuaTable>) {
+fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
+    let id = object.identity();
     let already = state
         .global()
         .pending_finalizers
         .iter()
-        .any(|t| GcRef::ptr_eq(t, tbl));
+        .any(|o| o.identity() == id);
     if !already {
-        state.global_mut().pending_finalizers.push(tbl.clone());
+        state.global_mut().pending_finalizers.push(object);
     }
 }
 
-/// Phase-B `__gc` driver.
-///
-/// Scans `pending_finalizers` for tables whose only strong ref is the list
-/// itself (`Rc::strong_count == 1`), runs their `__gc` metamethod in a
-/// protected call, then drops the list's pin so the table can be freed.
-/// Iterates in reverse so the most-recently registered finalizers run first,
-/// matching C-Lua's order (`finobj` is a LIFO stack).
-///
-/// PORT NOTE: This stands in for C-Lua's `GCSatomic` finalizer-promotion step
-/// plus `GCTM`. The real GC walks the heap to decide which `finobj` entries
-/// are unreachable; in Phase B we use the `Rc` strong-count as the proxy.
-/// Replaced by `lua_gc::run_pending_finalizers` when Phase D's incremental
-/// GC lands.
+/// Drain objects already promoted from `pending_finalizers` to
+/// `to_be_finalized` by the heap mark phase.
 pub fn run_pending_finalizers(state: &mut LuaState) {
     let _ = run_pending_finalizers_inner(state, false);
 }
@@ -1495,10 +1495,9 @@ pub fn run_pending_finalizers_inner(
     let version = state.global().lua_version;
     let mut did_run = false;
     loop {
-        // `to_be_finalized` was populated by the most recent
-        // `collect_via_heap` mark phase. Drain in LIFO order so the most
-        // recently dead object runs its `__gc` first — matches C-Lua's
-        // `finobj` stack ordering.
+        // `to_be_finalized` was populated by the most recent mark phase.
+        // Drain in LIFO order so the most recently dead object runs its `__gc`
+        // first, matching C-Lua's `finobj`/`tobefnz` ordering.
         let target_idx = {
             let to_fin = &state.global().to_be_finalized;
             if to_fin.is_empty() { None } else { Some(to_fin.len() - 1) }
@@ -1513,8 +1512,8 @@ pub fn run_pending_finalizers_inner(
         // ordering (finalizer-visible state) still requires reachability-
         // based detection of which finalizable tables are about to die — a
         // gap tracked under D-2 ephemeron/finalizer follow-up.
-        let tbl = state.global_mut().to_be_finalized.swap_remove(i);
-        let mt = tbl.metatable();
+        let object = state.global_mut().to_be_finalized.swap_remove(i);
+        let mt = object.metatable();
         let gc_fn = match mt {
             Some(ref m) => {
                 let name = state.global().tmname[crate::tagmethods::TagMethod::Gc as usize].clone();
@@ -1533,7 +1532,7 @@ pub fn run_pending_finalizers_inner(
             state.set_top(ci_top);
         }
         state.push(gc_fn);
-        state.push(LuaValue::Table(tbl));
+        state.push(object.as_lua_value());
         let func_idx = state.top_idx() - 2;
         let _heap_guard = {
             let g = state.global.borrow();
@@ -1620,25 +1619,24 @@ pub fn run_pending_finalizers_inner(
 /// what emits messages like `>>> closing state <<<` from `gc.lua`.
 ///
 /// Phase-B note: the live registry of finalizable objects is
-/// `pending_finalizers`. A single snapshot of that list is promoted into
-/// `to_be_finalized` and drained by [`run_pending_finalizers`]. We snapshot
+    /// `pending_finalizers`. A single snapshot of that list is promoted into
+    /// `to_be_finalized` and drained by [`run_pending_finalizers`]. We snapshot
 /// once (matching C's single `separatetobefnz` call): a finalizer may
 /// resurrect its object or register new finalizables via `setmetatable`, but
 /// C does not re-finalize those at close (`gcstp = GCSTPCLS`), so neither do
 /// we — the freshly-registered entries are left in `pending_finalizers` and
 /// simply dropped with the state.
 pub fn run_close_finalizers(state: &mut LuaState) {
-    let pending: Vec<GcRef<lua_types::value::LuaTable>> =
-        std::mem::take(&mut state.global_mut().pending_finalizers);
+    let pending: Vec<FinalizerObject> = std::mem::take(&mut state.global_mut().pending_finalizers);
     if pending.is_empty() {
         return;
     }
     let mut seen = std::collections::HashSet::<usize>::new();
     {
         let mut g = state.global_mut();
-        for tbl in pending {
-            if seen.insert(tbl.identity()) {
-                g.to_be_finalized.push(tbl);
+        for object in pending {
+            if seen.insert(object.identity()) {
+                g.to_be_finalized.push(object);
             }
         }
     }
@@ -1709,7 +1707,7 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
             if tables_finalizable {
                 if let Some(ref mt_table) = mt {
                     if metatable_has_gc(state, mt_table) {
-                        register_finalizable_table(state, tbl);
+                        register_finalizable_object(state, FinalizerObject::Table(tbl.clone()));
                     }
                 }
             }
@@ -1717,7 +1715,9 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
         LuaValue::UserData(ref ud) => {
             if let Some(ref mt_table) = mt {
                 state.gc().obj_barrier(ud, mt_table);
-                // TODO(port): luaC_checkfinalizer
+                if metatable_has_gc(state, mt_table) {
+                    register_finalizable_object(state, FinalizerObject::UserData(ud.clone()));
+                }
             }
             ud.set_metatable(mt);
         }
@@ -1736,14 +1736,14 @@ pub fn set_i_uservalue(state: &mut LuaState, idx: i32, n: i32) -> Result<bool, L
     let top = state.top_idx();
     let val = state.get_at(top - 1);
     let res = if let LuaValue::UserData(ref ud) = o {
-        let nuvalue = ud.uv.len() as i32;
+        let mut uv = ud.uv.borrow_mut();
+        let nuvalue = uv.len() as i32;
         if n < 1 || n > nuvalue {
             false
         } else {
-            // TODO(port): LuaUserData uv field needs interior mutability for write
-            // ud.uv[(n - 1) as usize] = val.clone();
+            uv[(n - 1) as usize] = val.clone();
+            drop(uv);
             state.gc().barrier_back(ud, &val);
-            let _ = (n, ud);
             true
         }
     } else {
@@ -1886,6 +1886,7 @@ pub fn load(
                 let gt = get_global_table(state);
                 let uv = state.new_upval_closed(gt);
                 lcl.set_upval(0, uv);
+                state.gc().obj_barrier(&lcl, &uv);
             }
         }
     }
@@ -1989,52 +1990,15 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             if let Err(e) = run_pending_finalizers_inner(state, true) {
                 state.global_mut().gc_finalizer_error = Some(e.into_value());
             }
-            // PORT NOTE: Phase-B long-string accounting. Reclaim `gc_debt`
-            // for any tracked long-string Rc whose strong count has dropped
-            // to zero (either because the weak-table sweep above released
-            // the last reference, or because the user dropped it directly).
-            // Without this, `collectgarbage("count")` would report peak
-            // allocation rather than live bytes — gc.lua's weak-string-key
-            // block depends on the post-collect count being lower than the
-            // pre-collect count.
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
-            // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
-            // so total_bytes() only ever shrinks (each `Step` simulates
-            // freed memory). Refill to a baseline here so subsequent Step
-            // calls have headroom to actually drop count*1024 — the test
-            // pattern `collectgarbage(); local x = gcinfo(); collectgarbage('step'); assert(gcinfo()<x)`
-            // needs gcinfo to be high enough that decrementing by 1 KB is
-            // observable. Removed in Phase D when real GC tracks bytes.
-            {
-                let mut g = state.global_mut();
-                let target_tb = 32_768_isize;
-                let cur_tb = g.totalbytes + g.gc_debt;
-                if cur_tb < target_tb {
-                    g.totalbytes += target_tb - cur_tb;
-                }
-            }
         }
         GcArgs::Count => {
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
             let g = state.global();
-            let long_string_bytes: usize = g.gc_tracked_long_strings.iter().map(|(_, sz)| sz).sum();
-            let total = g.heap.bytes_used() + long_string_bytes;
+            let total = g.heap.bytes_used();
             return (total >> 10) as i32;
         }
         GcArgs::CountB => {
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
             let g = state.global();
-            let long_string_bytes: usize = g.gc_tracked_long_strings.iter().map(|(_, sz)| sz).sum();
-            let total = g.heap.bytes_used() + long_string_bytes;
+            let total = g.heap.bytes_used();
             return (total & 0x3ff) as i32;
         }
         GcArgs::Step { data } => {
@@ -2046,8 +2010,8 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             };
             // C-Lua converts `data` KiB of added debt into work units via
             // `stepmul`. We use a simpler mapping: the work-unit count is
-            // `data * stepmul / 4` (stepmul is the user-tunable speed,
-            // /4-encoded in `gcstepmul`), with a floor of 1 unit. When
+            // `data * stepmul` after decoding the packed GC parameter, with a
+            // floor of 1 unit. When
             // `data == 0` the call still performs one basic step (matching
             // C-Lua's `luaC_step(L)` after `setdebt(g, 0)`).
             let stepmul = (state.global().gc_stepmul_param() as isize | 1).max(1);
@@ -2057,34 +2021,24 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                 let raw = (data as isize).saturating_mul(stepmul);
                 raw.max(1)
             };
-            if data == 0 {
+            let debt_for_result = if data == 0 {
                 let mut g = state.global_mut();
                 crate::state::set_debt(&mut *g, 0);
+                0
             } else {
                 let debt = data as isize * 1024 + state.global().gc_debt();
                 let mut g = state.global_mut();
                 crate::state::set_debt(&mut *g, debt);
-            }
-            let cycle_complete = state.gc().incremental_step(work_units);
-            if state.global().is_gen_mode() {
-                state.gc().prune_weak_tables_mark_only();
-            }
+                debt
+            };
+            let gen_mode = state.global().is_gen_mode();
+            let cycle_complete = if gen_mode {
+                state.gc().generational_step();
+                debt_for_result > 0 && state.global().gc_at_pause()
+            } else {
+                state.gc().incremental_step(work_units)
+            };
             state.global_mut().set_gc_stop_flags(old_stp);
-            // Phase-B byte accounting: real allocation isn't tracked, so
-            // simulate C-Lua's post-sweep totalbytes drop here. Halving
-            // the current `tb` makes `gcinfo() < x` hold across a step
-            // that completes a cycle (gc.lua `dosteps()` line 194), while
-            // the floor at 1 KB preserves `set_debt`'s `tb > 0` invariant
-            // across many back-to-back step calls.
-            if cycle_complete {
-                let mut g = state.global_mut();
-                let floor: isize = 1024;
-                let cur_tb = g.totalbytes + g.gc_debt;
-                let new_tb = (cur_tb / 2).max(floor);
-                if new_tb < cur_tb {
-                    g.totalbytes -= cur_tb - new_tb;
-                }
-            }
             // Sync the global gcstate byte for `gc_at_pause()` callers.
             {
                 let heap_state = state.global().heap.gc_state();
@@ -2094,13 +2048,13 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             return if cycle_complete { 1 } else { 0 };
         }
         GcArgs::SetPause { value } => {
-            let old = state.global().gc_pause_param() as i32;
-            state.global_mut().set_gc_pause_param(value as u8);
+            let old = state.global().gc_pause_param();
+            state.global_mut().set_gc_pause_param(value);
             return old;
         }
         GcArgs::SetStepMul { value } => {
-            let old = state.global().gc_stepmul_param() as i32;
-            state.global_mut().set_gc_stepmul_param(value as u8);
+            let old = state.global().gc_stepmul_param();
+            state.global_mut().set_gc_stepmul_param(value);
             return old;
         }
         GcArgs::IsRunning => {
@@ -2112,7 +2066,7 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                 state.global_mut().genminormul = minormul as u8;
             }
             if majormul != 0 {
-                state.global_mut().set_gc_genmajormul(majormul as u8);
+                state.global_mut().set_gc_genmajormul(majormul);
             }
             state.gc().change_mode(crate::state::GcKind::Generational);
             return old_mode;
@@ -2120,10 +2074,10 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
         GcArgs::Inc { pause, stepmul, stepsize } => {
             let old_mode = if state.global().is_gen_mode() { 10i32 } else { 11i32 };
             if pause != 0 {
-                state.global_mut().set_gc_pause_param(pause as u8);
+                state.global_mut().set_gc_pause_param(pause);
             }
             if stepmul != 0 {
-                state.global_mut().set_gc_stepmul_param(stepmul as u8);
+                state.global_mut().set_gc_stepmul_param(stepmul);
             }
             if stepsize != 0 {
                 state.global_mut().gcstepsize = stepsize as u8;
@@ -2266,11 +2220,12 @@ fn aux_upvalue(
 ) -> Option<(Vec<u8>, LuaValue)> {
     match fi {
         LuaValue::Function(LuaClosure::C(ccl)) => {
-            let nupvalues = ccl.upvalues.len() as i32;
+            let upvalues = ccl.upvalues.borrow();
+            let nupvalues = upvalues.len() as i32;
             if n < 1 || n > nupvalues {
                 return None;
             }
-            Some((Vec::new(), ccl.upvalues[(n - 1) as usize].clone()))
+            Some((Vec::new(), upvalues[(n - 1) as usize].clone()))
         }
         LuaValue::Function(LuaClosure::Lua(lcl)) => {
             let nupvalues = lcl.upvals.len() as i32;
@@ -2312,10 +2267,16 @@ pub fn setup_value(state: &mut LuaState, funcindex: i32, n: i32) -> Option<Vec<u
         LuaValue::Function(LuaClosure::Lua(lcl)) => {
             state.upvalue_set(lcl, (n - 1) as usize, new_val).ok()?;
         }
-        LuaValue::Function(LuaClosure::C(_ccl)) => {
-            // TODO(port): C-closure upvalue writes need interior mutability on
-            // LuaCClosure.upvalues. Not exercised by current tests.
-            let _ = new_val;
+        LuaValue::Function(LuaClosure::C(ccl)) => {
+            let idx = (n - 1) as usize;
+            {
+                let mut upvalues = ccl.upvalues.borrow_mut();
+                if idx >= upvalues.len() {
+                    return None;
+                }
+                upvalues[idx] = new_val.clone();
+            }
+            state.gc().barrier(ccl, &new_val);
         }
         _ => return None,
     }
@@ -2349,7 +2310,8 @@ pub fn upvalue_id(state: &LuaState, fidx: i32, n: i32) -> Option<usize> {
             Some(GcRef::identity(&lcl.upval(idx)))
         }
         LuaValue::Function(LuaClosure::C(ccl)) => {
-            if n >= 1 && n <= ccl.upvalues.len() as i32 {
+            let upvalues = ccl.upvalues.borrow();
+            if n >= 1 && n <= upvalues.len() as i32 {
                 // TODO(port): returning address of upvalue slot not possible without raw ptr.
                 // Return a synthetic identity based on the closure's identity + n.
                 Some(GcRef::identity(ccl) ^ (n as usize))
@@ -2384,6 +2346,7 @@ pub fn upvalue_join(state: &mut LuaState, fidx1: i32, n1: i32, fidx2: i32, n2: i
     {
         let shared = lcl2.upval(idx2);
         lcl1.set_upval(idx1, shared);
+        state.gc().obj_barrier(lcl1, &shared);
     }
 }
 

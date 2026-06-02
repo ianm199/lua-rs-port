@@ -1024,7 +1024,7 @@ impl Lua {
             let raw = with_heap_guard(state, || {
                 let callback_payload = GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(Some(
                         Rc::new(RustCallbackCell { function: callable }) as Rc<dyn Any>,
@@ -1032,7 +1032,7 @@ impl Lua {
                 });
                 RawLuaValue::Function(RawLuaClosure::C(GcRef::new(RawLuaCClosure {
                     func: idx,
-                    upvalues: vec![RawLuaValue::UserData(callback_payload)],
+                    upvalues: RefCell::new(vec![RawLuaValue::UserData(callback_payload)]),
                 })))
             });
             let key = state.external_root_value(raw);
@@ -1164,7 +1164,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })
@@ -1287,7 +1287,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })
@@ -1321,7 +1321,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })
@@ -3138,7 +3138,8 @@ fn rust_callback_trampoline(state: &mut LuaState) -> Result<usize> {
     let func_idx = state.current_call_info().func;
     let callback = match state.get_at(func_idx) {
         RawLuaValue::Function(RawLuaClosure::C(closure)) => {
-            let Some(RawLuaValue::UserData(userdata)) = closure.upvalues.first() else {
+            let upvalues = closure.upvalues.borrow();
+            let Some(RawLuaValue::UserData(userdata)) = upvalues.first() else {
                 return Err(LuaError::runtime(format_args!(
                     "missing Rust callback payload"
                 )));

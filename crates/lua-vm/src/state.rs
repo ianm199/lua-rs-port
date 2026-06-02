@@ -110,6 +110,42 @@ impl LuaCallable {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum FinalizerObject {
+    Table(GcRef<LuaTable>),
+    UserData(GcRef<LuaUserData>),
+}
+
+impl FinalizerObject {
+    pub fn identity(&self) -> usize {
+        match self {
+            FinalizerObject::Table(t) => t.identity(),
+            FinalizerObject::UserData(u) => u.identity(),
+        }
+    }
+
+    pub fn metatable(&self) -> Option<GcRef<LuaTable>> {
+        match self {
+            FinalizerObject::Table(t) => t.metatable(),
+            FinalizerObject::UserData(u) => u.metatable(),
+        }
+    }
+
+    pub fn as_lua_value(&self) -> LuaValue {
+        match self {
+            FinalizerObject::Table(t) => LuaValue::Table(t.clone()),
+            FinalizerObject::UserData(u) => LuaValue::UserData(u.clone()),
+        }
+    }
+
+    pub fn mark(&self, marker: &mut lua_gc::Marker) {
+        match self {
+            FinalizerObject::Table(t) => marker.mark(t.0),
+            FinalizerObject::UserData(u) => marker.mark(u.0),
+        }
+    }
+}
+
 // ─── Constants (from macros.tsv) ──────────────────────────────────────────────
 
 // macros.tsv: EXTRA_STACK → const EXTRA_STACK: u32 = 5
@@ -207,6 +243,14 @@ pub enum WarnMode {
     Off,
     On,
     Cont,
+}
+
+/// Output mode for the testC/ltests warning sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestWarnMode {
+    Normal,
+    Allow,
+    Store,
 }
 
 // ─── LuaStatus enum ──────────────────────────────────────────────────────────
@@ -577,20 +621,45 @@ impl LuaTableRefExt for GcRef<LuaTable> {
     /// key validation internally as part of its integer-fast-path match.
     #[inline]
     fn raw_set(&self, _state: &mut LuaState, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
-        (**self).try_raw_set(k, v)
+        let before = (**self).buffer_bytes();
+        let result = (**self).try_raw_set(k, v);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     #[inline]
     fn raw_set_int(&self, _state: &mut LuaState, k: i64, v: LuaValue) -> Result<(), LuaError> {
-        (**self).try_raw_set_int(k, v)
+        let before = (**self).buffer_bytes();
+        let result = (**self).try_raw_set_int(k, v);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     fn invalidate_tm_cache(&self) {}
     fn resize(&self, _state: &mut LuaState, na: usize, nh: usize) -> Result<(), LuaError> {
+        let before = (**self).buffer_bytes();
         let na32 = na.min(u32::MAX as usize) as u32;
         let nh32 = nh.min(u32::MAX as usize) as u32;
-        (**self).resize(na32, nh32)
+        let result = (**self).resize(na32, nh32);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     fn next(&self, k: LuaValue) -> Result<Option<(LuaValue, LuaValue)>, LuaError> {
         (**self).try_next_pair(&k)
+    }
+}
+
+#[inline]
+fn account_table_buffer_delta(t: &GcRef<LuaTable>, before: usize) {
+    let after = (**t).buffer_bytes();
+    if after > before {
+        t.account_buffer((after - before) as isize);
+    } else if before > after {
+        t.account_buffer(-((before - after) as isize));
     }
 }
 
@@ -635,7 +704,7 @@ impl LuaClosureExt for LuaClosure {
     fn nupvalues(&self) -> usize {
         match self {
             LuaClosure::Lua(l) => l.0.upvals.len(),
-            LuaClosure::C(c) => c.0.upvalues.len(),
+            LuaClosure::C(c) => c.0.upvalues.borrow().len(),
             LuaClosure::LightC(_) => 0,
         }
     }
@@ -1206,45 +1275,27 @@ pub struct GlobalState {
     // sweepgc_cursor stayed because non-list bookkeeping kept it.
     pub sweepgc_cursor: usize,
 
-    /// Phase-B cross-table weak-sweep registry.
+    /// Cross-table weak-sweep registry.
     ///
-    /// `lua_types::value::sweep_weak_tables` iterates this list at
-    /// `collectgarbage("collect")` time to clear entries whose weak target
-    /// is held only by other weak slots. Holds `Weak<LuaTable>` so the
-    /// registry itself does not pin tables that the user has dropped.
-    /// Replaced by the proper `weak` / `ephemeron` / `allweak` lists when
-    /// Phase D's incremental sweep lands.
+    /// Heap collection snapshots this list before mark, then the post-mark
+    /// weak-table pass clears entries whose weak target is held only by other
+    /// weak slots. The registry holds `GcWeak<LuaTable>` so it does not pin
+    /// dead weak tables after sweep removes their heap allocation token.
+    /// Replaced by proper `weak` / `ephemeron` / `allweak` cohorts once the
+    /// Lua-style generational lists land.
     pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
 
-    /// Phase-B long-string allocation tracker.
-    ///
-    /// Each entry pairs a `Weak<LuaString>` with the byte count that was
-    /// added to `gc_debt` at allocation time. `collectgarbage("count")` walks
-    /// the list and reclaims `gc_debt` for entries whose weak target has been
-    /// dropped, so the Lua-visible memory total tracks live long-string bytes.
-    /// Short strings are interned and bounded in size, so they are not tracked
-    /// individually. Replaced by Phase D's real allocator accounting.
-    pub gc_tracked_long_strings: Vec<(lua_types::gc::GcWeak<lua_types::string::LuaString>, usize)>,
+    /// Finalizable tables and userdata whose metatable carried `__gc` when
+    /// installed. This mirrors C-Lua's `finobj` list: entries are deliberately
+    /// not traced as roots, so a mark phase can detect when an object is
+    /// reachable only through the finalizer registry.
+    pub pending_finalizers: Vec<FinalizerObject>,
 
-    /// Phase-B pending-finalizer registry.
-    ///
-    /// Each entry is a strong `GcRef<LuaTable>` to a table whose metatable
-    /// carried `__gc` at the time `setmetatable` was called. The strong ref
-    /// pins the table so a normal `Rc::drop` does not destroy it before its
-    /// `__gc` metamethod runs. The Phase-B finalizer sweep
-    /// (`crate::api::run_pending_finalizers`) scans this list, takes any
-    /// entry whose strong count is 1 (only this list holds it — i.e. the
-    /// user has dropped every reference), and invokes its `__gc` before
-    /// releasing the ref. Replaced by `finobj` / `tobefnz` when the real
-    /// incremental GC lands in Phase D.
-    pub pending_finalizers: Vec<GcRef<lua_types::value::LuaTable>>,
-
-    /// Tables identified by the most recent `collect_via_heap` mark phase as
-    /// reachable only through `pending_finalizers` (i.e. the user has dropped
-    /// every reference). Their `__gc` runs the next time
-    /// `run_pending_finalizers` executes; entries are then cleared. Traced as
-    /// strong roots so they survive the sweep that scheduled them.
-    pub to_be_finalized: Vec<GcRef<lua_types::value::LuaTable>>,
+    /// Finalizable objects promoted by the most recent atomic mark phase
+    /// because they were otherwise unreachable. This mirrors C-Lua's
+    /// `tobefnz` list and is traced as a temporary root so the object survives
+    /// until its `__gc` call runs.
+    pub to_be_finalized: Vec<FinalizerObject>,
 
     /// Error raised by a `__gc` finalizer during an explicit `collectgarbage`
     /// on 5.2 / 5.3, parked here for the `collectgarbage` wrapper to re-raise.
@@ -1340,6 +1391,16 @@ pub struct GlobalState {
     /// consulted when no custom `warnf` was installed via the C API.
     pub warn_mode: WarnMode,
 
+    /// testC/ltests warning sink, enabled only by the CLI's `LUA_RS_TESTC`
+    /// support. It mirrors `ltests.c`'s `warnf`: a separate on/off bit, an
+    /// output mode (`normal`, `allow`, `store`), and a continuation buffer so
+    /// multi-part warnings can be asserted via global `_WARN`.
+    pub test_warn_enabled: bool,
+    pub test_warn_on: bool,
+    pub test_warn_mode: TestWarnMode,
+    pub test_warn_last_to_cont: bool,
+    pub test_warn_buffer: Vec<u8>,
+
     /// Registry of native `LuaCFunction` pointers. Lua-types cannot reference
     /// `LuaState`, so `LuaClosure::LightC` carries a `usize` index into this
     /// vector instead of the real function pointer. `push_c_function`
@@ -1434,11 +1495,12 @@ impl GlobalState {
         self.sandbox.interval.get() != 0
     }
 
-    /// Total live bytes allocated (GCdebt + totalbytes).
+    /// Total live bytes allocated, as reported by the collector-owned heap
+    /// accounting model.
     ///
     /// macros.tsv: `gettotalbytes → g.total_bytes()`
     pub fn total_bytes(&self) -> usize {
-        (self.totalbytes + self.gc_debt) as usize
+        self.heap.bytes_used().max(1)
     }
 
     /// Look up the coroutine `LuaState` registered under `id`. Returns
@@ -1474,8 +1536,9 @@ impl GlobalState {
     ///
     /// macros.tsv: `luaC_white → g.current_white()`
     ///
-    /// PORT NOTE: GC color management deferred to Phase D; always returns
-    /// the initial white bit.
+    /// PORT NOTE: the effective dual-white collector state lives in
+    /// `lua_gc::Heap`; this field preserves the translated `global_State`
+    /// shape for code that still reads the upstream bitmask.
     pub fn current_white(&self) -> u8 {
         self.currentwhite
     }
@@ -1484,7 +1547,6 @@ impl GlobalState {
     ///
     /// macros.tsv: `otherwhite → g.other_white()`
     pub fn other_white(&self) -> u8 {
-        // TODO(port): Phase D — toggle white bit properly
         self.currentwhite ^ 0x03
     }
 
@@ -1492,7 +1554,7 @@ impl GlobalState {
     ///
     /// macros.tsv: `isdecGCmodegen → g.is_gen_mode()`
     pub fn is_gen_mode(&self) -> bool {
-        self.gckind == GcKind::Generational as u8
+        self.gckind == GcKind::Generational as u8 || self.lastatomic != 0
     }
 
     /// Returns `true` if the GC is currently running.
@@ -1506,27 +1568,31 @@ impl GlobalState {
     ///
     /// macros.tsv: `keepinvariant → g.keep_invariant()`
     pub fn keep_invariant(&self) -> bool {
-        // TODO(port): Phase D — check gcstate for propagation phases
-        false
+        matches!(
+            self.heap.gc_state(),
+            lua_gc::GcState::Propagate | lua_gc::GcState::Atomic
+        )
     }
 
     /// Returns `true` while the GC is in a sweep phase.
     ///
     /// macros.tsv: `issweepphase → g.is_sweep_phase()`
     pub fn is_sweep_phase(&self) -> bool {
-        // TODO(port): Phase D — check gcstate for sweep states (GCSswpallgc etc.)
-        false
+        self.heap.gc_state().is_sweep()
     }
 
     // ── Phase-B stubs ─────────────────────────────────────────────────────────
     pub fn gc_debt(&self) -> isize { self.gc_debt }
     pub fn set_gc_debt(&mut self, d: isize) { self.gc_debt = d; }
-    pub fn gc_at_pause(&self) -> bool { self.gcstate == 0 }
-    pub fn gc_pause_param(&self) -> u8 { self.gcpause }
-    pub fn set_gc_pause_param(&mut self, p: u8) { self.gcpause = p; }
-    pub fn gc_stepmul_param(&self) -> u8 { self.gcstepmul }
-    pub fn set_gc_stepmul_param(&mut self, p: u8) { self.gcstepmul = p; }
-    pub fn set_gc_genmajormul(&mut self, p: u8) { self.genmajormul = p; }
+    pub fn gc_at_pause(&self) -> bool { self.heap.gc_state().is_pause() }
+    fn get_gc_param(p: u8) -> i32 { (p as i32) * 4 }
+    fn set_gc_param_slot(slot: &mut u8, p: i32) { *slot = (p / 4) as u8; }
+    pub fn gc_pause_param(&self) -> i32 { Self::get_gc_param(self.gcpause) }
+    pub fn set_gc_pause_param(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.gcpause, p); }
+    pub fn gc_stepmul_param(&self) -> i32 { Self::get_gc_param(self.gcstepmul) }
+    pub fn set_gc_stepmul_param(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.gcstepmul, p); }
+    pub fn gc_genmajormul_param(&self) -> i32 { Self::get_gc_param(self.genmajormul) }
+    pub fn set_gc_genmajormul(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.genmajormul, p); }
     /// Lua 5.5 `collectgarbage("param", name [, value])`. `idx` is the 0-based
     /// param index (`minormul=0 .. stepsize=5`). When `value >= 0` the param is
     /// set; the previous value is always returned.
@@ -1734,6 +1800,20 @@ impl LuaState {
     /// Used in `new_thread` to give the child thread access to the same GlobalState.
     pub fn global_rc(&self) -> Rc<RefCell<GlobalState>> {
         Rc::clone(&self.global)
+    }
+
+    /// Enable the ltests-style warning sink used by `LUA_RS_TESTC`.
+    pub fn enable_test_warning_handler(&mut self) -> Result<(), LuaError> {
+        {
+            let mut g = self.global_mut();
+            g.test_warn_enabled = true;
+            g.test_warn_on = false;
+            g.test_warn_mode = TestWarnMode::Normal;
+            g.test_warn_last_to_cont = false;
+            g.test_warn_buffer.clear();
+        }
+        self.push(LuaValue::Bool(false));
+        crate::api::set_global(self, b"_WARN")
     }
 
     /// Return the current C-call recursion depth (lower 16 bits of `n_ccalls`).
@@ -2035,7 +2115,6 @@ impl LuaState {
         self.mark_gc_check_needed();
         let t = GcRef::new(LuaTable::placeholder());
         self.table_resize(&t, array_size as usize, hash_size as usize)?;
-        t.account_buffer(t.buffer_bytes() as isize);
         Ok(t)
     }
 
@@ -2056,6 +2135,7 @@ impl LuaState {
             }
             self.mark_gc_check_needed();
             let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
+            new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             self.global_mut()
                 .interned_lt
                 .insert(bytes.to_vec().into_boxed_slice(), new_ref.clone());
@@ -2063,23 +2143,7 @@ impl LuaState {
         } else {
             self.mark_gc_check_needed();
             let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
-            // PORT NOTE: Phase-B byte tracking for `collectgarbage("count")`.
-            // C-Lua's `luaC_newobj` calls `luaM_malloc`, which adds
-            // `sizeof(TString) + len + 1` to `g->GCdebt`. Phases A–C bypass
-            // that allocator, so without explicit accounting the Lua-visible
-            // memory total never reflects string payload — gc.lua's
-            // string-keys-in-weak-tables block depends on observing the >8MB
-            // jump after allocating two 4MB strings. Short strings are
-            // interned (bounded in size) so they are not tracked here.
-            // `reclaim_dead_long_strings` later subtracts the size back out
-            // when the underlying `Rc` is dropped.
-            let size = bytes.len()
-                + std::mem::size_of::<LuaString>()
-                + std::mem::size_of::<usize>();
-            let mut g = self.global_mut();
-            g.gc_debt += size as isize;
-            g.gc_tracked_long_strings
-                .push((new_ref.downgrade(), size));
+            new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             Ok(new_ref)
         }
     }
@@ -2713,14 +2777,15 @@ impl LuaState {
                 let current = self.cached_thread_id;
                 if tid == current {
                     self.stack[idx.0 as usize].val = val;
-                    return Ok(());
+                } else {
+                    self.upvalue_set_cross_thread(tid, idx, val)?;
                 }
-                return self.upvalue_set_cross_thread(tid, idx, val);
             }
             None => {
                 uv.set_closed_value(val);
             }
         }
+        self.gc_barrier_upval(&uv, &val);
         Ok(())
     }
 
@@ -3277,8 +3342,12 @@ impl LuaState {
         };
         self.gc_check_needed = should_keep_checking;
     }
-    pub fn gc_barrier_back<T, U>(&mut self, _t: T, _v: U) { /* phase-b no-op */ }
-    pub fn gc_barrier_upval<T, U, V>(&mut self, _cl: T, _uv: U, _v: V) { /* phase-b no-op */ }
+    pub fn gc_barrier_back(&mut self, t: &dyn std::any::Any, v: &LuaValue) {
+        self.gc().barrier_back(t, v);
+    }
+    pub fn gc_barrier_upval(&mut self, uv: &GcRef<UpVal>, v: &LuaValue) {
+        self.gc().barrier(uv, v);
+    }
     ///
     /// Phase E-1: compares `GlobalState::current_thread_id` against
     /// `main_thread_id`. Coroutine resume (slice 02b) is what will swap
@@ -3337,10 +3406,142 @@ struct CollectRoots<'a> {
     thread: &'a LuaState,
 }
 
+#[derive(Clone, Copy)]
+enum HeapCollectMode {
+    Full,
+    Step,
+    Minor,
+}
+
 impl<'a> lua_gc::Trace for CollectRoots<'a> {
     fn trace(&self, m: &mut lua_gc::Marker) {
         self.global.trace(m);
         self.thread.trace(m);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BarrierKind {
+    Forward,
+    Backward,
+}
+
+fn barrier_lua_value<P>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: &LuaValue,
+    generational: bool,
+    kind: BarrierKind,
+)
+where
+    P: lua_gc::Trace + 'static,
+{
+    if generational && matches!(kind, BarrierKind::Backward) {
+        heap.generational_backward_barrier(parent.0);
+    }
+    match child {
+        LuaValue::Str(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Table(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Function(LuaClosure::Lua(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Function(LuaClosure::C(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::UserData(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Thread(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => {}
+    }
+}
+
+fn barrier_gc_child<P, C>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: GcRef<C>,
+    generational: bool,
+    kind: BarrierKind,
+)
+where
+    P: lua_gc::Trace + 'static,
+    C: lua_gc::Trace + 'static,
+{
+    if generational && matches!(kind, BarrierKind::Forward) {
+        heap.generational_forward_barrier(parent.0, child.0);
+    } else {
+        heap.barrier(parent.0, child.0);
+    }
+}
+
+fn barrier_child_any<P>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: &dyn std::any::Any,
+    generational: bool,
+    kind: BarrierKind,
+)
+where
+    P: lua_gc::Trace + 'static,
+{
+    if let Some(v) = child.downcast_ref::<LuaValue>() {
+        barrier_lua_value(heap, parent, v, generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaString>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaTable>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaClosureLua>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaClosureC>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaUserData>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<lua_types::value::LuaThread>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<LuaProto>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    } else if let Some(c) = child.downcast_ref::<GcRef<UpVal>>() {
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
+    }
+}
+
+fn barrier_any(
+    heap: &lua_gc::Heap,
+    parent: &dyn std::any::Any,
+    child: &dyn std::any::Any,
+    generational: bool,
+    kind: BarrierKind,
+) {
+    if let Some(v) = parent.downcast_ref::<LuaValue>() {
+        match v {
+            LuaValue::Str(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Table(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Function(LuaClosure::Lua(p)) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Function(LuaClosure::C(p)) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::UserData(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Thread(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Nil
+            | LuaValue::Bool(_)
+            | LuaValue::Int(_)
+            | LuaValue::Float(_)
+            | LuaValue::LightUserData(_)
+            | LuaValue::Function(LuaClosure::LightC(_)) => {}
+        }
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaString>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaTable>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaClosureLua>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaClosureC>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaUserData>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<lua_types::value::LuaThread>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<LuaProto>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
+    } else if let Some(p) = parent.downcast_ref::<GcRef<UpVal>>() {
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     }
 }
 
@@ -3413,6 +3614,29 @@ fn close_open_upvalues_for_unreachable_threads(
     marker.drain_gray_queue();
 }
 
+fn record_live_interned_strings(
+    global: &GlobalState,
+    marker: &lua_gc::Marker,
+    live_ids: &std::cell::RefCell<std::collections::HashSet<usize>>,
+) {
+    let mut live = live_ids.borrow_mut();
+    for s in global.interned_lt.values() {
+        let id = s.identity();
+        if marker.is_visited(id) {
+            live.insert(id);
+        }
+    }
+}
+
+fn retain_live_interned_strings(
+    global: &mut GlobalState,
+    live_ids: &std::collections::HashSet<usize>,
+) {
+    global
+        .interned_lt
+        .retain(|_, s| live_ids.contains(&s.identity()));
+}
+
 impl<'a> GcHandle<'a> {
     /// macros.tsv: `luaC_checkGC → state.gc().check_step()`
     ///
@@ -3424,12 +3648,126 @@ impl<'a> GcHandle<'a> {
         if !self._state.global().is_gc_running() {
             return;
         }
-        self.collect_via_heap(/* force = */ false);
+        if self._state.global().is_gen_mode() {
+            let should_collect = {
+                let g = self._state.global();
+                g.heap.would_collect() || g.gc_debt() > 0
+            };
+            if should_collect {
+                self.generational_step();
+            }
+        } else {
+            self.collect_via_heap(/* force = */ false);
+        }
     }
 
     /// macros.tsv: `luaC_fullgc → state.gc().full_collect()`
     pub fn full_collect(&self) {
-        self.collect_via_heap(/* force = */ true);
+        if self._state.global().is_gen_mode() {
+            self.fullgen();
+        } else {
+            self.collect_via_heap(/* force = */ true);
+        }
+    }
+
+    fn negative_debt(bytes: usize) -> isize {
+        -(bytes.min(isize::MAX as usize) as isize)
+    }
+
+    fn set_minor_debt(&self) {
+        let mut g = self._state.global_mut();
+        let total = g.total_bytes();
+        let growth = (total / 100).saturating_mul(g.genminormul as usize);
+        g.heap
+            .set_threshold_bytes(total.saturating_add(growth.max(1)));
+        set_debt(&mut *g, Self::negative_debt(growth));
+    }
+
+    fn set_pause_debt(&self) {
+        let mut g = self._state.global_mut();
+        let total = g.total_bytes();
+        let pause = g.gc_pause_param().max(0) as usize;
+        let threshold = g.gc_estimate.max(1).saturating_mul(pause) / 100;
+        let debt = if threshold > total {
+            Self::negative_debt(threshold - total)
+        } else {
+            0
+        };
+        let heap_threshold = if threshold > total {
+            threshold
+        } else {
+            total.saturating_add(1)
+        };
+        g.heap.set_threshold_bytes(heap_threshold);
+        set_debt(&mut *g, debt);
+    }
+
+    fn enter_incremental_mode(&self) {
+        {
+            let g = self._state.global();
+            g.heap.reset_all_ages();
+        }
+        let mut g = self._state.global_mut();
+        g.gckind = GcKind::Incremental as u8;
+        g.lastatomic = 0;
+    }
+
+    fn enter_generational_mode(&self) -> usize {
+        self.collect_via_heap_mode(HeapCollectMode::Full);
+        let numobjs = {
+            let g = self._state.global();
+            g.heap.promote_all_to_old();
+            g.heap.allgc_count()
+        };
+        let total = self._state.global().total_bytes();
+        {
+            let mut g = self._state.global_mut();
+            g.gckind = GcKind::Generational as u8;
+            g.lastatomic = 0;
+            g.gc_estimate = total;
+        }
+        self.set_minor_debt();
+        numobjs
+    }
+
+    fn fullgen(&self) -> usize {
+        self.enter_incremental_mode();
+        self.enter_generational_mode()
+    }
+
+    fn stepgenfull(&self, lastatomic: usize) {
+        if self._state.global().gckind == GcKind::Generational as u8 {
+            self.enter_incremental_mode();
+        }
+        self.collect_via_heap_mode(HeapCollectMode::Full);
+        let newatomic = self._state.global().heap.allgc_count().max(1);
+        if newatomic < lastatomic.saturating_add(lastatomic >> 3) {
+            {
+                let g = self._state.global();
+                g.heap.promote_all_to_old();
+            }
+            let total = self._state.global().total_bytes();
+            {
+                let mut g = self._state.global_mut();
+                g.gckind = GcKind::Generational as u8;
+                g.lastatomic = 0;
+                g.gc_estimate = total;
+            }
+            self.set_minor_debt();
+        } else {
+            {
+                let g = self._state.global();
+                g.heap.reset_all_ages();
+            }
+            let total = self._state.global().total_bytes();
+            {
+                let mut g = self._state.global_mut();
+                g.gckind = GcKind::Incremental as u8;
+                g.lastatomic = newatomic;
+                g.gc_estimate = total;
+            }
+            self.set_pause_debt();
+        }
     }
 
     /// Shared driver behind both `full_collect` (force-collect) and
@@ -3441,6 +3779,14 @@ impl<'a> GcHandle<'a> {
     /// works for both modes — the heap short-circuits when force=false and
     /// the threshold isn't met.
     fn collect_via_heap(&self, force: bool) {
+        self.collect_via_heap_mode(if force {
+            HeapCollectMode::Full
+        } else {
+            HeapCollectMode::Step
+        });
+    }
+
+    fn collect_via_heap_mode(&self, mode: HeapCollectMode) {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
 
@@ -3449,7 +3795,7 @@ impl<'a> GcHandle<'a> {
         // the heap is paused or under threshold — a `step()` in that state
         // is a no-op, so the snapshot would be pure waste. Called millions
         // of times per recursive workload via `gc_check_step` in `precall`.
-        if !force {
+        if matches!(mode, HeapCollectMode::Step) {
             let g = state_ref.global.borrow();
             if !g.heap.would_collect() {
                 return;
@@ -3473,32 +3819,18 @@ impl<'a> GcHandle<'a> {
         // does NOT root these — that's how the post-mark hook below can
         // distinguish "still reachable from program state" from "only kept
         // alive by the finalizer registry."
-        let pending_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+        let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
             g.pending_finalizers.clone()
         };
 
-        // Snapshot tracked long-string identities + byte sizes BEFORE the
-        // collect. The post-mark hook compares each identity against the
-        // marker's visited set; anything not visited is unreachable and
-        // its bytes get reclaimed from `gc_debt` after the heap collect
-        // returns. Bare `usize` is safe to carry across the hook — long
-        // strings use `new_uncollected` so the pointer never dangles.
-        let long_string_snapshot: Vec<(usize, usize)> = {
-            let g = state_ref.global.borrow();
-            g.gc_tracked_long_strings
-                .iter()
-                .map(|(w, sz)| (w.0.identity(), *sz))
-                .collect()
-        };
-
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
-        let newly_unreachable: std::cell::RefCell<Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>>> =
+        let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
-        let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+        let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let collect_ran = std::cell::Cell::new(false);
 
@@ -3531,7 +3863,7 @@ impl<'a> GcHandle<'a> {
                 }
                 for pf in &pending_snapshot {
                     if !marker.is_visited(pf.identity()) {
-                        marker.mark(pf.0);
+                        pf.mark(marker);
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
@@ -3566,21 +3898,6 @@ impl<'a> GcHandle<'a> {
                     }
                 }
                 marker.drain_gray_queue();
-                // Long-string Phase-B reclaim. With `new_uncollected`
-                // allocation, long strings never enter the heap's sweep
-                // path, so we rely on the marker's visited set: any
-                // tracked long-string identity that wasn't reached by mark
-                // is unreferenced and its bytes can be returned to
-                // `gc_debt`. Done here (inside the hook) so it sees the
-                // visited set BEFORE drop of the marker.
-                {
-                    let mut dead = dead_long_strings.borrow_mut();
-                    for (id, _sz) in &long_string_snapshot {
-                        if !marker.is_visited(*id) {
-                            dead.insert(*id);
-                        }
-                    }
-                }
                 {
                     let mut alive = alive_thread_ids.borrow_mut();
                     for (id, entry) in global.threads.iter() {
@@ -3589,11 +3906,12 @@ impl<'a> GcHandle<'a> {
                         }
                     }
                 }
+                record_live_interned_strings(&*global, marker, &live_interned_ids);
             };
-            if force {
-                global.heap.full_collect_with_post_mark(&roots, hook);
-            } else {
-                global.heap.step_with_post_mark(&roots, hook);
+            match mode {
+                HeapCollectMode::Full => global.heap.full_collect_with_post_mark(&roots, hook),
+                HeapCollectMode::Step => global.heap.step_with_post_mark(&roots, hook),
+                HeapCollectMode::Minor => global.heap.minor_collect_with_post_mark(&roots, hook),
             }
         }
 
@@ -3602,20 +3920,18 @@ impl<'a> GcHandle<'a> {
         }
 
         // After collect, drop weak-table-registry entries whose target was
-        // swept. Without this filter the registry leaks one dangling
-        // `GcWeak<LuaTable>` per dead weak table; the next collect would
-        // upgrade those handles (current placeholder GcWeak always returns
-        // Some) and the prune walk would deref freed memory.
+        // swept. This keeps the registry bounded and avoids retaining weak
+        // handles whose target can no longer upgrade.
         let alive_set = alive_ids.into_inner();
-        let promote: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> =
-            newly_unreachable.into_inner();
+        let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
         let promote_ids: std::collections::HashSet<usize> =
             promote.iter().map(|t| t.identity()).collect();
-        let dead_ls_ids = dead_long_strings.into_inner();
         let alive_thread_ids = alive_thread_ids.into_inner();
+        let live_interned_ids = live_interned_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
+        retain_live_interned_strings(&mut *g, &live_interned_ids);
         g.weak_tables_registry
-            .retain(|w| alive_set.contains(&w.0.identity()));
+            .retain(|w| alive_set.contains(&w.identity()));
         let main_thread_id = g.main_thread_id;
         g.threads.retain(|id, _| alive_thread_ids.contains(id));
         g.cross_thread_upvals
@@ -3626,23 +3942,50 @@ impl<'a> GcHandle<'a> {
         g.pending_finalizers
             .retain(|t| !promote_ids.contains(&t.identity()));
         g.to_be_finalized.extend(promote);
-        // Reclaim long-string byte accounting for entries the marker said
-        // were unreachable. The underlying `Gc<LuaString>` was allocated
-        // via `new_uncollected` and stays live in process memory; only
-        // `gc_debt` is adjusted so `collectgarbage("count")` reflects the
-        // drop in user-visible live bytes.
-        if !dead_ls_ids.is_empty() {
-            let mut freed: isize = 0;
-            g.gc_tracked_long_strings.retain(|(w, sz)| {
-                if dead_ls_ids.contains(&w.0.identity()) {
-                    freed += *sz as isize;
-                    false
-                } else {
-                    true
-                }
-            });
-            g.gc_debt -= freed;
+    }
+
+    /// Run one generational collection step.
+    pub fn generational_step(&self) -> bool {
+        let (lastatomic, majorbase, majorinc, should_major) = {
+            let g = self._state.global();
+            let majorbase = if g.gc_estimate == 0 {
+                g.total_bytes()
+            } else {
+                g.gc_estimate
+            };
+            let majormul = g.gc_genmajormul_param().max(0) as usize;
+            let majorinc = (majorbase / 100).saturating_mul(majormul);
+            let should_major = g.gc_debt() > 0
+                && g.total_bytes() > majorbase.saturating_add(majorinc);
+            (g.lastatomic, majorbase, majorinc, should_major)
+        };
+
+        if lastatomic != 0 {
+            self.stepgenfull(lastatomic);
+            debug_assert!(self._state.global().is_gen_mode());
+            return true;
         }
+
+        if should_major {
+            let numobjs = self.fullgen();
+            let after = self._state.global().total_bytes();
+            if after < majorbase.saturating_add(majorinc / 2) {
+                self.set_minor_debt();
+            } else {
+                {
+                    let mut g = self._state.global_mut();
+                    g.lastatomic = numobjs.max(1);
+                }
+                self.set_pause_debt();
+            }
+        } else {
+            self.collect_via_heap_mode(HeapCollectMode::Minor);
+            self.set_minor_debt();
+            self._state.global_mut().gc_estimate = majorbase;
+        }
+
+        debug_assert!(self._state.global().is_gen_mode());
+        true
     }
 
     /// Phase-B stub for `luaC_step(L)`.
@@ -3661,6 +4004,23 @@ impl<'a> GcHandle<'a> {
     /// the snapshot but never execute it. The snapshot is rebuilt on every
     /// call; the cost is `O(weak_tables_registry)` per step.
     pub fn incremental_step(&self, work_units: isize) -> bool {
+        self.incremental_step_to_state(work_units, None)
+    }
+
+    /// TestC/debug helper: run the incremental collector until a specific heap
+    /// state is entered, preserving the same weak-table/finalizer post-mark
+    /// hooks as [`Self::incremental_step`]. This is intentionally not used for
+    /// normal pacing; it exists so official tests can inspect mid-cycle colors.
+    pub fn run_until_gc_state_for_test(&self, target: lua_gc::GcState) -> bool {
+        self.incremental_step_to_state(isize::MAX / 4, Some(target));
+        self._state.global().heap.gc_state() == target
+    }
+
+    fn incremental_step_to_state(
+        &self,
+        work_units: isize,
+        target: Option<lua_gc::GcState>,
+    ) -> bool {
         use lua_gc::{StepBudget, StepOutcome, Trace};
         let state_ref: &LuaState = &*self._state;
 
@@ -3674,26 +4034,18 @@ impl<'a> GcHandle<'a> {
                 .collect()
         };
 
-        let pending_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+        let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
             g.pending_finalizers.clone()
         };
 
-        let long_string_snapshot: Vec<(usize, usize)> = {
-            let g = state_ref.global.borrow();
-            g.gc_tracked_long_strings
-                .iter()
-                .map(|(w, sz)| (w.0.identity(), *sz))
-                .collect()
-        };
-
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
-        let newly_unreachable: std::cell::RefCell<Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>>> =
+        let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
-        let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+        let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let atomic_ran = std::cell::Cell::new(false);
 
@@ -3726,7 +4078,7 @@ impl<'a> GcHandle<'a> {
                 }
                 for pf in &pending_snapshot {
                     if !marker.is_visited(pf.identity()) {
-                        marker.mark(pf.0);
+                        pf.mark(marker);
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
@@ -3762,14 +4114,6 @@ impl<'a> GcHandle<'a> {
                 }
                 marker.drain_gray_queue();
                 {
-                    let mut dead = dead_long_strings.borrow_mut();
-                    for (id, _sz) in &long_string_snapshot {
-                        if !marker.is_visited(*id) {
-                            dead.insert(*id);
-                        }
-                    }
-                }
-                {
                     let mut alive = alive_thread_ids.borrow_mut();
                     for (id, entry) in global.threads.iter() {
                         if thread_entry_marked_alive(marker, *id, entry) {
@@ -3777,22 +4121,32 @@ impl<'a> GcHandle<'a> {
                         }
                     }
                 }
+                record_live_interned_strings(&*global, marker, &live_interned_ids);
             };
             let budget = StepBudget::from_work(work_units);
-            global.heap.incremental_step_with_post_mark(&roots, budget, hook)
+            if let Some(target) = target {
+                global.heap.incremental_run_until_state_with_post_mark(
+                    &roots,
+                    target,
+                    work_units,
+                    hook,
+                )
+            } else {
+                global.heap.incremental_step_with_post_mark(&roots, budget, hook)
+            }
         };
 
         if atomic_ran.get() {
             let alive_set = alive_ids.into_inner();
-            let promote: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> =
-                newly_unreachable.into_inner();
+            let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
             let promote_ids: std::collections::HashSet<usize> =
                 promote.iter().map(|t| t.identity()).collect();
-            let dead_ls_ids = dead_long_strings.into_inner();
             let alive_thread_ids = alive_thread_ids.into_inner();
+            let live_interned_ids = live_interned_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
+            retain_live_interned_strings(&mut *g, &live_interned_ids);
             g.weak_tables_registry
-                .retain(|w| alive_set.contains(&w.0.identity()));
+                .retain(|w| alive_set.contains(&w.identity()));
             let main_thread_id = g.main_thread_id;
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals
@@ -3800,29 +4154,17 @@ impl<'a> GcHandle<'a> {
             g.pending_finalizers
                 .retain(|t| !promote_ids.contains(&t.identity()));
             g.to_be_finalized.extend(promote);
-            if !dead_ls_ids.is_empty() {
-                let mut freed: isize = 0;
-                g.gc_tracked_long_strings.retain(|(w, sz)| {
-                    if dead_ls_ids.contains(&w.0.identity()) {
-                        freed += *sz as isize;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                g.gc_debt -= freed;
-            }
         }
 
         matches!(outcome, StepOutcome::Paused)
     }
 
-    /// Run only the weak-table atomic cleanup used by a generational step.
+    /// Run only the weak-table atomic cleanup used by legacy generational
+    /// callers that need mark/prune behavior without sweeping.
     ///
-    /// C-Lua's `genstep` performs young/full generational work and includes
-    /// weak-table clearing at the atomic boundary. This heap does not model
-    /// ages yet; this mark-only pass gives explicit generational steps the
-    /// weak cleanup they need without sweeping objects from suspended threads.
+    /// Explicit generational steps now use [`Self::generational_step`], which
+    /// performs a young sweep. This helper remains for call sites that only
+    /// need the weak-table atomic pass.
     pub fn prune_weak_tables_mark_only(&self) {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
@@ -3837,48 +4179,68 @@ impl<'a> GcHandle<'a> {
                 .collect()
         };
 
-        let global = state_ref.global.borrow();
-        global.heap.unpause();
-        let roots = CollectRoots { global: &*global, thread: state_ref };
-        let hook = |marker: &mut lua_gc::Marker| {
-            trace_reachable_threads(&*global, global.current_thread_id, marker);
-            loop {
-                let visited_before = marker.visited_count();
-                for t in &weak_tables_snapshot {
-                    let t_id = t.identity();
-                    if !marker.is_visited(t_id) {
-                        continue;
+        let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+
+        {
+            let global = state_ref.global.borrow();
+            global.heap.unpause();
+            let roots = CollectRoots { global: &*global, thread: state_ref };
+            let hook = |marker: &mut lua_gc::Marker| {
+                trace_reachable_threads(&*global, global.current_thread_id, marker);
+                loop {
+                    let visited_before = marker.visited_count();
+                    for t in &weak_tables_snapshot {
+                        let t_id = t.identity();
+                        if !marker.is_visited(t_id) {
+                            continue;
+                        }
+                        let to_mark = t.ephemeron_values_to_mark(
+                            &|id| marker.is_visited(id),
+                        );
+                        for v in &to_mark {
+                            v.trace(marker);
+                        }
                     }
-                    let to_mark = t.ephemeron_values_to_mark(
-                        &|id| marker.is_visited(id),
-                    );
-                    for v in &to_mark {
-                        v.trace(marker);
+                    marker.drain_gray_queue();
+                    if marker.visited_count() == visited_before {
+                        break;
+                    }
+                }
+                for t in &weak_tables_snapshot {
+                    if marker.is_visited(t.identity()) {
+                        let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
+                        for v in &to_mark {
+                            v.trace(marker);
+                        }
                     }
                 }
                 marker.drain_gray_queue();
-                if marker.visited_count() == visited_before {
-                    break;
-                }
-            }
-            for t in &weak_tables_snapshot {
-                if marker.is_visited(t.identity()) {
-                    let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
-                    for v in &to_mark {
-                        v.trace(marker);
-                    }
-                }
-            }
-        };
-        global.heap.mark_only_with_post_mark(&roots, hook);
+                record_live_interned_strings(&*global, marker, &live_interned_ids);
+            };
+            global.heap.mark_only_with_post_mark(&roots, hook);
+        }
+
+        let live_interned_ids = live_interned_ids.into_inner();
+        let mut g = state_ref.global.borrow_mut();
+        retain_live_interned_strings(&mut *g, &live_interned_ids);
     }
 
     /// Set the GC kind (incremental/generational).
-    ///
-    /// itself is `Rc`-based, so the only observable effect is the mode flag
-    /// returned by `lua_gc(LUA_GCGEN)` / `lua_gc(LUA_GCINC)` on the next call.
     pub fn change_mode(&self, mode: GcKind) {
-        self._state.global_mut().gckind = mode as u8;
+        let old = self._state.global().gckind;
+        if old == mode as u8 {
+            self._state.global_mut().lastatomic = 0;
+            return;
+        }
+        match mode {
+            GcKind::Generational => {
+                self.enter_generational_mode();
+            }
+            GcKind::Incremental => {
+                self.enter_incremental_mode();
+            }
+        }
     }
 
     /// Phase-B stub for `luaC_fix(L, o)` — pin an object so GC won't collect it.
@@ -3893,22 +4255,34 @@ impl<'a> GcHandle<'a> {
 
     /// GC write barrier for a TValue.
     ///
-    /// macros.tsv: `luaC_barrier → state.gc().barrier(p, v)` — no-op in Phases A–C
-    pub fn barrier(&self, _p: &dyn std::any::Any, _v: &LuaValue) {}
+    /// macros.tsv: `luaC_barrier → state.gc().barrier(p, v)`
+    pub fn barrier(&self, p: &dyn std::any::Any, v: &LuaValue) {
+        let g = self._state.global();
+        barrier_any(&g.heap, p, v, g.is_gen_mode(), BarrierKind::Forward);
+    }
 
     /// Backward write barrier.
     ///
-    /// macros.tsv: `luaC_barrierback → state.gc().barrier_back(p, v)` — no-op
-    pub fn barrier_back(&self, _p: &dyn std::any::Any, _v: &LuaValue) {}
+    /// macros.tsv: `luaC_barrierback → state.gc().barrier_back(p, v)`
+    pub fn barrier_back(&self, p: &dyn std::any::Any, v: &LuaValue) {
+        let g = self._state.global();
+        barrier_any(&g.heap, p, v, g.is_gen_mode(), BarrierKind::Backward);
+    }
 
     /// Object write barrier.
     ///
-    /// macros.tsv: `luaC_objbarrier → state.gc().obj_barrier(p, o)` — no-op
-    pub fn obj_barrier(&self, _p: &dyn std::any::Any, _o: &dyn std::any::Any) {}
+    /// macros.tsv: `luaC_objbarrier → state.gc().obj_barrier(p, o)`
+    pub fn obj_barrier(&self, p: &dyn std::any::Any, o: &dyn std::any::Any) {
+        let g = self._state.global();
+        barrier_any(&g.heap, p, o, g.is_gen_mode(), BarrierKind::Forward);
+    }
 
     /// Backward object write barrier.
     ///
-    pub fn obj_barrier_back(&self, _p: &dyn std::any::Any, _o: &dyn std::any::Any) {}
+    pub fn obj_barrier_back(&self, p: &dyn std::any::Any, o: &dyn std::any::Any) {
+        let g = self._state.global();
+        barrier_any(&g.heap, p, o, g.is_gen_mode(), BarrierKind::Backward);
+    }
 }
 
 // ─── Functions from lstate.c ──────────────────────────────────────────────────
@@ -3944,7 +4318,8 @@ fn make_seed() -> u32 {
     }
 }
 
-/// Adjust `GCdebt` to `debt` while preserving the `totalbytes + GCdebt` invariant.
+/// Adjust the compatibility `GCdebt` split while preserving the collector's
+/// current total byte count in the shadow `totalbytes` field.
 ///
 ///
 /// ```c
@@ -3966,28 +4341,6 @@ pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
     }
     g.totalbytes = tb - debt;
     g.gc_debt = debt;
-}
-
-/// Sweep the Phase-B long-string tracker and decrement `gc_debt` by the
-/// recorded byte count of any entry whose underlying `Rc` has been dropped.
-///
-/// PORT NOTE: Phase D will replace this with the real allocator's per-object
-/// accounting through `luaM_realloc`. For now, long-string creation pushes a
-/// `(Weak, size)` pair onto `gc_tracked_long_strings`, and this helper
-/// reclaims the bytes lazily — at every `collectgarbage("count")` query and
-/// at the end of `collectgarbage("collect")` — so the Lua-visible memory
-/// total reflects live string bytes rather than peak allocation.
-pub(crate) fn reclaim_dead_long_strings(g: &mut GlobalState) {
-    let mut freed: isize = 0;
-    g.gc_tracked_long_strings.retain(|(w, sz)| {
-        if w.strong_count() == 0 {
-            freed += *sz as isize;
-            false
-        } else {
-            true
-        }
-    });
-    g.gc_debt -= freed;
 }
 
 /// Deprecated no-op that returns `LUAI_MAXCCALLS`.
@@ -4670,7 +5023,6 @@ pub fn new_state() -> Option<LuaState> {
         gc55_params: [20, 50, 68, 250, 200, 9600],
         sweepgc_cursor: 0,
         weak_tables_registry: Vec::new(),
-        gc_tracked_long_strings: Vec::new(),
         pending_finalizers: Vec::new(),
         to_be_finalized: Vec::new(),
         gc_finalizer_error: None,
@@ -4691,6 +5043,11 @@ pub fn new_state() -> Option<LuaState> {
         interned_lt: std::collections::HashMap::new(),
         warnf: None,
         warn_mode: WarnMode::Off,
+        test_warn_enabled: false,
+        test_warn_on: false,
+        test_warn_mode: TestWarnMode::Normal,
+        test_warn_last_to_cont: false,
+        test_warn_buffer: Vec::new(),
         c_functions: Vec::new(),
         heap: lua_gc::Heap::new(),
         cross_thread_upvals: std::collections::HashMap::new(),
@@ -4785,6 +5142,12 @@ pub fn close(mut state: LuaState) {
 /// // }
 /// ```
 pub(crate) fn warning(state: &mut LuaState, msg: &[u8], to_cont: bool) {
+    let test_warn_enabled = state.global().test_warn_enabled;
+    if test_warn_enabled {
+        test_warn(state, msg, to_cont);
+        return;
+    }
+
     // types.tsv: global_State.warnf → Option<Box<dyn FnMut(&[u8], bool)>>
     // types.tsv: global_State.ud_warn → (removed; folded into the closure)
     // PORT NOTE: We must drop the RefMut borrow before calling the closure to avoid
@@ -4805,6 +5168,71 @@ pub(crate) fn warning(state: &mut LuaState, msg: &[u8], to_cont: bool) {
         return;
     }
     default_warn(state, msg, to_cont);
+}
+
+fn test_warn(state: &mut LuaState, msg: &[u8], to_cont: bool) {
+    let is_control = {
+        let g = state.global();
+        !g.test_warn_last_to_cont && !to_cont && msg.first() == Some(&b'@')
+    };
+    if is_control {
+        let mut g = state.global_mut();
+        match &msg[1..] {
+            b"off" => g.test_warn_on = false,
+            b"on" => g.test_warn_on = true,
+            b"normal" => g.test_warn_mode = TestWarnMode::Normal,
+            b"allow" => g.test_warn_mode = TestWarnMode::Allow,
+            b"store" => g.test_warn_mode = TestWarnMode::Store,
+            _ => {}
+        }
+        return;
+    }
+
+    let finished = {
+        let mut g = state.global_mut();
+        g.test_warn_last_to_cont = to_cont;
+        g.test_warn_buffer.extend_from_slice(msg);
+        if to_cont {
+            None
+        } else {
+            Some((
+                std::mem::take(&mut g.test_warn_buffer),
+                g.test_warn_mode,
+                g.test_warn_on,
+            ))
+        }
+    };
+
+    let Some((message, mode, warn_on)) = finished else {
+        return;
+    };
+    match mode {
+        TestWarnMode::Normal => {
+            if warn_on && message.first() == Some(&b'#') {
+                write_warning_message(&message);
+            }
+        }
+        TestWarnMode::Allow => {
+            if warn_on {
+                write_warning_message(&message);
+            }
+        }
+        TestWarnMode::Store => {
+            if let Ok(s) = state.intern_str(&message) {
+                state.push(LuaValue::Str(s));
+                let _ = crate::api::set_global(state, b"_WARN");
+            }
+        }
+    }
+}
+
+fn write_warning_message(message: &[u8]) {
+    use std::io::Write;
+    let stderr = std::io::stderr();
+    let mut h = stderr.lock();
+    let _ = h.write_all(b"Lua warning: ");
+    let _ = h.write_all(message);
+    let _ = h.write_all(b"\n");
 }
 
 /// The default warning handler: a faithful port of the `warnfoff` /
@@ -4845,6 +5273,10 @@ fn default_warn(state: &mut LuaState, msg: &[u8], to_cont: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_noop_cclosure(_: &mut LuaState) -> Result<usize, LuaError> {
+        Ok(0)
+    }
 
     #[test]
     fn external_root_keys_reject_stale_slot_after_reuse() {
@@ -4890,6 +5322,524 @@ mod tests {
         state.gc().full_collect();
         assert_eq!(state.global().heap.allgc_count(), 0);
         assert!(state.global().external_roots.is_empty());
+    }
+
+    #[test]
+    fn table_buffer_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let table = state.new_table();
+        let key = state.external_root_value(LuaValue::Table(table));
+        let header_bytes = state.global().heap.bytes_used();
+        assert!(header_bytes > 0);
+
+        for i in 1..=128 {
+            table
+                .raw_set_int(&mut state, i, LuaValue::Int(i))
+                .expect("integer table insert should succeed");
+        }
+        let grown_bytes = state.global().heap.bytes_used();
+        assert!(
+            grown_bytes > header_bytes,
+            "table array/hash buffer growth must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            grown_bytes,
+            "rooted table buffer bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn string_buffer_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let payload = vec![b'x'; crate::string::MAX_SHORT_LEN + 4096];
+        let string = state.intern_str(&payload).expect("long string should allocate");
+        let key = state.external_root_value(LuaValue::Str(string));
+        let allocated_bytes = state.global().heap.bytes_used();
+        assert!(
+            allocated_bytes > payload.len(),
+            "long string backing bytes must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            allocated_bytes,
+            "rooted string buffer bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn interned_short_string_cache_does_not_root_unreferenced_string() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let payload = b"weak-cache-probe-a";
+        let string = state
+            .intern_str(payload)
+            .expect("short string should intern");
+        let id = string.identity();
+        assert!(state.global().interned_lt.contains_key(&payload[..]));
+        assert!(state.global().heap.allocation_token(id).is_some());
+
+        state.gc().full_collect();
+        assert!(!state.global().interned_lt.contains_key(&payload[..]));
+        assert_eq!(state.global().heap.allocation_token(id), None);
+    }
+
+    #[test]
+    fn interned_short_string_cache_keeps_reachable_string_until_unrooted() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let payload = b"weak-cache-probe-b";
+        let string = state
+            .intern_str(payload)
+            .expect("short string should intern");
+        let id = string.identity();
+        let key = state.external_root_value(LuaValue::Str(string));
+
+        state.gc().full_collect();
+        assert!(state.global().interned_lt.contains_key(&payload[..]));
+        assert!(state.global().heap.allocation_token(id).is_some());
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert!(!state.global().interned_lt.contains_key(&payload[..]));
+        assert_eq!(state.global().heap.allocation_token(id), None);
+    }
+
+    #[test]
+    fn gc_phase_predicates_follow_heap_state() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        {
+            let mut g = state.global_mut();
+            g.gckind = GcKind::Incremental as u8;
+            g.lastatomic = 0;
+            assert!(!g.is_gen_mode());
+            g.lastatomic = 1;
+            assert!(g.is_gen_mode());
+            g.lastatomic = 0;
+        }
+
+        let mut roots = Vec::new();
+        for _ in 0..16 {
+            let table = state.new_table();
+            roots.push(state.external_root_value(LuaValue::Table(table)));
+        }
+
+        let mut saw_keep = false;
+        let mut saw_sweep = false;
+        for _ in 0..128 {
+            state.gc().incremental_step(1);
+            let g = state.global();
+            let heap_state = g.heap.gc_state();
+            assert_eq!(
+                g.keep_invariant(),
+                matches!(heap_state, lua_gc::GcState::Propagate | lua_gc::GcState::Atomic)
+            );
+            assert_eq!(g.is_sweep_phase(), heap_state.is_sweep());
+            saw_keep |= g.keep_invariant();
+            saw_sweep |= g.is_sweep_phase();
+            if heap_state.is_pause() && saw_keep && saw_sweep {
+                break;
+            }
+        }
+
+        assert!(saw_keep, "incremental cycle should expose an invariant phase");
+        assert!(saw_sweep, "incremental cycle should expose a sweep phase");
+
+        for key in roots {
+            assert!(state.external_unroot_value(key).is_some());
+        }
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn gc_barrier_keeps_new_child_stored_in_black_parent() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let parent = state.new_table();
+        let parent_key = state.external_root_value(LuaValue::Table(parent));
+        state.gc().incremental_step(1);
+        assert!(
+            state.global().keep_invariant(),
+            "test setup should leave the parent marked during an active cycle"
+        );
+
+        let child = state.new_table();
+        let parent_value = LuaValue::Table(parent);
+        let child_value = LuaValue::Table(child);
+        parent
+            .raw_set_int(&mut state, 1, child_value)
+            .expect("table store should succeed");
+        state.gc_barrier_back(&parent_value, &child_value);
+
+        for _ in 0..128 {
+            if state.gc().incremental_step(1) {
+                break;
+            }
+        }
+
+        assert_eq!(state.global().heap.allgc_count(), 2);
+        assert_eq!(
+            parent.get_int(1).as_table().map(|t| t.identity()),
+            Some(child.identity())
+        );
+
+        assert!(state.external_unroot_value(parent_key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn generational_mode_promotes_and_barriers_age_objects() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let parent = state.new_table();
+        let parent_key = state.external_root_value(LuaValue::Table(parent));
+
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Old);
+        assert_eq!(parent.0.color(), lua_gc::Color::Black);
+        let majorbase = state.global().gc_estimate;
+        assert!(majorbase > 0);
+        assert!(state.global().gc_debt() <= 0);
+
+        let child = state.new_table();
+        let parent_value = LuaValue::Table(parent);
+        let child_value = LuaValue::Table(child);
+        parent
+            .raw_set_int(&mut state, 1, child_value.clone())
+            .expect("table store should succeed");
+        state.gc_barrier_back(&parent_value, &child_value);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Touched1);
+        assert_eq!(parent.0.color(), lua_gc::Color::Gray);
+        assert_eq!(child.0.age(), lua_gc::GcAge::New);
+
+        let metatable = state.new_table();
+        parent.set_metatable(Some(metatable));
+        state.gc().obj_barrier(&parent, &metatable);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.gc().generational_step());
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Touched2);
+        assert_eq!(child.0.age(), lua_gc::GcAge::Survival);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::Old1);
+        assert_eq!(state.global().gc_estimate, majorbase);
+        assert!(state.global().gc_debt() <= 0);
+
+        state.gc().change_mode(GcKind::Incremental);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::New);
+        assert_eq!(child.0.age(), lua_gc::GcAge::New);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::New);
+
+        assert!(state.external_unroot_value(parent_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_upvalue_write_barrier_marks_young_child_old0() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let proto = state.new_proto();
+        let closure = state.new_lclosure(proto, 1);
+        let closure_key = state.external_root_value(LuaValue::Function(LuaClosure::Lua(closure)));
+        state.gc().change_mode(GcKind::Generational);
+        let uv = closure.upval(0);
+        assert_eq!(uv.0.age(), lua_gc::GcAge::Old);
+
+        let child = state.new_table();
+        state
+            .upvalue_set(&closure, 0, LuaValue::Table(child))
+            .expect("closed upvalue write should succeed");
+        assert_eq!(child.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.external_unroot_value(closure_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn cclosure_setupvalue_replaces_upvalue() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let first = state.new_table();
+        state.push(LuaValue::Table(first));
+        crate::api::push_cclosure(&mut state, test_noop_cclosure, 1)
+            .expect("C closure creation should succeed");
+        let LuaValue::Function(LuaClosure::C(ccl)) = state.get_at(state.top_idx() - 1) else {
+            panic!("expected heavy C closure");
+        };
+
+        let second = state.new_table();
+        state.push(LuaValue::Table(second));
+        let name = crate::api::setup_value(&mut state, -2, 1)
+            .expect("C closure upvalue should exist");
+
+        assert!(name.is_empty());
+        let upvalues = ccl.upvalues.borrow();
+        let LuaValue::Table(actual) = upvalues[0].clone() else {
+            panic!("expected table upvalue");
+        };
+        assert_eq!(actual.identity(), second.identity());
+    }
+
+    #[test]
+    fn generational_cclosure_setupvalue_barrier_marks_young_child_old0() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        state.push(LuaValue::Nil);
+        crate::api::push_cclosure(&mut state, test_noop_cclosure, 1)
+            .expect("C closure creation should succeed");
+        let LuaValue::Function(LuaClosure::C(ccl)) = state.get_at(state.top_idx() - 1) else {
+            panic!("expected heavy C closure");
+        };
+        let closure_key = state.external_root_value(LuaValue::Function(LuaClosure::C(ccl)));
+
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(ccl.0.age(), lua_gc::GcAge::Old);
+
+        let child = state.new_table();
+        state.push(LuaValue::Table(child));
+        crate::api::setup_value(&mut state, -2, 1)
+            .expect("C closure upvalue should exist");
+
+        assert_eq!(child.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.external_unroot_value(closure_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_closure_upvalue_slot_barrier_marks_new_upval_old0() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let proto = state.new_proto();
+        let closure = state.new_lclosure(proto, 1);
+        let closure_key = state.external_root_value(LuaValue::Function(LuaClosure::Lua(closure)));
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(closure.0.age(), lua_gc::GcAge::Old);
+
+        let replacement = state.new_upval_closed(LuaValue::Nil);
+        closure.set_upval(0, replacement);
+        state.gc().obj_barrier(&closure, &replacement);
+        assert_eq!(replacement.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.external_unroot_value(closure_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn cross_thread_upvalue_mirror_traces_values_as_roots() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let mirrored = state.new_table();
+        state
+            .global_mut()
+            .cross_thread_upvals
+            .insert((999, StackIdx(0)), LuaValue::Table(mirrored));
+
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.allgc_count(), 1);
+
+        state.global_mut().cross_thread_upvals.clear();
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn generational_full_collect_promotes_new_survivors_to_old() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        state.gc().change_mode(GcKind::Generational);
+        let table = state.new_table();
+        let table_key = state.external_root_value(LuaValue::Table(table));
+        assert_eq!(table.0.age(), lua_gc::GcAge::New);
+
+        state.gc().full_collect();
+        assert_eq!(table.0.age(), lua_gc::GcAge::Old);
+        assert_eq!(table.0.color(), lua_gc::Color::Black);
+
+        assert!(state.external_unroot_value(table_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn gc_packed_params_return_user_visible_values() {
+        let mut state = new_state().expect("state should initialize");
+        assert_eq!(
+            crate::api::gc(&mut state, crate::api::GcArgs::SetPause { value: 200 }),
+            200
+        );
+        assert_eq!(state.global().gc_pause_param(), 200);
+        assert_eq!(
+            crate::api::gc(&mut state, crate::api::GcArgs::SetStepMul { value: 200 }),
+            100
+        );
+        assert_eq!(state.global().gc_stepmul_param(), 200);
+
+        crate::api::gc(
+            &mut state,
+            crate::api::GcArgs::Gen {
+                minormul: 0,
+                majormul: 200,
+            },
+        );
+        assert_eq!(state.global().gc_genmajormul_param(), 200);
+    }
+
+    #[test]
+    fn generational_step_runs_bad_major_when_growth_exceeds_genmajormul() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let root = state.new_table();
+        let root_key = state.external_root_value(LuaValue::Table(root));
+        state.gc().change_mode(GcKind::Generational);
+
+        let root_value = LuaValue::Table(root);
+        for i in 1..=64 {
+            let child = state.new_table();
+            let child_value = LuaValue::Table(child);
+            root
+                .raw_set_int(&mut state, i, child_value.clone())
+                .expect("table store should succeed");
+            state.gc_barrier_back(&root_value, &child_value);
+        }
+
+        {
+            let mut g = state.global_mut();
+            g.gc_estimate = 1;
+            set_debt(&mut *g, 1);
+        }
+
+        assert!(state.gc().generational_step());
+        let g = state.global();
+        assert!(g.is_gen_mode());
+        assert!(g.lastatomic > 0, "bad major collection should arm stepgenfull");
+        assert!(g.gc_estimate > 1);
+        assert!(g.gc_debt() <= 0);
+        assert_eq!(root.0.age(), lua_gc::GcAge::Old);
+        drop(g);
+
+        assert!(state.external_unroot_value(root_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_stepgenfull_returns_to_gen_after_good_collection() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let root = state.new_table();
+        let root_key = state.external_root_value(LuaValue::Table(root));
+        state.gc().change_mode(GcKind::Generational);
+        {
+            let mut g = state.global_mut();
+            g.lastatomic = 1024;
+        }
+
+        assert!(state.gc().generational_step());
+        let g = state.global();
+        assert_eq!(g.gckind, GcKind::Generational as u8);
+        assert_eq!(g.lastatomic, 0);
+        assert!(g.gc_debt() <= 0);
+        assert_eq!(root.0.age(), lua_gc::GcAge::Old);
+        assert_eq!(root.0.color(), lua_gc::Color::Black);
+        drop(g);
+
+        assert!(state.external_unroot_value(root_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_step_zero_reports_false_without_positive_debt() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(
+            crate::api::gc(&mut state, crate::api::GcArgs::Step { data: 0 }),
+            0
+        );
+        assert_eq!(
+            crate::api::gc(&mut state, crate::api::GcArgs::Step { data: 1 }),
+            1
+        );
     }
 }
 

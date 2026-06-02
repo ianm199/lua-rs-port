@@ -26,6 +26,7 @@ dhat-heap = ["dep:dhat"]
 fast-alloc = ["dep:mimalloc"]
 
 [dependencies]
+lua-gc.workspace = true
 lua-types.workspace = true
 lua-vm.workspace = true
 lua-stdlib.workspace = true

@@ -2,7 +2,7 @@
 //! Lua closure (compiled Proto + upvalues), C closure (function pointer +
 //! upvalues), light C function (function pointer, no upvalues).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::gc::GcRef;
 use crate::proto::LuaProto;
@@ -38,7 +38,7 @@ pub struct LuaLClosure {
 #[derive(Debug)]
 pub struct LuaCClosure {
     pub func: LuaCFnPtr,
-    pub upvalues: Vec<LuaValue>,
+    pub upvalues: RefCell<Vec<LuaValue>>,
 }
 
 impl LuaLClosure {

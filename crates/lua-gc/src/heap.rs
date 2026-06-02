@@ -11,7 +11,7 @@
 //!
 //! - **Gc<T>**: a pointer-sized handle. `Copy + Clone`. Replaces `GcRef<T>`.
 //! - **GcBox<T>**: the heap allocation; contains a header and the value.
-//! - **GcHeader**: per-object metadata (color, finalized flag, intrusive
+//! - **GcHeader**: per-object metadata (color, age, finalized flag, intrusive
 //!   `next` pointer for the allgc list).
 //! - **Trace**: trait every GC-rooted type implements. The `trace` method
 //!   walks all `Gc<_>` fields and calls `Marker::mark` on each.
@@ -38,6 +38,7 @@
 //! `state.heap().allocate(value)` so the new box joins the allgc chain.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -109,21 +110,90 @@ pub fn with_current_heap<R>(f: impl for<'a> FnOnce(Option<&'a Heap>) -> R) -> R 
     })
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct HeapRef {
+    ptr: NonNull<Heap>,
+}
+
+impl HeapRef {
+    pub fn from_heap(heap: &Heap) -> Self {
+        HeapRef {
+            ptr: NonNull::from(heap),
+        }
+    }
+
+    pub fn contains_allocation(self, identity: usize, token: usize) -> bool {
+        // SAFETY: `HeapRef` is created only from a live `&Heap`. Runtime-owned
+        // weak handles store it inside `GlobalState`, whose heap field outlives
+        // those handles. The method only traverses heap metadata and never
+        // dereferences the weak target pointer.
+        unsafe { self.ptr.as_ref() }.contains_allocation(identity, token)
+    }
+}
+
 /// A traced color in the tri-color invariant.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Color {
-    /// Not yet visited this cycle. Candidate for sweep.
-    White,
+    /// Not yet visited in the current cycle. The collector alternates between
+    /// two white bits so allocations made during sweep are not collected by
+    /// the cycle already in progress.
+    White0,
+    /// Alternate white bit.
+    White1,
     /// Visited; outgoing references not yet traced.
     Gray,
     /// Fully traced; no outgoing pointers to white objects.
     Black,
 }
 
+impl Color {
+    pub fn is_white(self) -> bool {
+        matches!(self, Color::White0 | Color::White1)
+    }
+
+    fn other_white(self) -> Self {
+        match self {
+            Color::White0 => Color::White1,
+            Color::White1 => Color::White0,
+            Color::Gray | Color::Black => self,
+        }
+    }
+}
+
+/// Object age used by Lua's generational collector.
+///
+/// Mirrors `G_NEW` through `G_TOUCHED2` in `lgc.h`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum GcAge {
+    New,
+    Survival,
+    Old0,
+    Old1,
+    Old,
+    Touched1,
+    Touched2,
+}
+
+impl GcAge {
+    pub fn is_old(self) -> bool {
+        !matches!(self, GcAge::New | GcAge::Survival)
+    }
+
+    fn next_after_minor(self) -> Self {
+        match self {
+            GcAge::New => GcAge::Survival,
+            GcAge::Survival | GcAge::Old0 => GcAge::Old1,
+            GcAge::Old1 | GcAge::Old | GcAge::Touched2 => GcAge::Old,
+            GcAge::Touched1 => GcAge::Touched2,
+        }
+    }
+}
+
 /// Per-object GC metadata. Lives at the start of every `GcBox`.
 #[repr(C)]
 pub struct GcHeader {
     color: Cell<Color>,
+    age: Cell<GcAge>,
     /// Set true after this object's finalizer (`__gc` metamethod) has run.
     /// Phase D defers finalizers; this is reserved.
     finalized: Cell<bool>,
@@ -133,10 +203,8 @@ pub struct GcHeader {
     /// have buffer bytes charged against the pacer (the charge would never be
     /// refunded). [`Gc::account_buffer`] is a no-op when this is false.
     ///
-    /// Placed adjacent to the other byte-sized flags (before `next`) so it
-    /// packs into existing alignment padding: the header stays the same size
-    /// it was before this field existed, so per-object allocation accounting
-    /// — and therefore collection timing — is unchanged by the plumbing.
+    /// Kept separate from `size`: `collected` controls whether buffer charges
+    /// are refundable; `size` remains the exact byte count refunded by sweep.
     collected: Cell<bool>,
     /// Intrusive link into the heap's allgc chain.
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
@@ -146,16 +214,21 @@ pub struct GcHeader {
     /// Invariant: this is always exactly the amount sweep will refund to the
     /// heap's byte counter when this object is freed.
     size: Cell<usize>,
+    /// Concrete Rust type name captured at allocation for testC/diagnostic
+    /// telemetry. Collector behavior must not branch on this field.
+    type_name: &'static str,
 }
 
 impl GcHeader {
-    fn new_white(size: usize) -> Self {
+    fn new_white(size: usize, color: Color, type_name: &'static str) -> Self {
         Self {
-            color: Cell::new(Color::White),
+            color: Cell::new(color),
+            age: Cell::new(GcAge::New),
             finalized: Cell::new(false),
             collected: Cell::new(false),
             next: Cell::new(None),
             size: Cell::new(size),
+            type_name,
         }
     }
 }
@@ -221,7 +294,7 @@ impl<T: Trace + 'static> Gc<T> {
     pub fn new_uncollected(value: T) -> Self {
         let size = std::mem::size_of::<T>();
         let boxed = Box::new(GcBox {
-            header: GcHeader::new_white(size),
+            header: GcHeader::new_white(size, Color::White0, std::any::type_name::<T>()),
             value,
         });
         Gc {
@@ -257,6 +330,22 @@ impl<T: ?Sized> Gc<T> {
 
     fn header(&self) -> &GcHeader {
         &self.as_box().header
+    }
+
+    pub fn color(self) -> Color {
+        self.header().color.get()
+    }
+
+    pub fn set_color(self, color: Color) {
+        self.header().color.set(color);
+    }
+
+    pub fn age(self) -> GcAge {
+        self.header().age.get()
+    }
+
+    pub fn set_age(self, age: GcAge) {
+        self.header().age.set(age);
     }
 
     /// Charge (`delta > 0`) or refund (`delta < 0`) `delta` bytes of this
@@ -547,6 +636,14 @@ pub struct Heap {
     head: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// Total bytes allocated (sum of header sizes; rough).
     bytes: Cell<usize>,
+    /// White bit used for new allocations and for survivors after a sweep.
+    current_white: Cell<Color>,
+    /// Heap-owned allocation tokens keyed by box address. Weak handles store
+    /// these tokens so address reuse after sweep cannot resurrect a stale weak
+    /// target.
+    allocation_tokens: RefCell<HashMap<usize, usize>>,
+    /// Next non-zero token for a collected allocation.
+    next_allocation_token: Cell<usize>,
     /// Threshold above which `step` triggers a collection.
     threshold: Cell<usize>,
     /// Multiplier on bytes_used to set next threshold after collection.
@@ -579,6 +676,9 @@ impl Heap {
         Self {
             head: Cell::new(None),
             bytes: Cell::new(0),
+            current_white: Cell::new(Color::White0),
+            allocation_tokens: RefCell::new(HashMap::new()),
+            next_allocation_token: Cell::new(1),
             threshold: Cell::new(64 * 1024), // initial threshold: 64 KB
             pause_multiplier: Cell::new(200), // 200% = collect when bytes 2x threshold
             state: Cell::new(GcState::Pause),
@@ -603,7 +703,11 @@ impl Heap {
     pub fn allocate<T: Trace + 'static>(&self, value: T) -> Gc<T> {
         let size = std::mem::size_of::<GcBox<T>>();
         let boxed = Box::new(GcBox {
-            header: GcHeader::new_white(size),
+            header: GcHeader::new_white(
+                size,
+                self.current_white.get(),
+                std::any::type_name::<T>(),
+            ),
             value,
         });
         boxed.header.next.set(self.head.get());
@@ -612,6 +716,11 @@ impl Heap {
         let ptr: NonNull<GcBox<T>> =
             NonNull::new(raw).expect("Box::into_raw is non-null");
         let dyn_ptr: NonNull<GcBox<dyn Trace>> = ptr;
+        let identity = ptr.as_ptr() as *const () as usize;
+        let token = self.next_token();
+        self.allocation_tokens
+            .borrow_mut()
+            .insert(identity, token);
         self.head.set(Some(dyn_ptr));
         self.bytes.set(self.bytes.get() + size);
         Gc {
@@ -646,6 +755,15 @@ impl Heap {
         self.threshold.get()
     }
 
+    /// Override the next automatic collection threshold.
+    ///
+    /// The VM uses this when Lua-level GC pacing (`GCdebt`, minor-debt, and
+    /// pause-debt calculations) has already computed a byte threshold from the
+    /// collector-owned live-byte counter.
+    pub fn set_threshold_bytes(&self, threshold: usize) {
+        self.threshold.set(threshold.max(1));
+    }
+
     /// Cheap predicate: would a `step()` actually do work? Equivalent to
     /// `!paused && bytes_used() >= threshold_bytes()`. Callers that build
     /// snapshot state before invoking the heap should gate on this.
@@ -655,6 +773,54 @@ impl Heap {
 
     pub fn collections(&self) -> usize {
         self.collections.get()
+    }
+
+    fn next_token(&self) -> usize {
+        let token = self.next_allocation_token.get().max(1);
+        let next = token.checked_add(1).unwrap_or(1).max(1);
+        self.next_allocation_token.set(next);
+        token
+    }
+
+    fn current_white(&self) -> Color {
+        self.current_white.get()
+    }
+
+    fn other_white(&self) -> Color {
+        self.current_white.get().other_white()
+    }
+
+    fn flip_current_white(&self) {
+        self.current_white.set(self.other_white());
+    }
+
+    fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
+        let mut cursor = self.head.get();
+        while let Some(ptr) = cursor {
+            let header = self.header_from_ptr(ptr);
+            cursor = header.next.get();
+            f(header);
+        }
+    }
+
+    fn header_from_ptr<'a>(&'a self, ptr: NonNull<GcBox<dyn Trace>>) -> &'a GcHeader {
+        unsafe { &(*ptr.as_ptr()).header }
+    }
+
+    /// Return the current heap token for a live allocation identity.
+    ///
+    /// Weak handles use this before sweep to capture their target allocation
+    /// without dereferencing stale pointers later.
+    pub fn allocation_token(&self, identity: usize) -> Option<usize> {
+        self.allocation_tokens.borrow().get(&identity).copied()
+    }
+
+    /// Return true when `identity` still names the same heap allocation.
+    ///
+    /// The token check prevents allocator address reuse from making a stale
+    /// weak handle look live again.
+    pub fn contains_allocation(&self, identity: usize, token: usize) -> bool {
+        self.allocation_token(identity) == Some(token)
     }
 
     /// Forward write barrier: invoked when `parent` (already-traced black
@@ -677,7 +843,7 @@ impl Heap {
         if parent.header().color.get() != Color::Black {
             return;
         }
-        if child.header().color.get() != Color::White {
+        if !child.header().color.get().is_white() {
             return;
         }
         child.header().color.set(Color::Gray);
@@ -687,6 +853,34 @@ impl Heap {
                 m.gray_queue.push(ptr);
                 m.visited.insert(child.identity());
             }
+        }
+    }
+
+    /// Generational forward barrier: if an old object receives a reference to a
+    /// young object, the child cannot jump directly to OLD because it may still
+    /// point at younger objects. Lua marks it OLD0 so later young collections
+    /// advance it through OLD1 to OLD.
+    pub fn generational_forward_barrier<P, C>(&self, parent: Gc<P>, child: Gc<C>)
+    where
+        P: Trace + 'static,
+        C: Trace + 'static,
+    {
+        if parent.age().is_old() && !child.age().is_old() {
+            child.set_age(GcAge::Old0);
+        }
+        self.barrier(parent, child);
+    }
+
+    /// Generational backward barrier: an old object that now points to a young
+    /// object is revisited by the next young collection. This mirrors
+    /// `luaC_barrierback_`'s age transition to TOUCHED1.
+    pub fn generational_backward_barrier<P>(&self, parent: Gc<P>)
+    where
+        P: Trace + 'static,
+    {
+        if parent.age().is_old() {
+            parent.set_color(Color::Gray);
+            parent.set_age(GcAge::Touched1);
         }
     }
 
@@ -733,17 +927,65 @@ impl Heap {
         if self.paused.get() {
             return;
         }
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
-            let header = unsafe { &(*ptr.as_ptr()).header };
-            header.color.set(Color::White);
-            cursor = header.next.get();
-        }
         let mut marker = Marker::new();
         roots.trace(&mut marker);
         marker.drain_gray_queue();
         post_mark(&mut marker);
         marker.drain_gray_queue();
+    }
+
+    /// Metadata transition used when entering generational mode after a full
+    /// mark: all currently live objects become old.
+    pub fn promote_all_to_old(&self) {
+        self.for_each_header(|header| {
+            header.age.set(GcAge::Old);
+            header.color.set(Color::Black);
+        });
+    }
+
+    /// Metadata transition used when returning to incremental mode: Lua clears
+    /// age information and treats all objects as new again.
+    pub fn reset_all_ages(&self) {
+        let current_white = self.current_white();
+        self.for_each_header(|header| {
+            header.age.set(GcAge::New);
+            header.color.set(current_white);
+        });
+    }
+
+    /// Run a complete young-generation collection.
+    ///
+    /// This is the first generational path: it uses the normal root tracer for
+    /// correctness, then limits sweep/freeing to young objects. Later work can
+    /// replace the full root traversal with cohort-list traversal without
+    /// changing the age/sweep contract introduced here.
+    pub fn minor_collect_with_post_mark<F: FnMut(&mut Marker)>(
+        &self,
+        roots: &dyn Trace,
+        mut post_mark: F,
+    ) {
+        if self.paused.get() {
+            return;
+        }
+        if !self.state.get().is_pause() {
+            self.abort_cycle();
+        }
+
+        self.state.set(GcState::Propagate);
+        let mut marker = Marker::new();
+        roots.trace(&mut marker);
+        marker.drain_gray_queue();
+
+        self.state.set(GcState::Atomic);
+        post_mark(&mut marker);
+        marker.drain_gray_queue();
+
+        self.state.set(GcState::Sweep);
+        self.sweep_young();
+        *self.marker.borrow_mut() = None;
+        self.sweep_prev_next.set(None);
+        self.state.set(GcState::Pause);
+        self.collections.set(self.collections.get() + 1);
     }
 
     /// Stop-the-world full collect with a post-mark hook.
@@ -808,8 +1050,21 @@ impl Heap {
         budget: &mut StepBudget,
         post_mark: &mut dyn FnMut(&mut Marker),
     ) -> bool {
+        self.run_budgeted_until(roots, budget, post_mark, None)
+    }
+
+    fn run_budgeted_until(
+        &self,
+        roots: &dyn Trace,
+        budget: &mut StepBudget,
+        post_mark: &mut dyn FnMut(&mut Marker),
+        stop_at: Option<GcState>,
+    ) -> bool {
         let mut did_work = false;
         loop {
+            if stop_at == Some(self.state.get()) {
+                return did_work;
+            }
             if budget.remaining_work <= -budget.max_credit {
                 return did_work;
             }
@@ -819,6 +1074,9 @@ impl Heap {
                     self.state.set(GcState::Propagate);
                     budget.remaining_work -= 1;
                     did_work = true;
+                    if stop_at == Some(GcState::Propagate) {
+                        return did_work;
+                    }
                 }
                 GcState::Propagate => {
                     let work = self.drain_gray_budgeted(budget.remaining_work.max(1));
@@ -830,6 +1088,9 @@ impl Heap {
                     };
                     if empty {
                         self.state.set(GcState::Atomic);
+                        if stop_at == Some(GcState::Atomic) {
+                            return did_work;
+                        }
                     } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
@@ -839,6 +1100,9 @@ impl Heap {
                     self.state.set(GcState::Sweep);
                     budget.remaining_work -= 1;
                     did_work = true;
+                    if stop_at == Some(GcState::Sweep) {
+                        return did_work;
+                    }
                 }
                 GcState::Sweep => {
                     let work = self.sweep_budgeted(budget.remaining_work.max(1));
@@ -846,6 +1110,9 @@ impl Heap {
                     did_work = did_work || work > 0;
                     if self.sweep_prev_next.get().is_none() {
                         self.state.set(GcState::Finalize);
+                        if stop_at == Some(GcState::Finalize) {
+                            return did_work;
+                        }
                     } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
@@ -853,19 +1120,44 @@ impl Heap {
                 GcState::Finalize => {
                     self.finish_cycle();
                     self.state.set(GcState::Pause);
+                    if stop_at == Some(GcState::Pause) {
+                        return did_work;
+                    }
                     return did_work;
                 }
             }
         }
     }
 
-    fn start_cycle(&self, roots: &dyn Trace) {
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
-            let header = unsafe { &(*ptr.as_ptr()).header };
-            header.color.set(Color::White);
-            cursor = header.next.get();
+    /// Drive an incremental cycle until `target` is entered, stopping before any
+    /// subsequent phase work. Intended for testC-style inspection of mid-cycle
+    /// color/barrier invariants; normal collector pacing uses
+    /// [`Self::incremental_step_with_post_mark`].
+    pub fn incremental_run_until_state_with_post_mark<F: FnMut(&mut Marker)>(
+        &self,
+        roots: &dyn Trace,
+        target: GcState,
+        max_work: isize,
+        mut post_mark: F,
+    ) -> StepOutcome {
+        if self.paused.get() {
+            return StepOutcome::SkippedStopped;
         }
+        let work = max_work.max(1);
+        let mut budget = StepBudget {
+            remaining_work: work,
+            max_credit: work,
+        };
+        self.run_budgeted_until(roots, &mut budget, &mut post_mark, Some(target));
+        if self.state.get().is_pause() {
+            StepOutcome::Paused
+        } else {
+            StepOutcome::InProgress
+        }
+    }
+
+    fn start_cycle(&self, roots: &dyn Trace) {
+        self.flip_current_white();
         let mut marker = Marker::new();
         roots.trace(&mut marker);
         *self.marker.borrow_mut() = Some(marker);
@@ -910,6 +1202,8 @@ impl Heap {
         let mut work = 0usize;
         let mut budget = max_units;
         let mut freed_bytes = 0usize;
+        let current_white = self.current_white();
+        let dead_white = self.other_white();
         let mut prev_next_ptr = match self.sweep_prev_next.get() {
             Some(p) => p,
             None => return 0,
@@ -924,23 +1218,24 @@ impl Heap {
                     break;
                 }
             };
-            let header = unsafe { &(*ptr.as_ptr()).header };
+            let header = self.header_from_ptr(ptr);
             let next = header.next.get();
-            match header.color.get() {
-                Color::White => {
-                    prev_cell.set(next);
-                    freed_bytes += header.size.get();
-                    unsafe {
-                        let _ = Box::from_raw(ptr.as_ptr());
-                    }
+            let color = header.color.get();
+            if color == dead_white {
+                prev_cell.set(next);
+                freed_bytes += header.size.get();
+                self.allocation_tokens
+                    .borrow_mut()
+                    .remove(&(ptr.as_ptr() as *const () as usize));
+                unsafe {
+                    let _ = Box::from_raw(ptr.as_ptr());
                 }
-                Color::Black | Color::Gray => {
-                    header.color.set(Color::White);
-                    prev_next_ptr = unsafe {
-                        NonNull::from(&(*ptr.as_ptr()).header.next)
-                    };
-                    self.sweep_prev_next.set(Some(prev_next_ptr));
+            } else {
+                if matches!(color, Color::Black | Color::Gray) {
+                    header.color.set(current_white);
                 }
+                prev_next_ptr = unsafe { NonNull::from(&(*ptr.as_ptr()).header.next) };
+                self.sweep_prev_next.set(Some(prev_next_ptr));
             }
             work += 1;
             budget -= 1;
@@ -949,6 +1244,43 @@ impl Heap {
             self.bytes.set(self.bytes.get().saturating_sub(freed_bytes));
         }
         work
+    }
+
+    fn sweep_young(&self) {
+        let mut freed_bytes = 0usize;
+        let current_white = self.current_white();
+        let mut prev_next_ptr = NonNull::from(&self.head);
+        loop {
+            let prev_cell = unsafe { prev_next_ptr.as_ref() };
+            let Some(ptr) = prev_cell.get() else { break; };
+            let header = self.header_from_ptr(ptr);
+            let next = header.next.get();
+            if header.color.get().is_white() && !header.age.get().is_old() {
+                prev_cell.set(next);
+                freed_bytes += header.size.get();
+                self.allocation_tokens
+                    .borrow_mut()
+                    .remove(&(ptr.as_ptr() as *const () as usize));
+                unsafe {
+                    let _ = Box::from_raw(ptr.as_ptr());
+                }
+                continue;
+            }
+
+            if !header.color.get().is_white() {
+                let age = header.age.get();
+                header.age.set(age.next_after_minor());
+                match age {
+                    GcAge::New => header.color.set(current_white),
+                    GcAge::Touched1 | GcAge::Touched2 => header.color.set(Color::Black),
+                    _ => {}
+                }
+            }
+            prev_next_ptr = unsafe { NonNull::from(&(*ptr.as_ptr()).header.next) };
+        }
+        if freed_bytes > 0 {
+            self.bytes.set(self.bytes.get().saturating_sub(freed_bytes));
+        }
     }
 
     fn finish_cycle(&self) {
@@ -967,6 +1299,10 @@ impl Heap {
         if !self.state.get().is_pause() {
             *self.marker.borrow_mut() = None;
             self.sweep_prev_next.set(None);
+            let current_white = self.current_white();
+            self.for_each_header(|header| {
+                header.color.set(current_white);
+            });
             self.state.set(GcState::Pause);
         }
     }
@@ -980,12 +1316,22 @@ impl Heap {
     /// chain. Linear in heap size; used for cycle-cost estimation and tests.
     pub fn allgc_count(&self) -> usize {
         let mut count = 0usize;
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
+        self.for_each_header(|_| {
             count += 1;
-            let header = unsafe { &(*ptr.as_ptr()).header };
-            cursor = header.next.get();
-        }
+        });
+        count
+    }
+
+    /// Count live allgc objects whose concrete Rust type name matches
+    /// `predicate`. This is diagnostic/testC telemetry only; collector logic
+    /// must not depend on Rust type names.
+    pub fn type_name_count(&self, mut predicate: impl FnMut(&'static str) -> bool) -> usize {
+        let mut count = 0usize;
+        self.for_each_header(|header| {
+            if predicate(header.type_name) {
+                count += 1;
+            }
+        });
         count
     }
 
@@ -998,12 +1344,14 @@ impl Heap {
         self.state.set(GcState::Pause);
         let mut cursor = self.head.get();
         self.head.set(None);
+        self.allocation_tokens.borrow_mut().clear();
         while let Some(ptr) = cursor {
             // SAFETY: same chain invariant as full_collect's sweep.
-            let next = unsafe { (*ptr.as_ptr()).header.next.get() };
-            unsafe {
+            let next = unsafe {
+                let next = (*ptr.as_ptr()).header.next.get();
                 let _ = Box::from_raw(ptr.as_ptr());
-            }
+                next
+            };
             cursor = next;
         }
         self.bytes.set(0);
@@ -1131,6 +1479,159 @@ mod tests {
         heap.full_collect(&OneRoot(Some(root)));
         assert_eq!(heap.bytes_used(), bytes_before);
         assert_eq!(root.marker_calls.get(), 1);
+    }
+
+    #[test]
+    fn allocations_start_new_and_white() {
+        let heap = Heap::new();
+        heap.unpause();
+        let obj = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        assert_eq!(obj.age(), GcAge::New);
+        assert!(obj.color().is_white());
+    }
+
+    #[test]
+    fn allocation_tokens_track_exact_live_box() {
+        let heap = Heap::new();
+        heap.unpause();
+        let obj = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let id = obj.identity();
+        let token = heap
+            .allocation_token(id)
+            .expect("heap allocation should get a token");
+
+        assert!(heap.contains_allocation(id, token));
+        assert!(!heap.contains_allocation(id, token + 1));
+
+        heap.full_collect(&OneRoot(None));
+        assert_eq!(heap.allocation_token(id), None);
+        assert!(!heap.contains_allocation(id, token));
+    }
+
+    #[test]
+    fn allocation_during_incremental_sweep_survives_current_cycle() {
+        let heap = Heap::new();
+        heap.unpause();
+        let old_dead = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let old_id = old_dead.identity();
+
+        let outcome = heap.incremental_step_with_post_mark(
+            &OneRoot(None),
+            StepBudget::from_work(1),
+            |_| {},
+        );
+        assert_eq!(outcome, StepOutcome::InProgress);
+        assert_eq!(heap.gc_state(), GcState::Sweep);
+
+        let new_during_sweep = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let new_id = new_during_sweep.identity();
+
+        loop {
+            let outcome = heap.incremental_step_with_post_mark(
+                &OneRoot(None),
+                StepBudget::from_work(64),
+                |_| {},
+            );
+            if matches!(outcome, StepOutcome::Paused) {
+                break;
+            }
+        }
+
+        assert_eq!(heap.allocation_token(old_id), None);
+        assert!(heap.allocation_token(new_id).is_some());
+        assert_eq!(heap.allgc_count(), 1);
+
+        heap.full_collect(&OneRoot(None));
+        assert_eq!(heap.allocation_token(new_id), None);
+        assert_eq!(heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn promote_and_reset_all_ages() {
+        let heap = Heap::new();
+        heap.unpause();
+        let a = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let b = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        heap.promote_all_to_old();
+        assert_eq!(a.age(), GcAge::Old);
+        assert_eq!(b.age(), GcAge::Old);
+        assert_eq!(a.color(), Color::Black);
+        assert_eq!(b.color(), Color::Black);
+
+        heap.reset_all_ages();
+        assert_eq!(a.age(), GcAge::New);
+        assert_eq!(b.age(), GcAge::New);
+        assert!(a.color().is_white());
+        assert!(b.color().is_white());
+    }
+
+    #[test]
+    fn generational_barriers_update_ages() {
+        let heap = Heap::new();
+        heap.unpause();
+        let parent = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let child = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        parent.set_age(GcAge::Old);
+        parent.set_color(Color::Black);
+        heap.generational_backward_barrier(parent);
+        assert_eq!(parent.age(), GcAge::Touched1);
+        assert_eq!(parent.color(), Color::Gray);
+
+        heap.generational_forward_barrier(parent, child);
+        assert_eq!(child.age(), GcAge::Old0);
+    }
+
+    #[test]
+    fn minor_collect_frees_young_and_keeps_old() {
+        let heap = Heap::new();
+        heap.unpause();
+        let old_unreachable = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        old_unreachable.set_age(GcAge::Old);
+        old_unreachable.set_color(Color::Black);
+        let _young_unreachable = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let young_survivor = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        heap.minor_collect_with_post_mark(&OneRoot(Some(young_survivor)), |_| {});
+
+        assert_eq!(heap.allgc_count(), 2);
+        assert_eq!(old_unreachable.age(), GcAge::Old);
+        assert_eq!(young_survivor.age(), GcAge::Survival);
+        assert!(young_survivor.color().is_white());
     }
 
     #[test]
@@ -1270,6 +1771,35 @@ mod tests {
         let outcome = heap.incremental_step_with_post_mark(&roots, budget, |_| {});
         assert_ne!(outcome, StepOutcome::SkippedStopped);
         assert_ne!(heap.gc_state(), GcState::Pause);
+    }
+
+    #[test]
+    fn run_until_state_stops_before_next_phase_work() {
+        let heap = Heap::new();
+        heap.unpause();
+        let head = build_chain(&heap, 8);
+        let roots = OneRoot(Some(head));
+        let atomic_calls = Cell::new(0);
+
+        let outcome = heap.incremental_run_until_state_with_post_mark(
+            &roots,
+            GcState::Atomic,
+            1024,
+            |_| atomic_calls.set(atomic_calls.get() + 1),
+        );
+        assert_eq!(outcome, StepOutcome::InProgress);
+        assert_eq!(heap.gc_state(), GcState::Atomic);
+        assert_eq!(atomic_calls.get(), 0, "atomic hook must not run before inspection");
+
+        let outcome = heap.incremental_run_until_state_with_post_mark(
+            &roots,
+            GcState::Sweep,
+            1024,
+            |_| atomic_calls.set(atomic_calls.get() + 1),
+        );
+        assert_eq!(outcome, StepOutcome::InProgress);
+        assert_eq!(heap.gc_state(), GcState::Sweep);
+        assert_eq!(atomic_calls.get(), 1, "entering sweep must run the atomic hook once");
     }
 
     #[test]

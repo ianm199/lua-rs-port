@@ -1294,9 +1294,9 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 ///
 /// PORT NOTE: C uses `lua_newuserdatauv` for the GMatchState plus a 3-upvalue
-/// C closure. Phase-A LuaCClosure upvalues are immutable, so we collapse the
-/// state into a 4-element Lua table held in a single upvalue (see
-/// `gmatch_aux`).
+/// C closure. The port keeps the iterator state in a 4-element Lua table held
+/// in a single upvalue (see `gmatch_aux`) so the matcher can update all fields
+/// through the existing table mutation path.
 pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
     let s_ref = match state.to_lua_string(1) {
         Some(r) => r,
@@ -2792,8 +2792,7 @@ pub fn luaopen_string(state: &mut LuaState) -> Result<usize, LuaError> {
 //                  Phase B (a sprintf-compatible crate or manual impl).
 //                  gmatch iterator state holds a 4-element Lua table in the
 //                  closure's single upvalue (src, pat, pos, lastmatch) instead
-//                  of the C-Lua GMatchState userdata, because Phase-A
-//                  LuaCClosure upvalues are immutable. See gmatch_aux.
+//                  of the C-Lua GMatchState userdata. See gmatch_aux.
 //                  copywithendian uses safe byte-level swapping (no transmute).
 //                  unpackint sign-extension uses two's-complement bit tricks;
 //                  logic review needed in Phase B.

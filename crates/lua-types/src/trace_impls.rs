@@ -182,7 +182,7 @@ impl Trace for LuaClosure {
 /// LuaCClosure — Rust-side C closure carrying captured upvalues.
 impl Trace for LuaCClosure {
     fn trace(&self, m: &mut Marker) {
-        for v in self.upvalues.iter() {
+        for v in self.upvalues.borrow().iter() {
             v.trace(m);
         }
     }
@@ -194,7 +194,7 @@ impl Trace for LuaUserData {
         if let Some(mt) = self.metatable() {
             mt.trace(m);
         }
-        for v in self.uv.iter() {
+        for v in self.uv.borrow().iter() {
             v.trace(m);
         }
     }

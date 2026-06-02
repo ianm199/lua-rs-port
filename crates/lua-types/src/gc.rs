@@ -8,14 +8,14 @@
 //! `strong_count`, `weak_count`, `downgrade`. Existing code touching
 //! `gc.0` continues to work — `.0` is now `Gc<T>` instead of `Rc<T>`.
 //!
-//! # Weak refs (D-1)
+//! # Weak refs
 //!
-//! `GcWeak<T>` is currently a no-op wrapper: `upgrade` always returns
-//! `Some`, `strong_count` always returns `1`. Real weak semantics arrive
-//! in D-2 when the heap learns to mark weak refs separately. For D-1, weak
-//! tables ARE a known semantic gap (see PHASE_D_PLAN.md "Locked Decisions").
+//! Heap-tracked `GcWeak<T>` handles remember the heap active when they were
+//! created plus the target's heap allocation token. They upgrade only while
+//! that identity/token pair remains live. Handles to legacy uncollected boxes
+//! still upgrade forever, matching their process-lifetime allocation model.
 
-use lua_gc::{Gc, Marker, Trace};
+use lua_gc::{Gc, HeapRef, Marker, Trace};
 
 /// A GC-managed pointer to a Lua collectable object. Newtype over
 /// `lua_gc::Gc<T>` so callers preserve `gc.0`-shape access while the
@@ -61,21 +61,38 @@ impl<T: Trace + 'static> GcRef<T> {
         self.0.identity()
     }
 
-    /// Number of strong references. Phase D-1: always returns 1 (no
-    /// refcount semantics). Real value once weak refs land in D-2.
+    /// Number of strong references. `GcRef` is not reference-counted, so a live
+    /// handle reports one owning GC reachability handle.
     pub fn strong_count(&self) -> usize {
         1
     }
 
-    /// Number of weak references. Phase D-1: always returns 0.
+    /// Number of weak references. Weak handles are not counted.
     pub fn weak_count(&self) -> usize {
         0
     }
 
-    /// Get a weak handle. Phase D-1: GcWeak is a thin wrapper that always
-    /// upgrades; real weak semantics arrive in D-2.
+    /// Get a weak handle. If this allocation belongs to the currently-active
+    /// heap, the weak handle will stop upgrading once sweep removes that exact
+    /// heap allocation.
     pub fn downgrade(&self) -> GcWeak<T> {
-        GcWeak(self.0)
+        let identity = self.identity();
+        let tracked = lua_gc::with_current_heap(|heap| {
+            heap.and_then(|heap| {
+                heap.allocation_token(identity)
+                    .map(|token| (HeapRef::from_heap(heap), token))
+            })
+        });
+        let (heap, allocation_token) = match tracked {
+            Some((heap, token)) => (Some(heap), token),
+            None => (None, 0),
+        };
+        GcWeak {
+            target: self.0,
+            identity,
+            allocation_token,
+            heap,
+        }
     }
 
     /// Charge (`delta > 0`) or refund (`delta < 0`) bytes of this object's
@@ -95,27 +112,45 @@ impl<T: Trace + 'static> GcRef<T> {
     }
 }
 
-/// A weak handle to a `GcRef<T>`. Phase D-1 placeholder; D-2 will give
-/// this real semantics (None once the referent is swept).
+/// A weak handle to a `GcRef<T>`.
 #[derive(Debug)]
-pub struct GcWeak<T: Trace + 'static>(pub Gc<T>);
+pub struct GcWeak<T: Trace + 'static> {
+    target: Gc<T>,
+    identity: usize,
+    allocation_token: usize,
+    heap: Option<HeapRef>,
+}
 
 impl<T: Trace + 'static> GcWeak<T> {
-    /// Try to promote to a strong reference. Phase D-1: always Some
-    /// (weak semantics are not yet implemented).
+    /// Try to promote to a strong reference.
     pub fn upgrade(&self) -> Option<GcRef<T>> {
-        Some(GcRef(self.0))
+        if let Some(heap) = self.heap {
+            if !heap.contains_allocation(self.identity, self.allocation_token) {
+                return None;
+            }
+        }
+        Some(GcRef(self.target))
     }
 
-    /// Strong reference count of the target. Phase D-1: always 1.
+    /// Strong reference count of the target from this weak handle's point of
+    /// view: one while it can still upgrade, zero after sweep.
     pub fn strong_count(&self) -> usize {
-        1
+        usize::from(self.upgrade().is_some())
+    }
+
+    pub fn identity(&self) -> usize {
+        self.identity
     }
 }
 
 impl<T: Trace + 'static> Clone for GcWeak<T> {
     fn clone(&self) -> Self {
-        GcWeak(self.0)
+        GcWeak {
+            target: self.target,
+            identity: self.identity,
+            allocation_token: self.allocation_token,
+            heap: self.heap,
+        }
     }
 }
 
@@ -137,6 +172,49 @@ impl<T: Trace + 'static> std::ops::Deref for GcRef<T> {
 impl<T: Trace + 'static> AsRef<T> for GcRef<T> {
     fn as_ref(&self) -> &T {
         &*self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoRoots;
+
+    impl Trace for NoRoots {
+        fn trace(&self, _m: &mut Marker) {}
+    }
+
+    #[derive(Debug)]
+    struct Cell0;
+
+    impl Trace for Cell0 {
+        fn trace(&self, _m: &mut Marker) {}
+    }
+
+    #[test]
+    fn heap_tracked_weak_refs_stop_upgrading_after_sweep() {
+        let heap = lua_gc::Heap::new();
+        heap.unpause();
+        let _guard = lua_gc::HeapGuard::push(&heap);
+
+        let strong = GcRef::new(Cell0);
+        let weak = strong.downgrade();
+        assert!(weak.upgrade().is_some());
+        assert_eq!(weak.strong_count(), 1);
+
+        heap.full_collect(&NoRoots);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(weak.strong_count(), 0);
+    }
+
+    #[test]
+    fn uncollected_weak_refs_keep_process_lifetime_behavior() {
+        let strong = GcRef::new(Cell0);
+        let weak = strong.downgrade();
+
+        assert!(weak.upgrade().is_some());
+        assert_eq!(weak.strong_count(), 1);
     }
 }
 

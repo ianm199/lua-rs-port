@@ -391,6 +391,13 @@ pub struct LexState {
     pub dyd: Option<()>,
     pub source: GcRef<LuaString>,
     pub envn: GcRef<LuaString>,
+    /// The active Lua version, snapshotted at lexer setup from
+    /// `state.global().lua_version` (fixed for the lifetime of a parse). The
+    /// error formatters (`lex_error`/`token2str`) take only `&LexState`, so they
+    /// read the version here rather than threading a `&LuaState` through every
+    /// syntax-error callsite. Lua 5.1 quotes the special multi-char token labels
+    /// (`<eof>`, `<name>`, …) in error messages where 5.2+ leaves them bare.
+    pub version: lua_types::LuaVersion,
 }
 
 // ── Character-classification helpers ─────────────────────────────────────────
@@ -603,7 +610,7 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
             v.push(b'\'');
             v
         }
-        _ => token2str_raw(token),
+        _ => token2str_raw(token, ls.version),
     }
 }
 
@@ -636,12 +643,19 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
 /// PORT NOTE: The `LexState` parameter is retained in the signature for API
 /// parity with the C export, but is unused in Rust because we don't push onto
 /// the Lua stack.  The real formatting is in [`token2str_raw`].
-pub fn token2str(_ls: &LexState, token: i32) -> Vec<u8> {
-    token2str_raw(token)
+pub fn token2str(ls: &LexState, token: i32) -> Vec<u8> {
+    token2str_raw(token, ls.version)
 }
 
 /// Inner implementation of [`token2str`] that does not need `LexState`.
-fn token2str_raw(token: i32) -> Vec<u8> {
+///
+/// PORT NOTE: `version` gates the 5.1 special-token quoting. Upstream 5.1's
+/// `luaX_lexerror`/`error_expected` wrap the whole near/expected token in
+/// `LUA_QS` ('%s'), so the bare multi-char labels (`<eof>`, `<name>`, …) that
+/// `luaX_token2str` returns for `token >= TK_EOS` end up quoted. 5.2 rewrote
+/// `txtToken` to leave those bare and quote only symbols/reserved/literals, so
+/// for 5.2+ the `>= TK_EOS` arm stays unquoted. (Issue #105.)
+fn token2str_raw(token: i32, version: lua_types::LuaVersion) -> Vec<u8> {
     if token < FIRST_RESERVED {
         if is_print(token) {
             vec![b'\'', token as u8, b'\'']
@@ -656,7 +670,7 @@ fn token2str_raw(token: i32) -> Vec<u8> {
     } else {
         let idx = (token - FIRST_RESERVED) as usize;
         let s = LUAX_TOKENS[idx];
-        if token < TK_EOS {
+        if token < TK_EOS || version == lua_types::LuaVersion::V51 {
             let mut v: Vec<u8> = Vec::with_capacity(s.len() + 2);
             v.push(b'\'');
             v.extend_from_slice(s);
@@ -748,6 +762,7 @@ pub fn set_input(
     ls.linenumber = 1;
     ls.lastline = 1;
     ls.source = source;
+    ls.version = state.global().lua_version;
     // macros.tsv: luaS_newliteral → state.intern_str(b"...")
     // TODO(port): state.intern_str(LUA_ENV) in Phase B
     ls.envn = intern_str_stub(state, LUA_ENV)?;

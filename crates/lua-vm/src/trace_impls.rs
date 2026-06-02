@@ -17,7 +17,7 @@
 //!   5. Reference `reference/lua-5.4.7/src/lgc.c`'s `reallymarkobject`
 
 use lua_gc::{Marker, Trace};
-use crate::state::{LuaState, GlobalState};
+use crate::state::{FinalizerObject, LuaState, GlobalState};
 use crate::string::{LuaStringImpl, LuaUserDataImpl};
 use lua_types::{LuaClosure, LuaValue};
 
@@ -32,6 +32,15 @@ impl Trace for LuaStringImpl {
 /// real when userdata machinery lands post-D-1.
 impl Trace for LuaUserDataImpl {
     fn trace(&self, _m: &mut Marker) {}
+}
+
+impl Trace for FinalizerObject {
+    fn trace(&self, m: &mut Marker) {
+        match self {
+            FinalizerObject::Table(t) => t.trace(m),
+            FinalizerObject::UserData(u) => u.trace(m),
+        }
+    }
 }
 
 impl Trace for LuaState {
@@ -108,6 +117,12 @@ impl Trace for GlobalState {
             value.trace(m);
         }
 
+        // Cross-thread open-upvalue mirrors are live roots while a coroutine
+        // resume holds the home thread's stack behind an outer mutable borrow.
+        for value in self.cross_thread_upvals.values() {
+            value.trace(m);
+        }
+
         // PORT NOTE (phase-b-reconcile): The lua-types LuaTable placeholder is
         // storage-less, so `globals` and `loaded` cannot live inside the registry
         // table (see `init_registry`). They are kept as direct GlobalState fields
@@ -150,29 +165,14 @@ impl Trace for GlobalState {
             th.trace(m);
         }
 
-        // The short-string intern cache holds `GcRef<LuaString>` values that
-        // callers (parser, stdlib) reuse by pointer-equality across
-        // `intern_str` calls. C-Lua treats this as a weak table cleared during
-        // the atomic weak-table pass (`clearbykeys`); we have no incremental
-        // weak-sweep yet, so leaving these untraced would leave the HashMap
-        // with dangling `Gc<LuaString>` entries after the very next collect.
-        // Trace them as strong roots until the weak-sweep machinery lands.
-        for s in self.interned_lt.values() {
-            s.trace(m);
-        }
+        // `interned_lt` is a weak short-string cache. The collector prunes
+        // unmarked entries from the post-mark hook instead of tracing them as
+        // roots here.
         for row in self.strcache.iter() {
             for s in row.iter() {
                 s.trace(m);
             }
         }
-
-        // Do not trace `gc_tracked_long_strings` here. That vector is memory
-        // accounting metadata, not an owning root. Lua C treats strings as
-        // non-weak only when they are reached through a surviving table entry
-        // (`iscleared` marks them during weak cleanup); our post-mark weak pass
-        // mirrors that by marking string keys/values returned from
-        // `prune_weak_dead`. Rooting the whole accounting list would keep dead
-        // long strings alive and break gc.lua's weak-string-key checks.
 
         // Pending finalizers are NOT traced here — that's what lets the mark
         // phase distinguish "still reachable from the user program" from
@@ -181,12 +181,12 @@ impl Trace for GlobalState {
         // unvisited entry is moved to `to_be_finalized` and explicitly
         // marked there so it survives the sweep.
         //
-        // `to_be_finalized` IS traced as a strong root: tables in this list
+        // `to_be_finalized` IS traced as a strong root: objects in this list
         // are awaiting their `__gc` call but are otherwise dead, and the
-        // table (plus its descendants) must survive long enough for the
+        // object (plus its descendants) must survive long enough for the
         // finalizer to run.
-        for t in self.to_be_finalized.iter() {
-            t.trace(m);
+        for object in self.to_be_finalized.iter() {
+            object.trace(m);
         }
 
         // Trace suspended parent stacks. When a coroutine is running, any

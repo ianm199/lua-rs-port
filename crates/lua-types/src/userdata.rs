@@ -11,7 +11,7 @@ use crate::value::LuaValue;
 
 pub struct LuaUserData {
     pub data: Box<[u8]>,
-    pub uv: Vec<LuaValue>,
+    pub uv: RefCell<Vec<LuaValue>>,
     pub metatable: RefCell<Option<GcRef<LuaTable>>>,
     pub host_value: RefCell<Option<Rc<dyn Any>>>,
 }
@@ -20,7 +20,7 @@ impl std::fmt::Debug for LuaUserData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LuaUserData")
             .field("data_len", &self.data.len())
-            .field("uv_len", &self.uv.len())
+            .field("uv_len", &self.uv.borrow().len())
             .field("has_metatable", &self.metatable.borrow().is_some())
             .field("has_host_value", &self.host_value.borrow().is_some())
             .finish()
@@ -31,7 +31,7 @@ impl LuaUserData {
     pub fn placeholder() -> Self {
         LuaUserData {
             data: Box::new([]),
-            uv: Vec::new(),
+            uv: RefCell::new(Vec::new()),
             metatable: RefCell::new(None),
             host_value: RefCell::new(None),
         }
