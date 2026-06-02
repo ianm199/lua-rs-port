@@ -2313,3 +2313,69 @@ fn issue95_break_outside_loop_wording_v54() {
 fn issue95_break_outside_loop_wording_v55() {
     err_contains(LuaVersion::V55, "break", "break outside loop near 'break'");
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #92 — version-gated line-hook fidelity.
+//
+// Captures the `debug.sethook(f, "l")` line-event trace for `code`, exactly the
+// way Lua's own `db.lua` `test()` does it: the chunk is held in a *variable* so
+// the `sethook; load(s)(); sethook` driver sits on one physical line and the
+// only line events captured are the inner chunk's own lines (no driver-line
+// pollution). Returns the comma-joined line sequence.
+// ─────────────────────────────────────────────────────────────────────────
+fn trace_lines(version: LuaVersion, code: &str) -> String {
+    let lua = Lua::new_versioned(version);
+    let loader = if version == LuaVersion::V51 { "loadstring" } else { "load" };
+    let wrapper = format!(
+        "local s = [==[\n{code}\n]==]\n\
+         local out = {{}}\n\
+         local function f(e, l) out[#out + 1] = tostring(l) end\n\
+         debug.sethook(f, 'l'); {loader}(s)(); debug.sethook()\n\
+         return table.concat(out, ',')"
+    );
+    lua.load(&wrapper)
+        .eval()
+        .unwrap_or_else(|e| panic!("trace harness failed for `{code}`: {e:?}"))
+}
+
+/// Cause 2: the conditional `TEST`/`JMP` of an `if`/`elseif` is attributed to
+/// the `then`-line on 5.1–5.4 (a separate line-3 event) but folded onto the
+/// condition-expression line on 5.5 (no line-3 event). Reference traces captured
+/// per `db.lua` (5.3.4-tests `{2,3,4,7}` vs 5.5.0-tests `{2,4,7}`).
+const IF_MULTILINE: &str = "if\nmath.sin(1)\nthen\n a=1\nelse\n a=2\nend";
+
+#[test]
+fn issue92_if_test_jmp_line_attribution_pre55() {
+    for v in [
+        LuaVersion::V51,
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+    ] {
+        assert_eq!(trace_lines(v, IF_MULTILINE), "2,3,4,7", "version {v:?}");
+    }
+}
+
+#[test]
+fn issue92_if_test_jmp_line_attribution_v55() {
+    assert_eq!(trace_lines(LuaVersion::V55, IF_MULTILINE), "2,4,7");
+}
+
+/// `while`/`repeat` already attribute their conditional `TEST`/`JMP` to the
+/// condition-expression line on every version (the codegen `cond()` captures the
+/// line before any `do`/`until` token), so 5.5 does not change them. Pin that
+/// invariant so the cause-2 fix doesn't accidentally touch loop conditions.
+#[test]
+fn issue92_while_condition_line_attribution_unchanged_all_versions() {
+    let code = "local i = 0\nwhile\ni < 1\ndo\ni = i + 1\nend";
+    for v in [
+        LuaVersion::V51,
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
+        let got = trace_lines(v, code);
+        assert_eq!(got, trace_lines(LuaVersion::V54, code), "version {v:?} drifted: {got}");
+    }
+}
