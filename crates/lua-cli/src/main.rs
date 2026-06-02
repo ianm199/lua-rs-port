@@ -1221,6 +1221,85 @@ fn register_testc_table(state: &mut LuaState) -> Result<(), LuaError> {
     lua_vm::api::set_global(state, b"T")
 }
 
+fn write_gc_profile_from_env(state: &LuaState) -> io::Result<()> {
+    let Some(path) = std::env::var_os("LUA_RS_GC_PROFILE") else {
+        return Ok(());
+    };
+    if path == "-" {
+        let stderr = io::stderr();
+        let mut lock = stderr.lock();
+        return write_gc_profile(&mut lock, state);
+    }
+    let mut file = std::fs::File::create(std::path::PathBuf::from(path))?;
+    write_gc_profile(&mut file, state)
+}
+
+fn write_gc_profile(mut writer: impl Write, state: &LuaState) -> io::Result<()> {
+    let (
+        mode,
+        gc_state,
+        bytes,
+        debt,
+        threshold,
+        allgc,
+        allgc_cohorts,
+        collections,
+        minor_collections,
+        full_collections,
+        grayagain,
+        interned_short_strings,
+        markstats,
+        sweepstats,
+    ) = {
+        let g = state.global();
+        (
+            if g.is_gen_mode() { "generational" } else { "incremental" },
+            String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
+            g.total_bytes(),
+            g.gc_debt(),
+            g.heap.threshold_bytes(),
+            g.heap.allgc_count(),
+            g.heap.allgc_cohort_stats(),
+            g.heap.collections(),
+            g.heap.minor_collections(),
+            g.heap.full_collections(),
+            g.heap.grayagain_count(),
+            g.interned_lt.len(),
+            g.heap.last_mark_stats(),
+            g.heap.last_sweep_stats(),
+        )
+    };
+
+    writeln!(writer, "metric\tvalue")?;
+    writeln!(writer, "mode\t{mode}")?;
+    writeln!(writer, "state\t{gc_state}")?;
+    writeln!(writer, "bytes\t{bytes}")?;
+    writeln!(writer, "debt\t{debt}")?;
+    writeln!(writer, "threshold\t{threshold}")?;
+    writeln!(writer, "allgc\t{allgc}")?;
+    writeln!(writer, "allgc_new\t{}", allgc_cohorts.new)?;
+    writeln!(writer, "allgc_survival\t{}", allgc_cohorts.survival)?;
+    writeln!(writer, "allgc_old1\t{}", allgc_cohorts.old1)?;
+    writeln!(writer, "allgc_old\t{}", allgc_cohorts.old)?;
+    writeln!(writer, "collections\t{collections}")?;
+    writeln!(writer, "minor_collections\t{minor_collections}")?;
+    writeln!(writer, "full_collections\t{full_collections}")?;
+    writeln!(writer, "grayagain\t{grayagain}")?;
+    writeln!(writer, "interned_short_strings\t{interned_short_strings}")?;
+    writeln!(writer, "marked\t{}", markstats.marked)?;
+    writeln!(writer, "marked_young\t{}", markstats.marked_young)?;
+    writeln!(writer, "marked_old\t{}", markstats.marked_old)?;
+    writeln!(writer, "traced\t{}", markstats.traced)?;
+    writeln!(writer, "traced_young\t{}", markstats.traced_young)?;
+    writeln!(writer, "traced_old\t{}", markstats.traced_old)?;
+    writeln!(writer, "sweep_visited\t{}", sweepstats.visited)?;
+    writeln!(writer, "sweep_visited_young\t{}", sweepstats.visited_young)?;
+    writeln!(writer, "sweep_visited_old\t{}", sweepstats.visited_old)?;
+    writeln!(writer, "sweep_revisit\t{}", sweepstats.revisit)?;
+    writeln!(writer, "sweep_freed\t{}", sweepstats.freed)?;
+    writeln!(writer, "sweep_freed_bytes\t{}", sweepstats.freed_bytes)
+}
+
 /// Install Rust-native modules that ship with `lua-cli` into
 /// `package.preload`. After `open_libs` has populated the `package` library,
 /// each entry written to `package.preload[name]` becomes a loader that
@@ -1357,6 +1436,10 @@ fn main() -> ExitCode {
                 paused,
                 gc_state,
             );
+        }
+
+        if let Err(err) = write_gc_profile_from_env(&state) {
+            eprintln!("[gc-profile] failed to write report: {}", err);
         }
 
         #[cfg(feature = "opcode-profile")]

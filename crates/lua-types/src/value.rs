@@ -89,7 +89,9 @@ impl PartialEq for LuaValue {
             (LuaValue::Bool(a), LuaValue::Bool(b)) => a == b,
             (LuaValue::Int(a), LuaValue::Int(b)) => a == b,
             (LuaValue::Float(a), LuaValue::Float(b)) => a == b,
-            (LuaValue::Str(a), LuaValue::Str(b)) => GcRef::ptr_eq(a, b) || a.as_bytes() == b.as_bytes(),
+            (LuaValue::Str(a), LuaValue::Str(b)) => {
+                GcRef::ptr_eq(a, b) || (a.hash() == b.hash() && a.as_bytes() == b.as_bytes())
+            }
             (LuaValue::Table(a), LuaValue::Table(b)) => GcRef::ptr_eq(a, b),
             (LuaValue::Function(a), LuaValue::Function(b)) => closure_eq(a, b),
             (LuaValue::UserData(a), LuaValue::UserData(b)) => GcRef::ptr_eq(a, b),

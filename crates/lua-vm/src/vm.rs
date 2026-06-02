@@ -1795,7 +1795,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         match uv.try_open_payload() {
                             Some((thread_id, idx)) if thread_id as u64 == state.cached_thread_id => {
                                 state.stack[idx.0 as usize].val = v;
-                                state.gc_barrier_upval(&uv, &v);
+                                if v.is_collectable() {
+                                    state.gc_barrier_upval(&uv, &v);
+                                }
                             }
                             _ => {
                                 state.upvalue_set(&cl, b, v)?;
@@ -1925,7 +1927,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         if let LuaValue::Table(tbl) = ra_v {
                             if tbl.metatable().is_none() {
                                 state.gc_table_barrier_back(&tbl, &rc_v);
-                                state.table_raw_set(&ra_v, rb_v, rc_v)?;
+                                tbl.raw_set(state, rb_v, rc_v)?;
                             } else {
                                 let fast = if let LuaValue::Int(n) = &rb_v {
                                     state.fast_get_int(&ra_v, *n)?
@@ -1962,7 +1964,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         if let LuaValue::Table(tbl) = ra_v {
                             if tbl.metatable().is_none() {
                                 state.gc_table_barrier_back(&tbl, &rc_v);
-                                state.table_raw_set(&ra_v, LuaValue::Int(c), rc_v)?;
+                                tbl.raw_set_int(state, c, rc_v)?;
                             } else {
                                 let fast = state.fast_get_int(&ra_v, c)?;
                                 if fast.is_some() {
@@ -1996,7 +1998,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         if let LuaValue::Table(tbl) = ra_v {
                             if tbl.metatable().is_none() {
                                 state.gc_table_barrier_back(&tbl, &rc_v);
-                                state.table_raw_set(&ra_v, key, rc_v)?;
+                                tbl.raw_set(state, key, rc_v)?;
                             } else {
                                 match state.fast_get_short_str(&ra_v, &key)? {
                                     Some(_) => {

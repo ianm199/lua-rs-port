@@ -136,6 +136,20 @@ It builds `lua-rs` with `--features opcode-profile`, writes
 `target/release/lua-rs` with the instrumented binary. Rebuild a normal release
 binary before running `compare.sh`.
 
+`gc-profile.sh` runs the normal release binary and writes end-of-run collector
+counters:
+
+```bash
+bash harness/bench/gc-profile.sh gc_pressure
+PROFILE_LUA_EVAL='for i=1,10 do dofile("harness/bench/workloads/binarytrees.lua") end' \
+  bash harness/bench/gc-profile.sh binarytrees_x10
+```
+
+It writes `profiles/gc-profile/<UTC>-<sha>-<label>/gc.tsv`. The report covers
+collection counts, heap cohorts, latest mark/sweep counters, grayagain count,
+and intern-table size. It is useful when `/usr/bin/sample` says a GC phase is
+hot but cannot explain how many objects the phase is visiting or freeing.
+
 ## Reproducibility rules
 
 - Always run with the matching `target/release/lua-rs` build (NOT `target/debug`)
@@ -152,10 +166,12 @@ binary before running `compare.sh`.
    runner only when a packet needs deeper attribution.
 3. `opcode-profile.sh` covers per-op counts when stack samples flatten into
    `vm::execute`; it does not provide per-op timing.
-4. `compare.sh` appends ledger rows directly. Typed bench runner entries in
+4. `gc-profile.sh` covers end-of-run collector counters. It does not provide
+   allocation stack attribution or cumulative per-phase timing.
+5. `compare.sh` appends ledger rows directly. Typed bench runner entries in
    `harness/runners.toml` are still useful future cleanup, but not required
    for evidence-backed perf work.
-5. Backfill remains future work for answering "when did this regress?" across
+6. Backfill remains future work for answering "when did this regress?" across
    older commits.
-6. Keep `results/` and `profiles/` generated artifacts ignored unless a run is
+7. Keep `results/` and `profiles/` generated artifacts ignored unless a run is
    deliberately promoted into committed evidence.

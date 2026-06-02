@@ -1497,7 +1497,7 @@ impl Heap {
         let reallyold = self.reallyold.get();
         let mut stats = AllGcCohortStats::default();
         let mut cursor = self.head.get();
-        let mut seen = HashSet::new();
+        let mut seen = IdentityHashSet::default();
         let mut cohort = 0u8;
         while let Some(ptr) = cursor {
             let id = ptr.as_ptr() as *const () as usize;
@@ -2328,7 +2328,7 @@ impl Heap {
 
     fn push_next_revisit(
         next_revisit: &mut Vec<NonNull<GcBox<dyn Trace>>>,
-        seen: &mut HashSet<usize>,
+        seen: &mut IdentityHashSet,
         ptr: NonNull<GcBox<dyn Trace>>,
         age: GcAge,
     ) {
@@ -2348,7 +2348,7 @@ impl Heap {
         mut prev_next_ptr: NonNull<Cell<Option<NonNull<GcBox<dyn Trace>>>>>,
         limit: Option<NonNull<GcBox<dyn Trace>>>,
         next_revisit: &mut Vec<NonNull<GcBox<dyn Trace>>>,
-        next_revisit_seen: &mut HashSet<usize>,
+        next_revisit_seen: &mut IdentityHashSet,
         processed: &mut Option<OldRevisitTracker>,
         firstold1: &mut Option<NonNull<GcBox<dyn Trace>>>,
         freed_bytes: &mut usize,
@@ -2409,7 +2409,7 @@ impl Heap {
     fn sweep_young(&self) {
         let mut freed_bytes = 0usize;
         let mut next_revisit = Vec::new();
-        let mut next_revisit_seen = HashSet::new();
+        let mut next_revisit_seen = IdentityHashSet::default();
         let mut firstold1 = None;
         let mut stats = SweepStats::default();
         let old_revisit = self.take_grayagain();

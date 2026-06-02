@@ -220,6 +220,91 @@ right Rust fix is often to restore the same code-generation boundary C had:
 inline the helper, split cold paths away, or move the tiny operation back into
 the dispatch arm.
 
+### 7. `20260602T144939Z-ea6d8d4` — pattern-start and telemetry pass after PR #122
+
+**Pattern:** *Skip impossible pattern starts, keep scalar barriers scalar, and
+add telemetry where stack samples are too coarse.*
+
+Starting matrix after PR #122
+(`harness/bench/results/20260602T140413Z-858cc5e-compare.json`) to final
+matrix (`harness/bench/results/20260602T144939Z-ea6d8d4-compare.json`):
+
+| workload | before | after |
+|---|---:|---:|
+| binarytrees | 2.11x | 2.09x |
+| closure_ops | 1.94x | 2.06x |
+| fibonacci | 1.88x | 1.84x |
+| gc_pressure | 2.50x | 2.50x |
+| mandelbrot | 1.88x | 1.88x |
+| mandelbrot_long | 1.82x | 1.82x |
+| string_ops | 2.00x | 1.00x |
+| string_ops_long | 1.86x | 1.51x |
+| table_hash_pressure | 1.88x | 1.75x |
+| table_ops | 1.00x | 1.00x |
+| table_ops_long | 1.06x | 1.04x |
+| overall | 1.60x | 1.54x |
+
+What changed:
+
+- Unanchored string matching now skips directly to source offsets that can
+  match when the first pattern element is a required literal byte. Patterns
+  whose first element can match zero bytes, is a class, is a capture/frontier,
+  or is otherwise non-literal stay on the old byte-by-byte path.
+- `string.gsub` now borrows its source and pattern strings through
+  `GcRef<LuaString>` instead of copying both into `Vec`s, and pre-sizes the
+  replacement buffer to the source length.
+- Table string equality now checks full Lua string hash equality before the
+  byte-compare fallback. Pointer equality still wins first; content equality
+  for distinct string objects is preserved.
+- The no-metatable `OP_SET*` path writes through the already-proven table
+  reference directly instead of re-matching the `LuaValue` in
+  `table_raw_set`.
+- `SETUPVAL` skips the upvalue GC barrier call for scalar values. The shared
+  `upvalue_set` fallback has the same guard. Collectable values still take
+  the normal barrier.
+- Added `LUA_RS_GC_PROFILE=<path|->` and `harness/bench/gc-profile.sh` for
+  end-of-run GC counters: collection counts, heap cohorts, last mark/sweep
+  stats, grayagain count, and intern-table size.
+
+Profile evidence:
+
+- Before the pattern skip, `string_ops_long_x5`
+  (`harness/bench/profiles/20260602T142436Z-be7347f-string_ops_long_x5/summary.txt`)
+  had `match_pat` at 29.2%.
+- After the pattern skip, `string_ops_long_x5`
+  (`harness/bench/profiles/20260602T144840Z-ea6d8d4-string_ops_long_x5/summary.txt`)
+  had `match_pat` at 16.6%. The workload ratio moved from 1.86x to about
+  1.5x in broad/focused runs.
+- `closure_ops_x30` before the scalar barrier guard
+  (`harness/bench/profiles/20260602T142517Z-be7347f-closure_ops_x30/summary.txt`)
+  showed `gc_barrier_upval` at 4.6%. After
+  (`harness/bench/profiles/20260602T144856Z-ea6d8d4-closure_ops_x30/summary.txt`)
+  the barrier leaf disappeared, but wall ratio stayed around 2x because the
+  remaining work is opaque `vm::execute`.
+- `table_hash_pressure_x80`
+  (`harness/bench/profiles/20260602T144847Z-ea6d8d4-table_hash_pressure_x80/summary.txt`)
+  still has `concat` and `get_short_str_slot` as the top frames. The hash
+  guard reduced `memcmp` modestly, but did not remove the table/string-key
+  pole.
+- GC profile telemetry for `gc_pressure`
+  (`harness/bench/profiles/gc-profile/20260602T144913Z-ea6d8d4-gc_pressure/gc.tsv`)
+  shows thousands of minor collections and only one full collection. The
+  matching sampler
+  (`harness/bench/profiles/20260602T144904Z-ea6d8d4-gc_pressure_x200/summary.txt`)
+  still spreads time across VM dispatch, young sweep, allocator/free,
+  table resize/new-key, barriers, and intern retention.
+
+What did *not* change:
+
+- No new unsafe.
+- No skipped metamethod checks, finalizers, weak-table behavior, or collectable
+  GC barriers.
+- `gc_pressure` did not move. The new GC telemetry is useful, but this pass did
+  not find a safe free lunch in pacer/phase mechanics.
+- `closure_ops` remains a VM dispatch problem. Opcode counts can identify
+  MOVE/GETUPVAL/SETUPVAL/CALL frequency; the current tooling still lacks
+  per-op timing.
+
 ### 6. `20260602T140413Z-858cc5e` — broad safe-Rust pass after PR #121
 
 **Pattern:** *Use specialized internal data structures for internal identities,
@@ -779,8 +864,8 @@ This doc is a living journal. When a new perf commit lands, the lessons
 that generalize should make their way back into "The patterns by name" or
 "Distilled rules" above. Things to add as we encounter them:
 
-- Lua pattern matcher precompile/cache investigation (`match_pat` remains the
-  string hot pole after the allocation and gmatch-state fixes).
+- Lua pattern matcher precompile/cache investigation if future samples keep
+  `match_pat` near the top after the literal-start skip and allocation fixes.
 - Follow-ups enabled by primitive accessors on ORDER/BITWISE opcodes.
 - The `RefCell`-on-hot-path audit (deeper refactor when ready).
 - Remaining GC pressure allocation/accounting work after the PR #120 scratch

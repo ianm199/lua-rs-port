@@ -1028,6 +1028,31 @@ fn lmemfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
+fn required_start_byte(pat: &[u8]) -> Option<u8> {
+    let (byte, ep) = match pat.first().copied()? {
+        L_ESC => {
+            let escaped = *pat.get(1)?;
+            if escaped.is_ascii_alphanumeric() {
+                return None;
+            }
+            (escaped, 2)
+        }
+        c if !SPECIALS.contains(&c) => (c, 1),
+        _ => return None,
+    };
+    match pat.get(ep).copied() {
+        Some(b'*') | Some(b'?') | Some(b'-') => None,
+        _ => Some(byte),
+    }
+}
+
+fn next_start_with_byte(src: &[u8], pos: usize, byte: u8) -> Option<usize> {
+    src.get(pos..)?
+        .iter()
+        .position(|&c| c == byte)
+        .map(|offset| pos + offset)
+}
+
 /// Check whether the pattern `pat` has no special characters (for plain search).
 ///
 fn nospecials(pat: &[u8]) -> bool {
@@ -1147,10 +1172,17 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
         let anchor = p.first() == Some(&b'^');
         let p_slice = if anchor { &p[1..] } else { p };
         ms.pat = p_slice;
+        let start_byte = if anchor { None } else { required_start_byte(ms.pat) };
 
         let mut s1 = init;
         let mut matched: Option<usize> = None;
         loop {
+            if let Some(byte) = start_byte {
+                let Some(next) = next_start_with_byte(ms.src, s1, byte) else {
+                    break;
+                };
+                s1 = next;
+            }
             ms.reset_level();
             if let Some(res) = match_pat(&mut ms, s1, 0)? {
                 matched = Some(res);
@@ -1229,10 +1261,17 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 
     let step_limit = state.sandbox_match_step_limit();
     let mut ms = MatchState::new(s, p, step_limit);
+    let start_byte = required_start_byte(p);
 
     let mut src = start_pos;
     let mut hit: Option<(usize, usize)> = None;
     while src <= ls {
+        if let Some(byte) = start_byte {
+            let Some(next) = next_start_with_byte(s, src, byte) else {
+                break;
+            };
+            src = next;
+        }
         ms.reset_level();
         if let Some(e) = match_pat(&mut ms, src, 0)? {
             if Some(e) != last_match {
@@ -1405,9 +1444,23 @@ fn add_value(
 /// `string.gsub(s, pattern, repl [, n])` — global substitution.
 ///
 pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
-    let src_bytes = state.check_arg_string(1)?;
-    let pat_bytes = state.check_arg_string(2)?;
-    let src_len = src_bytes.len();
+    let src_ref = match state.to_lua_string(1) {
+        Some(r) => r,
+        None => {
+            state.check_arg_string(1)?;
+            unreachable!("check_arg_string raises when arg #1 is not a string");
+        }
+    };
+    let pat_ref = match state.to_lua_string(2) {
+        Some(r) => r,
+        None => {
+            state.check_arg_string(2)?;
+            unreachable!("check_arg_string raises when arg #2 is not a string");
+        }
+    };
+    let src: &[u8] = src_ref.as_bytes();
+    let pat: &[u8] = pat_ref.as_bytes();
+    let src_len = src.len();
     let max_s = state.opt_arg_integer(4, (src_len + 1) as i64)?;
     let tr = state.type_at(3);
 
@@ -1416,21 +1469,30 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
         return Err(LuaError::type_arg_error(3, "string/function/table", &v));
     }
 
-    let src_owned = src_bytes;
-    let pat_owned = pat_bytes;
-
-    let anchor = pat_owned.first() == Some(&b'^');
-    let pat_slice = if anchor { &pat_owned[1..] } else { &pat_owned[..] };
+    let anchor = pat.first() == Some(&b'^');
+    let pat_slice = if anchor { &pat[1..] } else { pat };
 
     let step_limit = state.sandbox_match_step_limit();
-    let mut ms = MatchState::new(&src_owned, pat_slice, step_limit);
-    let mut buf: Vec<u8> = Vec::new();
+    let mut ms = MatchState::new(src, pat_slice, step_limit);
+    let start_byte = if anchor { None } else { required_start_byte(ms.pat) };
+    let mut buf: Vec<u8> = Vec::with_capacity(src_len);
     let mut src_pos = 0usize;
     let mut last_match: Option<usize> = None;
     let mut n: i64 = 0;
     let mut changed = false;
 
     while n < max_s {
+        if let Some(byte) = start_byte {
+            let Some(next) = next_start_with_byte(ms.src, src_pos, byte) else {
+                buf.extend_from_slice(&ms.src[src_pos..]);
+                src_pos = ms.src.len();
+                break;
+            };
+            if next > src_pos {
+                buf.extend_from_slice(&ms.src[src_pos..next]);
+                src_pos = next;
+            }
+        }
         ms.reset_level();
         let maybe_e = match_pat(&mut ms, src_pos, 0)?;
         if let Some(e) = maybe_e {

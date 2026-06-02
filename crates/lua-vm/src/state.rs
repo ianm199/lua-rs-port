@@ -2908,7 +2908,9 @@ impl LuaState {
                 uv.set_closed_value(val);
             }
         }
-        self.gc_barrier_upval(&uv, &val);
+        if val.is_collectable() {
+            self.gc_barrier_upval(&uv, &val);
+        }
         Ok(())
     }
 

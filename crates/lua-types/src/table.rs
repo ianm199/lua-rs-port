@@ -149,6 +149,11 @@ impl TableNode {
     fn set_key(&mut self, k: &LuaValue) { self.key = k.clone(); }
 }
 
+#[inline]
+fn lua_string_content_eq(a: &GcRef<LuaString>, b: &GcRef<LuaString>) -> bool {
+    GcRef::ptr_eq(a, b) || (a.hash() == b.hash() && a.as_bytes() == b.as_bytes())
+}
+
 // ── TableSlotRef ───────────────────────────────────────────────────────────────
 
 /// Internal slot reference returned by the "get" family of functions.
@@ -396,7 +401,7 @@ impl TableInner {
             }
             LuaValue::Str(ns) if ns.is_long() => {
                 if let LuaValue::Str(ks) = k1 {
-                    ks.as_bytes() == ns.as_bytes()
+                    lua_string_content_eq(ks, ns)
                 } else { false }
             }
             _ => Self::gc_ptr_eq(k1, &n2.key),
@@ -865,7 +870,7 @@ impl TableInner {
         loop {
             if self.node[n].key_is_short_str() {
                 let ks = self.node[n].key_string();
-                if GcRef::ptr_eq(ks, key) || ks.as_bytes() == key.as_bytes() {
+                if lua_string_content_eq(ks, key) {
                     return TableSlotRef::Hash(n);
                 }
             }
@@ -890,7 +895,7 @@ impl TableInner {
         loop {
             if self.node[n].key_is_short_str() {
                 let ks = self.node[n].key_string();
-                if GcRef::ptr_eq(ks, key) || ks.as_bytes() == key.as_bytes() {
+                if lua_string_content_eq(ks, key) {
                     return self.node[n].value.clone();
                 }
             }
