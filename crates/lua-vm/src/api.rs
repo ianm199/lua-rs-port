@@ -1989,52 +1989,15 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             if let Err(e) = run_pending_finalizers_inner(state, true) {
                 state.global_mut().gc_finalizer_error = Some(e.into_value());
             }
-            // PORT NOTE: Phase-B long-string accounting. Reclaim `gc_debt`
-            // for any tracked long-string Rc whose strong count has dropped
-            // to zero (either because the weak-table sweep above released
-            // the last reference, or because the user dropped it directly).
-            // Without this, `collectgarbage("count")` would report peak
-            // allocation rather than live bytes — gc.lua's weak-string-key
-            // block depends on the post-collect count being lower than the
-            // pre-collect count.
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
-            // PORT NOTE: Phase B has no per-allocation totalbytes tracking,
-            // so total_bytes() only ever shrinks (each `Step` simulates
-            // freed memory). Refill to a baseline here so subsequent Step
-            // calls have headroom to actually drop count*1024 — the test
-            // pattern `collectgarbage(); local x = gcinfo(); collectgarbage('step'); assert(gcinfo()<x)`
-            // needs gcinfo to be high enough that decrementing by 1 KB is
-            // observable. Removed in Phase D when real GC tracks bytes.
-            {
-                let mut g = state.global_mut();
-                let target_tb = 32_768_isize;
-                let cur_tb = g.totalbytes + g.gc_debt;
-                if cur_tb < target_tb {
-                    g.totalbytes += target_tb - cur_tb;
-                }
-            }
         }
         GcArgs::Count => {
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
             let g = state.global();
-            let long_string_bytes: usize = g.gc_tracked_long_strings.iter().map(|(_, sz)| sz).sum();
-            let total = g.heap.bytes_used() + long_string_bytes;
+            let total = g.heap.bytes_used();
             return (total >> 10) as i32;
         }
         GcArgs::CountB => {
-            {
-                let mut g = state.global_mut();
-                crate::state::reclaim_dead_long_strings(&mut *g);
-            }
             let g = state.global();
-            let long_string_bytes: usize = g.gc_tracked_long_strings.iter().map(|(_, sz)| sz).sum();
-            let total = g.heap.bytes_used() + long_string_bytes;
+            let total = g.heap.bytes_used();
             return (total & 0x3ff) as i32;
         }
         GcArgs::Step { data } => {
@@ -2070,21 +2033,6 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                 state.gc().prune_weak_tables_mark_only();
             }
             state.global_mut().set_gc_stop_flags(old_stp);
-            // Phase-B byte accounting: real allocation isn't tracked, so
-            // simulate C-Lua's post-sweep totalbytes drop here. Halving
-            // the current `tb` makes `gcinfo() < x` hold across a step
-            // that completes a cycle (gc.lua `dosteps()` line 194), while
-            // the floor at 1 KB preserves `set_debt`'s `tb > 0` invariant
-            // across many back-to-back step calls.
-            if cycle_complete {
-                let mut g = state.global_mut();
-                let floor: isize = 1024;
-                let cur_tb = g.totalbytes + g.gc_debt;
-                let new_tb = (cur_tb / 2).max(floor);
-                if new_tb < cur_tb {
-                    g.totalbytes -= cur_tb - new_tb;
-                }
-            }
             // Sync the global gcstate byte for `gc_at_pause()` callers.
             {
                 let heap_state = state.global().heap.gc_state();

@@ -66,10 +66,11 @@ pub const ARRAY_GROW_CAP: u32 = 1u32 << 20;
 /// emulating C-Lua's `malloc`-NULL termination of an unbounded
 /// `for i = 1, math.huge do a[i] = ... end` loop.
 ///
-/// Ideally this would be a byte budget rather than an entry count, but the
-/// GC's byte counter does not track a table's internal `Vec` capacity, so a
-/// byte budget cannot see table growth. Until table memory is GC-accounted,
-/// this stays an entry cap, sized to comfortably hold realistic large tables
+/// Ideally this would be a byte budget rather than an entry count, but this
+/// crate has no `LuaState`/heap context. VM-mediated table mutations account
+/// buffer deltas at the wrapper layer; this local guard still prevents raw
+/// table growth from attempting unbounded allocations before the VM can report
+/// memory pressure. It is sized to comfortably hold realistic large tables
 /// (a 10M-element array, issue #37) while keeping the unbounded-loop stress
 /// tests terminating within the harness time and memory limits.
 pub const TOTAL_GROW_CAP: usize = 1usize << 24;

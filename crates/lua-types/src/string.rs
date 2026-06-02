@@ -25,6 +25,9 @@ impl LuaString {
     pub fn is_short(&self) -> bool { self.is_short }
     pub fn is_long(&self) -> bool { !self.is_short }
     pub fn hash(&self) -> u32 { self.hash }
+    pub fn buffer_bytes(&self) -> usize {
+        self.bytes.len() + 2 * std::mem::size_of::<usize>()
+    }
 
     pub fn is_reserved_word(&self) -> bool {
         // TODO(port): proper reserved-word check via lexer's token enum.

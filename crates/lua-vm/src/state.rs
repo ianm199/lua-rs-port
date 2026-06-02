@@ -577,20 +577,45 @@ impl LuaTableRefExt for GcRef<LuaTable> {
     /// key validation internally as part of its integer-fast-path match.
     #[inline]
     fn raw_set(&self, _state: &mut LuaState, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
-        (**self).try_raw_set(k, v)
+        let before = (**self).buffer_bytes();
+        let result = (**self).try_raw_set(k, v);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     #[inline]
     fn raw_set_int(&self, _state: &mut LuaState, k: i64, v: LuaValue) -> Result<(), LuaError> {
-        (**self).try_raw_set_int(k, v)
+        let before = (**self).buffer_bytes();
+        let result = (**self).try_raw_set_int(k, v);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     fn invalidate_tm_cache(&self) {}
     fn resize(&self, _state: &mut LuaState, na: usize, nh: usize) -> Result<(), LuaError> {
+        let before = (**self).buffer_bytes();
         let na32 = na.min(u32::MAX as usize) as u32;
         let nh32 = nh.min(u32::MAX as usize) as u32;
-        (**self).resize(na32, nh32)
+        let result = (**self).resize(na32, nh32);
+        if result.is_ok() {
+            account_table_buffer_delta(self, before);
+        }
+        result
     }
     fn next(&self, k: LuaValue) -> Result<Option<(LuaValue, LuaValue)>, LuaError> {
         (**self).try_next_pair(&k)
+    }
+}
+
+#[inline]
+fn account_table_buffer_delta(t: &GcRef<LuaTable>, before: usize) {
+    let after = (**t).buffer_bytes();
+    if after > before {
+        t.account_buffer((after - before) as isize);
+    } else if before > after {
+        t.account_buffer(-((before - after) as isize));
     }
 }
 
@@ -1216,16 +1241,6 @@ pub struct GlobalState {
     /// Phase D's incremental sweep lands.
     pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
 
-    /// Phase-B long-string allocation tracker.
-    ///
-    /// Each entry pairs a `Weak<LuaString>` with the byte count that was
-    /// added to `gc_debt` at allocation time. `collectgarbage("count")` walks
-    /// the list and reclaims `gc_debt` for entries whose weak target has been
-    /// dropped, so the Lua-visible memory total tracks live long-string bytes.
-    /// Short strings are interned and bounded in size, so they are not tracked
-    /// individually. Replaced by Phase D's real allocator accounting.
-    pub gc_tracked_long_strings: Vec<(lua_types::gc::GcWeak<lua_types::string::LuaString>, usize)>,
-
     /// Phase-B pending-finalizer registry.
     ///
     /// Each entry is a strong `GcRef<LuaTable>` to a table whose metatable
@@ -1434,11 +1449,12 @@ impl GlobalState {
         self.sandbox.interval.get() != 0
     }
 
-    /// Total live bytes allocated (GCdebt + totalbytes).
+    /// Total live bytes allocated, as reported by the collector-owned heap
+    /// accounting model.
     ///
     /// macros.tsv: `gettotalbytes → g.total_bytes()`
     pub fn total_bytes(&self) -> usize {
-        (self.totalbytes + self.gc_debt) as usize
+        self.heap.bytes_used().max(1)
     }
 
     /// Look up the coroutine `LuaState` registered under `id`. Returns
@@ -2035,7 +2051,6 @@ impl LuaState {
         self.mark_gc_check_needed();
         let t = GcRef::new(LuaTable::placeholder());
         self.table_resize(&t, array_size as usize, hash_size as usize)?;
-        t.account_buffer(t.buffer_bytes() as isize);
         Ok(t)
     }
 
@@ -2056,6 +2071,7 @@ impl LuaState {
             }
             self.mark_gc_check_needed();
             let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
+            new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             self.global_mut()
                 .interned_lt
                 .insert(bytes.to_vec().into_boxed_slice(), new_ref.clone());
@@ -2063,23 +2079,7 @@ impl LuaState {
         } else {
             self.mark_gc_check_needed();
             let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
-            // PORT NOTE: Phase-B byte tracking for `collectgarbage("count")`.
-            // C-Lua's `luaC_newobj` calls `luaM_malloc`, which adds
-            // `sizeof(TString) + len + 1` to `g->GCdebt`. Phases A–C bypass
-            // that allocator, so without explicit accounting the Lua-visible
-            // memory total never reflects string payload — gc.lua's
-            // string-keys-in-weak-tables block depends on observing the >8MB
-            // jump after allocating two 4MB strings. Short strings are
-            // interned (bounded in size) so they are not tracked here.
-            // `reclaim_dead_long_strings` later subtracts the size back out
-            // when the underlying `Rc` is dropped.
-            let size = bytes.len()
-                + std::mem::size_of::<LuaString>()
-                + std::mem::size_of::<usize>();
-            let mut g = self.global_mut();
-            g.gc_debt += size as isize;
-            g.gc_tracked_long_strings
-                .push((new_ref.downgrade(), size));
+            new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             Ok(new_ref)
         }
     }
@@ -3478,26 +3478,10 @@ impl<'a> GcHandle<'a> {
             g.pending_finalizers.clone()
         };
 
-        // Snapshot tracked long-string identities + byte sizes BEFORE the
-        // collect. The post-mark hook compares each identity against the
-        // marker's visited set; anything not visited is unreachable and
-        // its bytes get reclaimed from `gc_debt` after the heap collect
-        // returns. Bare `usize` is safe to carry across the hook — long
-        // strings use `new_uncollected` so the pointer never dangles.
-        let long_string_snapshot: Vec<(usize, usize)> = {
-            let g = state_ref.global.borrow();
-            g.gc_tracked_long_strings
-                .iter()
-                .map(|(w, sz)| (w.0.identity(), *sz))
-                .collect()
-        };
-
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>>> =
             std::cell::RefCell::new(Vec::new());
-        let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let collect_ran = std::cell::Cell::new(false);
@@ -3566,21 +3550,6 @@ impl<'a> GcHandle<'a> {
                     }
                 }
                 marker.drain_gray_queue();
-                // Long-string Phase-B reclaim. With `new_uncollected`
-                // allocation, long strings never enter the heap's sweep
-                // path, so we rely on the marker's visited set: any
-                // tracked long-string identity that wasn't reached by mark
-                // is unreferenced and its bytes can be returned to
-                // `gc_debt`. Done here (inside the hook) so it sees the
-                // visited set BEFORE drop of the marker.
-                {
-                    let mut dead = dead_long_strings.borrow_mut();
-                    for (id, _sz) in &long_string_snapshot {
-                        if !marker.is_visited(*id) {
-                            dead.insert(*id);
-                        }
-                    }
-                }
                 {
                     let mut alive = alive_thread_ids.borrow_mut();
                     for (id, entry) in global.threads.iter() {
@@ -3611,7 +3580,6 @@ impl<'a> GcHandle<'a> {
             newly_unreachable.into_inner();
         let promote_ids: std::collections::HashSet<usize> =
             promote.iter().map(|t| t.identity()).collect();
-        let dead_ls_ids = dead_long_strings.into_inner();
         let alive_thread_ids = alive_thread_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
         g.weak_tables_registry
@@ -3626,23 +3594,6 @@ impl<'a> GcHandle<'a> {
         g.pending_finalizers
             .retain(|t| !promote_ids.contains(&t.identity()));
         g.to_be_finalized.extend(promote);
-        // Reclaim long-string byte accounting for entries the marker said
-        // were unreachable. The underlying `Gc<LuaString>` was allocated
-        // via `new_uncollected` and stays live in process memory; only
-        // `gc_debt` is adjusted so `collectgarbage("count")` reflects the
-        // drop in user-visible live bytes.
-        if !dead_ls_ids.is_empty() {
-            let mut freed: isize = 0;
-            g.gc_tracked_long_strings.retain(|(w, sz)| {
-                if dead_ls_ids.contains(&w.0.identity()) {
-                    freed += *sz as isize;
-                    false
-                } else {
-                    true
-                }
-            });
-            g.gc_debt -= freed;
-        }
     }
 
     /// Phase-B stub for `luaC_step(L)`.
@@ -3679,20 +3630,10 @@ impl<'a> GcHandle<'a> {
             g.pending_finalizers.clone()
         };
 
-        let long_string_snapshot: Vec<(usize, usize)> = {
-            let g = state_ref.global.borrow();
-            g.gc_tracked_long_strings
-                .iter()
-                .map(|(w, sz)| (w.0.identity(), *sz))
-                .collect()
-        };
-
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>>> =
             std::cell::RefCell::new(Vec::new());
-        let dead_long_strings: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let atomic_ran = std::cell::Cell::new(false);
@@ -3762,14 +3703,6 @@ impl<'a> GcHandle<'a> {
                 }
                 marker.drain_gray_queue();
                 {
-                    let mut dead = dead_long_strings.borrow_mut();
-                    for (id, _sz) in &long_string_snapshot {
-                        if !marker.is_visited(*id) {
-                            dead.insert(*id);
-                        }
-                    }
-                }
-                {
                     let mut alive = alive_thread_ids.borrow_mut();
                     for (id, entry) in global.threads.iter() {
                         if thread_entry_marked_alive(marker, *id, entry) {
@@ -3788,7 +3721,6 @@ impl<'a> GcHandle<'a> {
                 newly_unreachable.into_inner();
             let promote_ids: std::collections::HashSet<usize> =
                 promote.iter().map(|t| t.identity()).collect();
-            let dead_ls_ids = dead_long_strings.into_inner();
             let alive_thread_ids = alive_thread_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
             g.weak_tables_registry
@@ -3800,18 +3732,6 @@ impl<'a> GcHandle<'a> {
             g.pending_finalizers
                 .retain(|t| !promote_ids.contains(&t.identity()));
             g.to_be_finalized.extend(promote);
-            if !dead_ls_ids.is_empty() {
-                let mut freed: isize = 0;
-                g.gc_tracked_long_strings.retain(|(w, sz)| {
-                    if dead_ls_ids.contains(&w.0.identity()) {
-                        freed += *sz as isize;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                g.gc_debt -= freed;
-            }
         }
 
         matches!(outcome, StepOutcome::Paused)
@@ -3944,7 +3864,8 @@ fn make_seed() -> u32 {
     }
 }
 
-/// Adjust `GCdebt` to `debt` while preserving the `totalbytes + GCdebt` invariant.
+/// Adjust the compatibility `GCdebt` split while preserving the collector's
+/// current total byte count in the shadow `totalbytes` field.
 ///
 ///
 /// ```c
@@ -3966,28 +3887,6 @@ pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
     }
     g.totalbytes = tb - debt;
     g.gc_debt = debt;
-}
-
-/// Sweep the Phase-B long-string tracker and decrement `gc_debt` by the
-/// recorded byte count of any entry whose underlying `Rc` has been dropped.
-///
-/// PORT NOTE: Phase D will replace this with the real allocator's per-object
-/// accounting through `luaM_realloc`. For now, long-string creation pushes a
-/// `(Weak, size)` pair onto `gc_tracked_long_strings`, and this helper
-/// reclaims the bytes lazily — at every `collectgarbage("count")` query and
-/// at the end of `collectgarbage("collect")` — so the Lua-visible memory
-/// total reflects live string bytes rather than peak allocation.
-pub(crate) fn reclaim_dead_long_strings(g: &mut GlobalState) {
-    let mut freed: isize = 0;
-    g.gc_tracked_long_strings.retain(|(w, sz)| {
-        if w.strong_count() == 0 {
-            freed += *sz as isize;
-            false
-        } else {
-            true
-        }
-    });
-    g.gc_debt -= freed;
 }
 
 /// Deprecated no-op that returns `LUAI_MAXCCALLS`.
@@ -4670,7 +4569,6 @@ pub fn new_state() -> Option<LuaState> {
         gc55_params: [20, 50, 68, 250, 200, 9600],
         sweepgc_cursor: 0,
         weak_tables_registry: Vec::new(),
-        gc_tracked_long_strings: Vec::new(),
         pending_finalizers: Vec::new(),
         to_be_finalized: Vec::new(),
         gc_finalizer_error: None,
@@ -4890,6 +4788,73 @@ mod tests {
         state.gc().full_collect();
         assert_eq!(state.global().heap.allgc_count(), 0);
         assert!(state.global().external_roots.is_empty());
+    }
+
+    #[test]
+    fn table_buffer_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let table = state.new_table();
+        let key = state.external_root_value(LuaValue::Table(table));
+        let header_bytes = state.global().heap.bytes_used();
+        assert!(header_bytes > 0);
+
+        for i in 1..=128 {
+            table
+                .raw_set_int(&mut state, i, LuaValue::Int(i))
+                .expect("integer table insert should succeed");
+        }
+        let grown_bytes = state.global().heap.bytes_used();
+        assert!(
+            grown_bytes > header_bytes,
+            "table array/hash buffer growth must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            grown_bytes,
+            "rooted table buffer bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn string_buffer_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let payload = vec![b'x'; crate::string::MAX_SHORT_LEN + 4096];
+        let string = state.intern_str(&payload).expect("long string should allocate");
+        let key = state.external_root_value(LuaValue::Str(string));
+        let allocated_bytes = state.global().heap.bytes_used();
+        assert!(
+            allocated_bytes > payload.len(),
+            "long string backing bytes must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            allocated_bytes,
+            "rooted string buffer bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
     }
 }
 

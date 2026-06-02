@@ -166,14 +166,6 @@ impl Trace for GlobalState {
             }
         }
 
-        // Do not trace `gc_tracked_long_strings` here. That vector is memory
-        // accounting metadata, not an owning root. Lua C treats strings as
-        // non-weak only when they are reached through a surviving table entry
-        // (`iscleared` marks them during weak cleanup); our post-mark weak pass
-        // mirrors that by marking string keys/values returned from
-        // `prune_weak_dead`. Rooting the whole accounting list would keep dead
-        // long strings alive and break gc.lua's weak-string-key checks.
-
         // Pending finalizers are NOT traced here — that's what lets the mark
         // phase distinguish "still reachable from the user program" from
         // "only kept alive by the finalizer registry". `collect_via_heap`'s
