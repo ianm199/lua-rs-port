@@ -18,6 +18,7 @@
 #   bash harness/bench/profile-hotspots.sh fibonacci
 #   bash harness/bench/profile-hotspots.sh fibonacci 8   # sample 8s
 #   SAMPLE_SECONDS=12 bash harness/bench/profile-hotspots.sh string_ops
+#   PROFILE_REPEAT=30 bash harness/bench/profile-hotspots.sh closure_ops 8
 #   PROFILE_LUA_EVAL='for i=1,100 do dofile("...") end' \
 #     bash harness/bench/profile-hotspots.sh gc_pressure_x100 6
 
@@ -31,6 +32,12 @@ SAMPLE_SECONDS="${2:-${SAMPLE_SECONDS:-6}}"
 RS_BIN="$ROOT/target/release/lua-rs"
 WORKLOAD_FILE="$ROOT/harness/bench/workloads/${WORKLOAD}.lua"
 PROFILE_LUA_EVAL="${PROFILE_LUA_EVAL:-}"
+PROFILE_REPEAT="${PROFILE_REPEAT:-1}"
+
+case "$PROFILE_REPEAT" in
+    ''|*[!0-9]*) echo "[err] PROFILE_REPEAT must be a positive integer" >&2; exit 2 ;;
+    0)           echo "[err] PROFILE_REPEAT must be >= 1" >&2; exit 2 ;;
+esac
 
 [ -x "$RS_BIN" ] || { echo "[err] release binary missing: $RS_BIN — run cargo build --release -p lua-cli with frame pointers" >&2; exit 2; }
 if [ -z "$PROFILE_LUA_EVAL" ]; then
@@ -41,14 +48,22 @@ SAMPLE_BIN="/usr/bin/sample"
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-OUT_DIR="$ROOT/harness/bench/profiles/${TS}-${COMMIT}-${WORKLOAD}"
+WORKLOAD_LABEL="$WORKLOAD"
+if [ -z "$PROFILE_LUA_EVAL" ] && [ "$PROFILE_REPEAT" -gt 1 ]; then
+    escaped_workload=${WORKLOAD_FILE//\\/\\\\}
+    escaped_workload=${escaped_workload//\"/\\\"}
+    PROFILE_LUA_EVAL="for _profile_i = 1, ${PROFILE_REPEAT} do dofile(\"${escaped_workload}\") end"
+    WORKLOAD_LABEL="${WORKLOAD}_x${PROFILE_REPEAT}"
+fi
+
+OUT_DIR="$ROOT/harness/bench/profiles/${TS}-${COMMIT}-${WORKLOAD_LABEL}"
 mkdir -p "$OUT_DIR"
 SAMPLE_OUT="$OUT_DIR/sample.txt"
 SUMMARY="$OUT_DIR/summary.txt"
 VM_EXECUTE="$OUT_DIR/vm-execute.txt"
 
 if [ -n "$PROFILE_LUA_EVAL" ]; then
-    echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL>" >&2
+    echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
     "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
 else
     echo "==> spawning $RS_BIN $WORKLOAD_FILE" >&2
@@ -75,7 +90,7 @@ echo "==> sample written: $SAMPLE_OUT ($(wc -l < "$SAMPLE_OUT") lines)" >&2
 # We aggregate the leaf frames (after the colon "Call graph:" header, top-of-stack
 # section) into a flat top-N list.
 
-python3 - "$SAMPLE_OUT" "$SUMMARY" "$WORKLOAD" "$COMMIT" "$TS" "$SAMPLE_SECONDS" <<'PY'
+python3 - "$SAMPLE_OUT" "$SUMMARY" "$WORKLOAD_LABEL" "$COMMIT" "$TS" "$SAMPLE_SECONDS" <<'PY'
 import re, sys, pathlib
 
 src, dst, workload, commit, ts, secs = sys.argv[1:7]

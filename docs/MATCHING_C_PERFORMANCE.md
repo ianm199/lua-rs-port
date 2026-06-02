@@ -415,6 +415,72 @@ top buckets after one more careful call-frame packet, the next meaningful
 design discussion is likely unsafe/value layout: 16-byte `LuaValue`, raw stack
 slot access with proven frame invariants, and cached upvalue pointer arrays.
 
+### 9. `20260602T183215Z-98bd6bd` — concat pair fast path and repeatable short-workload telemetry
+
+**Pattern:** *Do not intern scratch values that C only formats into a temporary
+buffer.*
+
+`table_hash_pressure` builds 266k string keys per run (`"k" .. i`, `"x" .. i`)
+and then inserts/lookups those keys. The pre-packet profile made the bottleneck
+obvious:
+
+- Before: `table_hash_pressure_x100`
+  (`harness/bench/profiles/20260602T182714Z-98bd6bd-table_hash_pressure_x100/summary.txt`)
+  had `lua_vm::vm::concat` at 1,297 samples / 19.4% of wall time, with
+  `get_short_str_slot` close behind at 18.9%.
+- Opcode counts
+  (`harness/bench/profiles/opcode-profile/20260602T182741Z-98bd6bd-table_hash_pressure/opcodes.tsv`)
+  showed `CONCAT`, `SETTABLE`, `ADD`, and `FORLOOP` each at roughly 11-16% of
+  executed opcodes, confirming this was workload structure rather than a
+  sampler artifact.
+
+The old two-operand concat path coerced numeric operands by interning the
+number as a temporary Lua string, then allocated/copied again for the final
+concatenated key. The kept packet adds a `total == 2` string/number fast path:
+format numeric operands into byte buffers, append both operands directly into
+the final buffer, intern only the final concatenated string, and leave
+metamethod behavior unchanged for non-string/non-number operands.
+
+Evidence:
+
+| workload | recent baseline | after |
+|---|---:|---:|
+| table_hash_pressure, broad best-of-5 | 1.75x-2.00x band | 1.14x |
+| table_hash_pressure, focused best-of-10 | 1.75x | 1.17x |
+| overall broad matrix | ~1.54x | 1.54x |
+
+After-profile:
+
+- `table_hash_pressure_x100`
+  (`harness/bench/profiles/20260602T183359Z-98bd6bd-table_hash_pressure_x100/summary.txt`)
+  has `lua_vm::vm::concat` down to 116 samples / 3.1%.
+- The new top cost is now split across `execute`, table short-string lookup,
+  `new_key`, intern allocation, and allocator/free. That means the old concat
+  scratch-intern pole is gone.
+
+Telemetry improvements kept with this packet:
+
+- `profile-hotspots.sh` gained `PROFILE_REPEAT=N`, so short workloads can be
+  sampled without hand-writing a custom eval payload.
+- `opcode-profile.sh` and `gc-profile.sh` now support the same repeat mechanism
+  and label artifacts as `<workload>_x<N>`.
+- `history.py` now includes `gc_pressure`, `mandelbrot_long`, and
+  `table_hash_pressure` in the dashboard workload registry instead of silently
+  filtering their ledger rows out.
+
+Negative results from the same spike:
+
+- Guarding unconditional `ci_trap` refreshes behind `hookmask != 0` was not a
+  free lunch. It looked plausible from VM attribution, but a best-of-10
+  isolation moved `binarytrees` from 1.93x on clean baseline
+  (`20260602T182315Z-98bd6bd`) to 2.12x with the guard
+  (`20260602T181943Z-98bd6bd`). The branch/read tradeoff and code layout were
+  worse than the unconditional `ci_trap` read in allocation-heavy recursion.
+- Rewriting `OP_MUL` to manually load operands once also did not hold up.
+  `mandelbrot_long` got worse in focused runs, so the change was dropped.
+  The lesson is that opcode arm shape needs benchmark confirmation; fewer
+  source-level probes are not automatically better machine code.
+
 ### 6. `20260602T140413Z-858cc5e` — broad safe-Rust pass after PR #121
 
 **Pattern:** *Use specialized internal data structures for internal identities,

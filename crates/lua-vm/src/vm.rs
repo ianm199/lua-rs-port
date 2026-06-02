@@ -22,7 +22,7 @@
 
 #[allow(unused_imports)] use crate::prelude::*;
 use lua_types::{
-    CallInfoIdx, GcRef, LuaError, LuaValue, StackIdx,
+    CallInfoIdx, GcRef, LuaError, LuaString, LuaValue, StackIdx,
 };
 use lua_types::tagmethod::TagMethod;
 use lua_types::opcode::Instruction;
@@ -1297,6 +1297,14 @@ pub(crate) fn concat(state: &mut LuaState, total: i32) -> Result<(), LuaError> {
     if total == 1 {
         return Ok(());
     }
+    if total == 2 {
+        let top = state.top_idx();
+        let v_tm1 = state.get_at(top - 1);
+        let v_tm2 = state.get_at(top - 2);
+        if concat_pair_fast(state, top, v_tm2, v_tm1)? {
+            return Ok(());
+        }
+    }
     let mut total = total;
     loop {
         let top = state.top_idx();
@@ -1389,6 +1397,67 @@ pub(crate) fn concat(state: &mut LuaState, total: i32) -> Result<(), LuaError> {
         }
     }
     Ok(())
+}
+
+enum ConcatPiece {
+    Str(GcRef<LuaString>),
+    Num(Vec<u8>),
+}
+
+impl ConcatPiece {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            ConcatPiece::Str(s) => s.as_bytes().len(),
+            ConcatPiece::Num(bytes) => bytes.len(),
+        }
+    }
+
+    #[inline]
+    fn append_to(&self, out: &mut Vec<u8>) {
+        match self {
+            ConcatPiece::Str(s) => out.extend_from_slice(s.as_bytes()),
+            ConcatPiece::Num(bytes) => out.extend_from_slice(bytes),
+        }
+    }
+}
+
+#[inline]
+fn concat_piece(v: LuaValue, version: lua_types::LuaVersion) -> Option<ConcatPiece> {
+    match v {
+        LuaValue::Str(s) => Some(ConcatPiece::Str(s)),
+        LuaValue::Int(_) | LuaValue::Float(_) => {
+            Some(ConcatPiece::Num(crate::object::number_to_str_buf(&v, version)))
+        }
+        _ => None,
+    }
+}
+
+#[inline]
+fn concat_pair_fast(
+    state: &mut LuaState,
+    top: StackIdx,
+    left: LuaValue,
+    right: LuaValue,
+) -> Result<bool, LuaError> {
+    let version = state.global().lua_version;
+    let Some(left) = concat_piece(left, version) else {
+        return Ok(false);
+    };
+    let Some(right) = concat_piece(right, version) else {
+        return Ok(false);
+    };
+    let total_len = left
+        .len()
+        .checked_add(right.len())
+        .ok_or_else(|| LuaError::runtime(format_args!("string length overflow")))?;
+    let mut buf = Vec::with_capacity(total_len);
+    left.append_to(&mut buf);
+    right.append_to(&mut buf);
+    let ts = state.intern_or_create_str(&buf)?;
+    state.set_at(top - 2, LuaValue::Str(ts));
+    state.set_top(top - 1);
+    Ok(true)
 }
 
 // ─── Object length ───────────────────────────────────────────────────────────

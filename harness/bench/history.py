@@ -34,10 +34,13 @@ DEFAULT_OUT = ROOT / "harness/bench/history"
 WORKLOADS = [
     "fibonacci",
     "mandelbrot",
+    "mandelbrot_long",
     "binarytrees",
     "closure_ops",
+    "gc_pressure",
     "table_ops",
     "table_ops_long",
+    "table_hash_pressure",
     "string_ops",
     "string_ops_long",
 ]
@@ -45,10 +48,13 @@ WORKLOADS = [
 WORKLOAD_COLORS = {
     "fibonacci":       "#2f6fed",
     "mandelbrot":      "#0f8f68",
+    "mandelbrot_long": "#116b50",
     "binarytrees":     "#c16a1a",
     "closure_ops":     "#7a4cc2",
+    "gc_pressure":     "#6f7c12",
     "table_ops":       "#d33f49",
     "table_ops_long":  "#a13d63",
+    "table_hash_pressure": "#d46b6b",
     "string_ops":      "#008c9e",
     "string_ops_long": "#8a6500",
 }

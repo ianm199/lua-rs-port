@@ -16,6 +16,9 @@ workload is the only fair comparison.
 harness/bench/
 ├── README.md            <- this file
 ├── compare.sh           <- main ledgered bench: run all workloads vs reference
+├── gc-profile.sh        <- end-of-run collector counters
+├── opcode-profile.sh    <- feature-gated opcode execution counters
+├── profile-hotspots.sh  <- macOS sample wrapper + VM execute attribution
 ├── scaling-check.py     <- complexity gate: flag superlinear (O(n^2)) behavior
 ├── workloads/           <- self-contained .lua microbenchmarks (timed vs C)
 │   ├── binarytrees.lua  <- GC pressure (CLBG-style)
@@ -23,9 +26,12 @@ harness/bench/
 │   ├── fibonacci.lua    <- recursive call dispatch + small-int math
 │   ├── gc_pressure.lua  <- allocation/collection throughput under churn
 │   ├── mandelbrot.lua   <- float math + nested loops
+│   ├── mandelbrot_long.lua <- longer float math profile target
 │   ├── string_ops.lua   <- concat/find/gsub/byte ops
+│   ├── string_ops_long.lua <- longer byte-string profile target
 │   ├── table_hash_pressure.lua <- hash-part insertion (#38 regression guard)
-│   └── table_ops.lua    <- table insert/remove/iterate, array + hash
+│   ├── table_ops.lua    <- table insert/remove/iterate, array + hash
+│   └── table_ops_long.lua <- longer table insert/remove/iterate target
 └── scaling/             <- size-parameterized workloads for scaling-check.py
     ├── array_insert.lua
     ├── gc_churn.lua
@@ -109,10 +115,14 @@ evidence. This is the redis-rs-port convention; we follow it here.
 
 ```bash
 bash harness/bench/profile-hotspots.sh string_ops_long 6
+PROFILE_REPEAT=30 bash harness/bench/profile-hotspots.sh closure_ops 8
 ```
 
-For workloads that are too short to survive the sampler's startup delay, pass
-an eval payload and use the first argument only as the artifact label:
+For workloads that are too short to survive the sampler's startup delay,
+prefer `PROFILE_REPEAT=N`; the runner labels the artifact as
+`<workload>_x<N>` and executes the same workload file in a loop. If you need a
+custom probe shape, pass an eval payload and use the first argument only as the
+artifact label:
 
 ```bash
 PROFILE_LUA_EVAL='for i=1,100 do dofile("harness/bench/workloads/gc_pressure.lua") end' \
@@ -141,8 +151,7 @@ sampling collapses into `vm::execute`:
 
 ```bash
 bash harness/bench/opcode-profile.sh fibonacci
-PROFILE_LUA_EVAL='for i=1,10 do dofile("harness/bench/workloads/closure_ops.lua") end' \
-  bash harness/bench/opcode-profile.sh closure_ops_x10
+PROFILE_REPEAT=10 bash harness/bench/opcode-profile.sh closure_ops
 ```
 
 It builds `lua-rs` with `--features opcode-profile`, writes
@@ -155,8 +164,7 @@ counters:
 
 ```bash
 bash harness/bench/gc-profile.sh gc_pressure
-PROFILE_LUA_EVAL='for i=1,10 do dofile("harness/bench/workloads/binarytrees.lua") end' \
-  bash harness/bench/gc-profile.sh binarytrees_x10
+PROFILE_REPEAT=10 bash harness/bench/gc-profile.sh binarytrees
 ```
 
 It writes `profiles/gc-profile/<UTC>-<sha>-<label>/gc.tsv`. The report covers
@@ -173,12 +181,12 @@ hot but cannot explain how many objects the phase is visiting or freeing.
 
 ## Current follow-ups
 
-1. The latest table lesson is the no-metatable `OP_SET*` fast path after
-   PR #121; see `docs/MATCHING_C_PERFORMANCE.md`.
+1. The latest string-key lesson is the two-operand concat fast path after the
+   post-v0.0.27 profiling wave; see `docs/MATCHING_C_PERFORMANCE.md`.
 2. `profile-hotspots.sh` is wired for `/usr/bin/sample` summaries and supports
-   `PROFILE_LUA_EVAL` for scaled short-workload probes. When `vm::execute`
-   dominates, inspect the adjacent `vm-execute.txt` before adding deeper
-   profiler tooling.
+   `PROFILE_REPEAT=N` for scaled short-workload probes. `PROFILE_LUA_EVAL`
+   remains available for custom probe shapes. When `vm::execute` dominates,
+   inspect the adjacent `vm-execute.txt` before adding deeper profiler tooling.
 3. `opcode-profile.sh` covers per-op counts when stack samples flatten into
    `vm::execute`; it does not provide per-op timing. Pair it with
    `vm-execute.txt` when opcode frequency and sampled time diverge.

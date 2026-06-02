@@ -21,28 +21,28 @@ microbench shape; that is not the goal. Regressions and unexplained >2× gaps
 are backlog until measured otherwise.
 
 Current selected matrix (best-of-5, Apple M3 Max, latest local evidence
-`harness/bench/results/20260602T144939Z-ea6d8d4-compare.json`):
+`harness/bench/results/20260602T183215Z-98bd6bd-compare.json`):
 
 | workload | wall ratio | category |
 |---|---:|---|
 | table_ops | 1.00× | short table insert/remove/iterate, passes 1.5× gate |
-| table_ops_long | 1.04× | table insert/remove long run, still at parity |
-| string_ops_long | 1.51× | byte-string pattern/gsub hot paths, just above gate |
-| table_hash_pressure | 1.75× | hash-part insertion + string-key construction |
-| fibonacci | 1.84× | recursive call dispatch + small-int math |
-| binarytrees | 2.09× | allocation + tree traversal / GC pressure |
-| closure_ops | 2.06× | closure calls + upvalue reads/writes |
+| table_ops_long | 1.05× | table insert/remove long run, still at parity |
+| table_hash_pressure | 1.14× | string-key construction + hash insertion, now near parity |
+| string_ops_long | 1.59× | byte-string pattern/gsub hot paths, around the gate |
+| mandelbrot_long | 1.82× | float arithmetic + branch-heavy loop dispatch |
+| fibonacci | 1.87× | recursive call dispatch + small-int math |
+| binarytrees | 1.93× | allocation + tree traversal / GC pressure |
+| closure_ops | 1.94× | closure calls + upvalue reads/writes |
 | gc_pressure | 2.50× | allocation/collection throughput under churn |
 
-The latest broad pass moved the full matrix from 1.60× overall
-(`20260602T140413Z-858cc5e`) to 1.54× overall. The useful movement was in
-`string_ops_long` (1.86× -> 1.51×), `fibonacci` (1.88× -> 1.84×), and
-`table_hash_pressure` (1.88× -> 1.75×). `binarytrees` remains around 2× and
-`gc_pressure` did not move.
+The latest kept packet made two-operand string/number concatenation avoid an
+intermediate interned numeric string. `table_hash_pressure` moved from the
+recent 1.75×-2.00× band to 1.14× in the broad matrix and 1.17× in a
+best-of-10 focused run. The overall ratio stayed about 1.54× because the
+largest remaining workloads are VM-call and GC dominated, not string-key
+construction dominated.
 The next tall poles are core VM call/upvalue dispatch, collector
-sweep/allocation mechanics, and table/string-key construction. Lua pattern
-matching is no longer the first string target, but a full pattern
-precompile/cache packet remains a plausible future architecture step.
+sweep/allocation mechanics, and byte-string pattern matching.
 
 ## The gate
 

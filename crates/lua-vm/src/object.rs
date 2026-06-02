@@ -588,7 +588,7 @@ fn strip_fixed_trailing_zeros(s: &str) -> String {
 /// Formats the numeric `LuaValue` `val` (must be Int or Float) into a byte
 /// buffer and returns it.
 ///
-fn number_to_str_buf(val: &LuaValue, version: lua_types::LuaVersion) -> Vec<u8> {
+pub(crate) fn number_to_str_buf(val: &LuaValue, version: lua_types::LuaVersion) -> Vec<u8> {
     use lua_types::LuaVersion;
     debug_assert!(
         matches!(val, LuaValue::Int(_) | LuaValue::Float(_)),
