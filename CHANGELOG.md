@@ -4,6 +4,23 @@ All notable changes to `lua-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.24] - 2026-06-01
+
+### Fixed
+
+- **vm/coroutine** (#97): a `__le` derived from `__lt` (the `LUA_COMPAT_LT_LE`
+  fallback on 5.1–5.4) now negates correctly when the `__lt` metamethod yields,
+  via the `CIST_LEQ` mark. Previously the comparison returned the inverted
+  result across a yield.
+- **vm** (#96): closures built in a loop over identical upvalues compare equal
+  (`==`) on 5.2/5.3, matching reference closure caching; distinct on 5.1/5.4/5.5.
+- **vm** (#94): Lua 5.5 named varargs `function f(...t)` share one storage object
+  between `t` and `...`, so mutating `t` is observable through a later `...`
+  (count follows `t.n`); preserved across `string.dump`/`load`.
+- **parser** (#95): the `break`-outside-loop error message is now version-correct
+  (5.1 `no loop to break`, 5.2/5.3 `<break> ... not inside a loop`, 5.4
+  `break outside loop at line N`, 5.5 `break outside loop near 'break'`).
+
 ## [0.0.23] - 2026-06-01
 
 ### Fixed
