@@ -11,7 +11,7 @@
 //!
 //! - **Gc<T>**: a pointer-sized handle. `Copy + Clone`. Replaces `GcRef<T>`.
 //! - **GcBox<T>**: the heap allocation; contains a header and the value.
-//! - **GcHeader**: per-object metadata (color, finalized flag, intrusive
+//! - **GcHeader**: per-object metadata (color, age, finalized flag, intrusive
 //!   `next` pointer for the allgc list).
 //! - **Trace**: trait every GC-rooted type implements. The `trace` method
 //!   walks all `Gc<_>` fields and calls `Marker::mark` on each.
@@ -120,10 +120,31 @@ pub enum Color {
     Black,
 }
 
+/// Object age used by Lua's generational collector.
+///
+/// Mirrors `G_NEW` through `G_TOUCHED2` in `lgc.h`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum GcAge {
+    New,
+    Survival,
+    Old0,
+    Old1,
+    Old,
+    Touched1,
+    Touched2,
+}
+
+impl GcAge {
+    pub fn is_old(self) -> bool {
+        !matches!(self, GcAge::New | GcAge::Survival)
+    }
+}
+
 /// Per-object GC metadata. Lives at the start of every `GcBox`.
 #[repr(C)]
 pub struct GcHeader {
     color: Cell<Color>,
+    age: Cell<GcAge>,
     /// Set true after this object's finalizer (`__gc` metamethod) has run.
     /// Phase D defers finalizers; this is reserved.
     finalized: Cell<bool>,
@@ -152,6 +173,7 @@ impl GcHeader {
     fn new_white(size: usize) -> Self {
         Self {
             color: Cell::new(Color::White),
+            age: Cell::new(GcAge::New),
             finalized: Cell::new(false),
             collected: Cell::new(false),
             next: Cell::new(None),
@@ -257,6 +279,22 @@ impl<T: ?Sized> Gc<T> {
 
     fn header(&self) -> &GcHeader {
         &self.as_box().header
+    }
+
+    pub fn color(self) -> Color {
+        self.header().color.get()
+    }
+
+    pub fn set_color(self, color: Color) {
+        self.header().color.set(color);
+    }
+
+    pub fn age(self) -> GcAge {
+        self.header().age.get()
+    }
+
+    pub fn set_age(self, age: GcAge) {
+        self.header().age.set(age);
     }
 
     /// Charge (`delta > 0`) or refund (`delta < 0`) `delta` bytes of this
@@ -657,6 +695,15 @@ impl Heap {
         self.collections.get()
     }
 
+    fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
+        let mut cursor = self.head.get();
+        while let Some(ptr) = cursor {
+            let header = unsafe { &(*ptr.as_ptr()).header };
+            cursor = header.next.get();
+            f(header);
+        }
+    }
+
     /// Forward write barrier: invoked when `parent` (already-traced black
     /// object) gains a new reference to `child`. To preserve the tri-color
     /// invariant ("no black points to white"), we mark the child gray
@@ -687,6 +734,34 @@ impl Heap {
                 m.gray_queue.push(ptr);
                 m.visited.insert(child.identity());
             }
+        }
+    }
+
+    /// Generational forward barrier: if an old object receives a reference to a
+    /// young object, the child cannot jump directly to OLD because it may still
+    /// point at younger objects. Lua marks it OLD0 so later young collections
+    /// advance it through OLD1 to OLD.
+    pub fn generational_forward_barrier<P, C>(&self, parent: Gc<P>, child: Gc<C>)
+    where
+        P: Trace + 'static,
+        C: Trace + 'static,
+    {
+        if parent.age().is_old() && !child.age().is_old() {
+            child.set_age(GcAge::Old0);
+        }
+        self.barrier(parent, child);
+    }
+
+    /// Generational backward barrier: an old object that now points to a young
+    /// object is revisited by the next young collection. This mirrors
+    /// `luaC_barrierback_`'s age transition to TOUCHED1.
+    pub fn generational_backward_barrier<P>(&self, parent: Gc<P>)
+    where
+        P: Trace + 'static,
+    {
+        if parent.age().is_old() {
+            parent.set_color(Color::Gray);
+            parent.set_age(GcAge::Touched1);
         }
     }
 
@@ -733,17 +808,32 @@ impl Heap {
         if self.paused.get() {
             return;
         }
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
-            let header = unsafe { &(*ptr.as_ptr()).header };
+        self.for_each_header(|header| {
             header.color.set(Color::White);
-            cursor = header.next.get();
-        }
+        });
         let mut marker = Marker::new();
         roots.trace(&mut marker);
         marker.drain_gray_queue();
         post_mark(&mut marker);
         marker.drain_gray_queue();
+    }
+
+    /// Metadata transition used when entering generational mode after a full
+    /// mark: all currently live objects become old.
+    pub fn promote_all_to_old(&self) {
+        self.for_each_header(|header| {
+            header.age.set(GcAge::Old);
+            header.color.set(Color::Black);
+        });
+    }
+
+    /// Metadata transition used when returning to incremental mode: Lua clears
+    /// age information and treats all objects as new again.
+    pub fn reset_all_ages(&self) {
+        self.for_each_header(|header| {
+            header.age.set(GcAge::New);
+            header.color.set(Color::White);
+        });
     }
 
     /// Stop-the-world full collect with a post-mark hook.
@@ -860,12 +950,9 @@ impl Heap {
     }
 
     fn start_cycle(&self, roots: &dyn Trace) {
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
-            let header = unsafe { &(*ptr.as_ptr()).header };
+        self.for_each_header(|header| {
             header.color.set(Color::White);
-            cursor = header.next.get();
-        }
+        });
         let mut marker = Marker::new();
         roots.trace(&mut marker);
         *self.marker.borrow_mut() = Some(marker);
@@ -980,12 +1067,9 @@ impl Heap {
     /// chain. Linear in heap size; used for cycle-cost estimation and tests.
     pub fn allgc_count(&self) -> usize {
         let mut count = 0usize;
-        let mut cursor = self.head.get();
-        while let Some(ptr) = cursor {
+        self.for_each_header(|_| {
             count += 1;
-            let header = unsafe { &(*ptr.as_ptr()).header };
-            cursor = header.next.get();
-        }
+        });
         count
     }
 
@@ -1131,6 +1215,67 @@ mod tests {
         heap.full_collect(&OneRoot(Some(root)));
         assert_eq!(heap.bytes_used(), bytes_before);
         assert_eq!(root.marker_calls.get(), 1);
+    }
+
+    #[test]
+    fn allocations_start_new_and_white() {
+        let heap = Heap::new();
+        heap.unpause();
+        let obj = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        assert_eq!(obj.age(), GcAge::New);
+        assert_eq!(obj.color(), Color::White);
+    }
+
+    #[test]
+    fn promote_and_reset_all_ages() {
+        let heap = Heap::new();
+        heap.unpause();
+        let a = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let b = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        heap.promote_all_to_old();
+        assert_eq!(a.age(), GcAge::Old);
+        assert_eq!(b.age(), GcAge::Old);
+        assert_eq!(a.color(), Color::Black);
+        assert_eq!(b.color(), Color::Black);
+
+        heap.reset_all_ages();
+        assert_eq!(a.age(), GcAge::New);
+        assert_eq!(b.age(), GcAge::New);
+        assert_eq!(a.color(), Color::White);
+        assert_eq!(b.color(), Color::White);
+    }
+
+    #[test]
+    fn generational_barriers_update_ages() {
+        let heap = Heap::new();
+        heap.unpause();
+        let parent = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let child = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        parent.set_age(GcAge::Old);
+        parent.set_color(Color::Black);
+        heap.generational_backward_barrier(parent);
+        assert_eq!(parent.age(), GcAge::Touched1);
+        assert_eq!(parent.color(), Color::Gray);
+
+        heap.generational_forward_barrier(parent, child);
+        assert_eq!(child.age(), GcAge::Old0);
     }
 
     #[test]

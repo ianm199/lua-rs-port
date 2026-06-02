@@ -3375,17 +3375,32 @@ impl<'a> lua_gc::Trace for CollectRoots<'a> {
     }
 }
 
-fn barrier_lua_value<P>(heap: &lua_gc::Heap, parent: GcRef<P>, child: &LuaValue)
+#[derive(Clone, Copy)]
+enum BarrierKind {
+    Forward,
+    Backward,
+}
+
+fn barrier_lua_value<P>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: &LuaValue,
+    generational: bool,
+    kind: BarrierKind,
+)
 where
     P: lua_gc::Trace + 'static,
 {
+    if generational && matches!(kind, BarrierKind::Backward) {
+        heap.generational_backward_barrier(parent.0);
+    }
     match child {
-        LuaValue::Str(c) => heap.barrier(parent.0, c.0),
-        LuaValue::Table(c) => heap.barrier(parent.0, c.0),
-        LuaValue::Function(LuaClosure::Lua(c)) => heap.barrier(parent.0, c.0),
-        LuaValue::Function(LuaClosure::C(c)) => heap.barrier(parent.0, c.0),
-        LuaValue::UserData(c) => heap.barrier(parent.0, c.0),
-        LuaValue::Thread(c) => heap.barrier(parent.0, c.0),
+        LuaValue::Str(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Table(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Function(LuaClosure::Lua(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Function(LuaClosure::C(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::UserData(c) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Thread(c) => barrier_gc_child(heap, parent, *c, generational, kind),
         LuaValue::Nil
         | LuaValue::Bool(_)
         | LuaValue::Int(_)
@@ -3395,40 +3410,70 @@ where
     }
 }
 
-fn barrier_child_any<P>(heap: &lua_gc::Heap, parent: GcRef<P>, child: &dyn std::any::Any)
+fn barrier_gc_child<P, C>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: GcRef<C>,
+    generational: bool,
+    kind: BarrierKind,
+)
+where
+    P: lua_gc::Trace + 'static,
+    C: lua_gc::Trace + 'static,
+{
+    if generational && matches!(kind, BarrierKind::Forward) {
+        heap.generational_forward_barrier(parent.0, child.0);
+    } else {
+        heap.barrier(parent.0, child.0);
+    }
+}
+
+fn barrier_child_any<P>(
+    heap: &lua_gc::Heap,
+    parent: GcRef<P>,
+    child: &dyn std::any::Any,
+    generational: bool,
+    kind: BarrierKind,
+)
 where
     P: lua_gc::Trace + 'static,
 {
     if let Some(v) = child.downcast_ref::<LuaValue>() {
-        barrier_lua_value(heap, parent, v);
+        barrier_lua_value(heap, parent, v, generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaString>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaTable>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaClosureLua>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaClosureC>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaUserData>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<lua_types::value::LuaThread>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<LuaProto>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     } else if let Some(c) = child.downcast_ref::<GcRef<UpVal>>() {
-        heap.barrier(parent.0, c.0);
+        barrier_gc_child(heap, parent, c.clone(), generational, kind);
     }
 }
 
-fn barrier_any(heap: &lua_gc::Heap, parent: &dyn std::any::Any, child: &dyn std::any::Any) {
+fn barrier_any(
+    heap: &lua_gc::Heap,
+    parent: &dyn std::any::Any,
+    child: &dyn std::any::Any,
+    generational: bool,
+    kind: BarrierKind,
+) {
     if let Some(v) = parent.downcast_ref::<LuaValue>() {
         match v {
-            LuaValue::Str(p) => barrier_child_any(heap, *p, child),
-            LuaValue::Table(p) => barrier_child_any(heap, *p, child),
-            LuaValue::Function(LuaClosure::Lua(p)) => barrier_child_any(heap, *p, child),
-            LuaValue::Function(LuaClosure::C(p)) => barrier_child_any(heap, *p, child),
-            LuaValue::UserData(p) => barrier_child_any(heap, *p, child),
-            LuaValue::Thread(p) => barrier_child_any(heap, *p, child),
+            LuaValue::Str(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Table(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Function(LuaClosure::Lua(p)) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Function(LuaClosure::C(p)) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::UserData(p) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Thread(p) => barrier_child_any(heap, *p, child, generational, kind),
             LuaValue::Nil
             | LuaValue::Bool(_)
             | LuaValue::Int(_)
@@ -3437,21 +3482,21 @@ fn barrier_any(heap: &lua_gc::Heap, parent: &dyn std::any::Any, child: &dyn std:
             | LuaValue::Function(LuaClosure::LightC(_)) => {}
         }
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaString>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaTable>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaClosureLua>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaClosureC>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaUserData>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<lua_types::value::LuaThread>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<LuaProto>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     } else if let Some(p) = parent.downcast_ref::<GcRef<UpVal>>() {
-        barrier_child_any(heap, *p, child);
+        barrier_child_any(heap, p.clone(), child, generational, kind);
     }
 }
 
@@ -3903,11 +3948,35 @@ impl<'a> GcHandle<'a> {
     }
 
     /// Set the GC kind (incremental/generational).
-    ///
-    /// itself is `Rc`-based, so the only observable effect is the mode flag
-    /// returned by `lua_gc(LUA_GCGEN)` / `lua_gc(LUA_GCINC)` on the next call.
     pub fn change_mode(&self, mode: GcKind) {
-        self._state.global_mut().gckind = mode as u8;
+        let old = self._state.global().gckind;
+        if old == mode as u8 {
+            self._state.global_mut().lastatomic = 0;
+            return;
+        }
+        match mode {
+            GcKind::Generational => {
+                self.collect_via_heap(true);
+                {
+                    let g = self._state.global();
+                    g.heap.promote_all_to_old();
+                }
+                let total = self._state.global().total_bytes();
+                let mut g = self._state.global_mut();
+                g.gc_estimate = total;
+                g.gckind = mode as u8;
+                g.lastatomic = 0;
+            }
+            GcKind::Incremental => {
+                {
+                    let g = self._state.global();
+                    g.heap.reset_all_ages();
+                }
+                let mut g = self._state.global_mut();
+                g.gckind = mode as u8;
+                g.lastatomic = 0;
+            }
+        }
     }
 
     /// Phase-B stub for `luaC_fix(L, o)` — pin an object so GC won't collect it.
@@ -3925,7 +3994,7 @@ impl<'a> GcHandle<'a> {
     /// macros.tsv: `luaC_barrier → state.gc().barrier(p, v)`
     pub fn barrier(&self, p: &dyn std::any::Any, v: &LuaValue) {
         let g = self._state.global();
-        barrier_any(&g.heap, p, v);
+        barrier_any(&g.heap, p, v, g.is_gen_mode(), BarrierKind::Forward);
     }
 
     /// Backward write barrier.
@@ -3933,7 +4002,7 @@ impl<'a> GcHandle<'a> {
     /// macros.tsv: `luaC_barrierback → state.gc().barrier_back(p, v)`
     pub fn barrier_back(&self, p: &dyn std::any::Any, v: &LuaValue) {
         let g = self._state.global();
-        barrier_any(&g.heap, p, v);
+        barrier_any(&g.heap, p, v, g.is_gen_mode(), BarrierKind::Backward);
     }
 
     /// Object write barrier.
@@ -3941,14 +4010,14 @@ impl<'a> GcHandle<'a> {
     /// macros.tsv: `luaC_objbarrier → state.gc().obj_barrier(p, o)`
     pub fn obj_barrier(&self, p: &dyn std::any::Any, o: &dyn std::any::Any) {
         let g = self._state.global();
-        barrier_any(&g.heap, p, o);
+        barrier_any(&g.heap, p, o, g.is_gen_mode(), BarrierKind::Forward);
     }
 
     /// Backward object write barrier.
     ///
     pub fn obj_barrier_back(&self, p: &dyn std::any::Any, o: &dyn std::any::Any) {
         let g = self._state.global();
-        barrier_any(&g.heap, p, o);
+        barrier_any(&g.heap, p, o, g.is_gen_mode(), BarrierKind::Backward);
     }
 }
 
@@ -5068,6 +5137,45 @@ mod tests {
         assert!(state.external_unroot_value(parent_key).is_some());
         state.gc().full_collect();
         assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn generational_mode_promotes_and_barriers_age_objects() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let parent = state.new_table();
+        let parent_key = state.external_root_value(LuaValue::Table(parent));
+
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Old);
+        assert_eq!(parent.0.color(), lua_gc::Color::Black);
+
+        let child = state.new_table();
+        let parent_value = LuaValue::Table(parent);
+        let child_value = LuaValue::Table(child);
+        parent
+            .raw_set_int(&mut state, 1, child_value.clone())
+            .expect("table store should succeed");
+        state.gc_barrier_back(&parent_value, &child_value);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Touched1);
+        assert_eq!(parent.0.color(), lua_gc::Color::Gray);
+        assert_eq!(child.0.age(), lua_gc::GcAge::New);
+
+        let metatable = state.new_table();
+        state.gc().obj_barrier(&parent, &metatable);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::Old0);
+
+        state.gc().change_mode(GcKind::Incremental);
+        assert_eq!(parent.0.age(), lua_gc::GcAge::New);
+        assert_eq!(child.0.age(), lua_gc::GcAge::New);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::New);
+
+        assert!(state.external_unroot_value(parent_key).is_some());
+        state.gc().full_collect();
     }
 }
 
