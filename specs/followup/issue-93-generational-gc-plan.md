@@ -1,6 +1,6 @@
 # Issue #93: Generational GC Plan
 
-Status audited on `main` after GC checkpoint `c5ad4c6`.
+Status audited on `issue-93-gc-current` after GC checkpoint `879ed71`.
 
 ## What #109 Fixed
 
@@ -34,6 +34,9 @@ The current tree is no longer only startup/default scaffolding:
   `api.rs` `totalbytes` refill/halve shims and the long-string side tracker are
   gone; `collectgarbage("count")`, `gcinfo()`, debt, estimate, and pacing all
   use heap byte accounting.
+- Payload bytes are charged/refunded for tables, strings, userdata payloads and
+  uservalues, C-closure upvalue vectors, Lua-closure upvalue slots, and compiled
+  proto vectors.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
@@ -96,8 +99,9 @@ Deliverables:
 - Done: retire the long-string side tracker into normal collector accounting.
 - Done: preserve the uncollected-box guard so unswept boxes cannot create
   permanent byte drift.
-- Remaining: audit payload accounting for userdata, closures/upvalues, protos,
-  and any other GC-owned buffers whose Rust-owned backing storage may grow.
+- Done: charge/refund payload accounting for userdata, closures/upvalues,
+  protos, tables, strings, and the currently identified GC-owned backing
+  buffers.
 - Remaining: decide whether `GlobalState.totalbytes` stays as compatibility-only
   shadow state or can be removed after the debt split is no longer needed.
 
@@ -109,8 +113,8 @@ Verification:
 - official `gc.lua` and `gengc.lua` without API-visible accounting shims
 - GC canaries in both public modes
 - `canary_k_testc_accounting.lua`, which compares `collectgarbage("count")`
-  against `T.totalmem()` through long-string charge, table-buffer charge, and
-  post-sweep refund
+  against `T.totalmem()` through long-string charge, table-buffer charge,
+  userdata charge, and post-sweep refund
 - repeated allocation stress showing plateau, not monotonic drift
 
 ## Iteration Discipline
