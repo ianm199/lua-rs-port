@@ -105,6 +105,20 @@ bash harness/bench/compare_bins.sh \
   --workloads gc_pressure,binarytrees
 ```
 
+For short workloads where one invocation rounds to only a few hundredths of a
+second, repeat the workload inside each measured run:
+
+```bash
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-base \
+  --b target/release/lua-rs \
+  --label-a base \
+  --label-b candidate \
+  --runs 20 \
+  --workloads table_hash_pressure \
+  --repeat-each 10
+```
+
 Output:
 - `harness/bench/results/<UTC>-<sha>-bin-ab.tsv`
 - `harness/bench/results/<UTC>-<sha>-bin-ab.json`
@@ -261,7 +275,8 @@ unsafe representation ceilings.
    does not provide allocation stack attribution or cumulative per-phase
    timing.
 5. `compare_bins.sh` covers direct Rust-vs-Rust A/B checks for small packets
-   without appending ledger rows.
+   without appending ledger rows. Use `--repeat-each N` when a single workload
+   invocation is too short for stable wall-clock resolution.
 6. `compare.sh` appends ledger rows directly. Typed bench runner entries in
    `harness/runners.toml` are still useful future cleanup, but not required
    for evidence-backed perf work.
