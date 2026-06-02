@@ -3755,11 +3755,9 @@ impl<'a> GcHandle<'a> {
     }
 
     fn enter_incremental_mode(&self) {
-        {
-            let g = self._state.global();
-            g.heap.reset_all_ages();
-        }
         let mut g = self._state.global_mut();
+        g.heap.reset_all_ages();
+        g.finalizers.reset_generation_boundaries();
         g.gckind = GcKind::Incremental as u8;
         g.lastatomic = 0;
     }
@@ -3767,8 +3765,9 @@ impl<'a> GcHandle<'a> {
     fn enter_generational_mode(&self) -> usize {
         self.collect_via_heap_mode(HeapCollectMode::Full);
         let numobjs = {
-            let g = self._state.global();
+            let mut g = self._state.global_mut();
             g.heap.promote_all_to_old();
+            g.finalizers.promote_all_pending_to_old();
             g.heap.allgc_count()
         };
         let total = self._state.global().total_bytes();
@@ -3795,8 +3794,9 @@ impl<'a> GcHandle<'a> {
         let newatomic = self._state.global().heap.allgc_count().max(1);
         if newatomic < lastatomic.saturating_add(lastatomic >> 3) {
             {
-                let g = self._state.global();
+                let mut g = self._state.global_mut();
                 g.heap.promote_all_to_old();
+                g.finalizers.promote_all_pending_to_old();
             }
             let total = self._state.global().total_bytes();
             {
@@ -3808,8 +3808,9 @@ impl<'a> GcHandle<'a> {
             self.set_minor_debt();
         } else {
             {
-                let g = self._state.global();
+                let mut g = self._state.global_mut();
                 g.heap.reset_all_ages();
+                g.finalizers.reset_generation_boundaries();
             }
             let total = self._state.global().total_bytes();
             {
@@ -3873,7 +3874,10 @@ impl<'a> GcHandle<'a> {
         // alive by the finalizer registry."
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.finalizers.pending_snapshot()
+            match mode {
+                HeapCollectMode::Minor => g.finalizers.pending_minor_snapshot(),
+                HeapCollectMode::Full | HeapCollectMode::Step => g.finalizers.pending_snapshot(),
+            }
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4001,6 +4005,9 @@ impl<'a> GcHandle<'a> {
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
         g.finalizers.promote_pending_to_finalized(promote);
+        if matches!(mode, HeapCollectMode::Minor) {
+            g.finalizers.finish_minor_collection();
+        }
     }
 
     /// Run one generational collection step.

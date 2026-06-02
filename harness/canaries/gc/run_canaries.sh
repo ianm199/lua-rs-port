@@ -54,7 +54,7 @@ for f in "$DIR"/canary_*.lua; do
         kill "$_watcher" 2>/dev/null; wait "$_watcher" 2>/dev/null || true
         rm -f "$src_file"
         if [ "$rc" = "0" ] && grep -q "^PASS " "$outfile"; then
-            metric=$(grep -m1 "^METRIC " "$outfile" | tr '\t' ' ' | head -c 240)
+            metric=$(grep -m1 "^METRIC " "$outfile" | tr '\t' ' ' | head -c 240 | sed 's/[[:space:]]*$//')
             if [ -z "$metric" ]; then
                 metric="-"
             fi

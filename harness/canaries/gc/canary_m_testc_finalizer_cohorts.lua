@@ -15,6 +15,8 @@ collectgarbage("generational")
 local baseline = T.gcstats()
 local old_base = statnum(baseline, "pendingfinold")
 local young_base = statnum(baseline, "pendingfinyoung")
+local scan_base = statnum(baseline, "finobjscan")
+local rold_base = statnum(baseline, "finobjrold")
 local ran = 0
 local mt = { __gc = function() ran = ran + 1 end }
 
@@ -25,6 +27,10 @@ assert(T.gcage(old) == "old", "FAIL: rooted finalizer object did not age old")
 local after_old = T.gcstats()
 assert(statnum(after_old, "pendingfinold") > old_base,
        "FAIL: old finalizer object not counted in pending old cohort")
+assert(statnum(after_old, "finobjrold") > rold_base,
+       "FAIL: old finalizer object not counted in registry really-old cohort")
+assert(statnum(after_old, "finobjscan") == scan_base,
+       "FAIL: rooted old finalizer remained in minor-scan cohort")
 
 local young = setmetatable({}, mt)
 assert(T.gcage(young) == "new", "FAIL: new finalizer object did not start new")
@@ -32,6 +38,10 @@ assert(T.gcage(young) == "new", "FAIL: new finalizer object did not start new")
 local after_young = T.gcstats()
 assert(statnum(after_young, "pendingfinyoung") > young_base,
        "FAIL: young finalizer object not counted in pending young cohort")
+assert(statnum(after_young, "finobjnew") > statnum(after_old, "finobjnew"),
+       "FAIL: young finalizer object not counted in registry new cohort")
+assert(statnum(after_young, "finobjscan") > statnum(after_old, "finobjscan"),
+       "FAIL: young finalizer object not exposed to minor scan")
 
 young = nil
 collectgarbage("step", 0)
@@ -39,6 +49,10 @@ collectgarbage("step", 0)
 local after_minor = T.gcstats()
 assert(statnum(after_minor, "pendingfinold") >= statnum(after_old, "pendingfinold"),
        "FAIL: minor step moved rooted old finalizer out of pending cohort")
+assert(statnum(after_minor, "finobjscan") == statnum(after_old, "finobjscan"),
+       "FAIL: minor step did not remove unreachable young finalizer from scan cohort")
+assert(statnum(after_minor, "tobefinyoung") > statnum(after_young, "tobefinyoung"),
+       "FAIL: unreachable young finalizer did not move to to-be-finalized cohort")
 
 old.keepalive = true
 T.checkmemory()

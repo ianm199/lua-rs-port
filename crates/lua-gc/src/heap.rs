@@ -200,6 +200,9 @@ pub trait FinalizerEntry: Clone {
 pub struct FinalizerRegistry<T: FinalizerEntry> {
     pending: Vec<T>,
     to_be_finalized: Vec<T>,
+    pending_reallyold: usize,
+    pending_old1: usize,
+    pending_survival: usize,
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
@@ -208,6 +211,11 @@ pub struct FinalizerRegistryStats {
     pub pending_old: usize,
     pub to_be_finalized_young: usize,
     pub to_be_finalized_old: usize,
+    pub finobj_new: usize,
+    pub finobj_survival: usize,
+    pub finobj_old1: usize,
+    pub finobj_reallyold: usize,
+    pub finobj_minor_scan: usize,
 }
 
 impl<T: FinalizerEntry> Default for FinalizerRegistry<T> {
@@ -215,17 +223,45 @@ impl<T: FinalizerEntry> Default for FinalizerRegistry<T> {
         Self {
             pending: Vec::new(),
             to_be_finalized: Vec::new(),
+            pending_reallyold: 0,
+            pending_old1: 0,
+            pending_survival: 0,
         }
     }
 }
 
 impl<T: FinalizerEntry> FinalizerRegistry<T> {
+    fn pending_new_len(&self) -> usize {
+        self.pending.len().saturating_sub(
+            self.pending_reallyold
+                .saturating_add(self.pending_old1)
+                .saturating_add(self.pending_survival),
+        )
+    }
+
+    fn minor_scan_start(&self) -> usize {
+        self.pending_reallyold.saturating_add(self.pending_old1)
+    }
+
+    fn debug_assert_pending_cohorts(&self) {
+        debug_assert!(
+            self.pending_reallyold
+                .saturating_add(self.pending_old1)
+                .saturating_add(self.pending_survival)
+                <= self.pending.len()
+        );
+    }
+
     pub fn pending(&self) -> &[T] {
         &self.pending
     }
 
     pub fn pending_snapshot(&self) -> Vec<T> {
         self.pending.clone()
+    }
+
+    pub fn pending_minor_snapshot(&self) -> Vec<T> {
+        self.pending[self.minor_scan_start().min(self.pending.len())..].to_vec()
     }
 
     pub fn to_be_finalized(&self) -> &[T] {
@@ -262,6 +298,11 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
             pending_old,
             to_be_finalized_young,
             to_be_finalized_old,
+            finobj_new: self.pending_new_len(),
+            finobj_survival: self.pending_survival,
+            finobj_old1: self.pending_old1,
+            finobj_reallyold: self.pending_reallyold,
+            finobj_minor_scan: self.pending.len().saturating_sub(self.minor_scan_start()),
         }
     }
 
@@ -269,15 +310,46 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
         let id = object.identity();
         if !self.pending.iter().any(|o| o.identity() == id) {
             self.pending.push(object);
+            self.debug_assert_pending_cohorts();
         }
     }
 
     pub fn take_pending(&mut self) -> Vec<T> {
+        self.pending_reallyold = 0;
+        self.pending_old1 = 0;
+        self.pending_survival = 0;
         std::mem::take(&mut self.pending)
     }
 
     fn retain_pending_not_in(&mut self, ids: &std::collections::HashSet<usize>) {
-        self.pending.retain(|object| !ids.contains(&object.identity()));
+        if ids.is_empty() {
+            return;
+        }
+        let original_reallyold = self.pending_reallyold;
+        let original_old1 = self.pending_old1;
+        let original_survival = self.pending_survival;
+        let mut retained_reallyold = original_reallyold;
+        let mut retained_old1 = original_old1;
+        let mut retained_survival = original_survival;
+        let mut retained = Vec::with_capacity(self.pending.len());
+        for (index, object) in std::mem::take(&mut self.pending).into_iter().enumerate() {
+            if ids.contains(&object.identity()) {
+                if index < original_reallyold {
+                    retained_reallyold -= 1;
+                } else if index < original_reallyold + original_old1 {
+                    retained_old1 -= 1;
+                } else if index < original_reallyold + original_old1 + original_survival {
+                    retained_survival -= 1;
+                }
+            } else {
+                retained.push(object);
+            }
+        }
+        self.pending = retained;
+        self.pending_reallyold = retained_reallyold;
+        self.pending_old1 = retained_old1;
+        self.pending_survival = retained_survival;
+        self.debug_assert_pending_cohorts();
     }
 
     pub fn push_to_be_finalized(&mut self, object: T) {
@@ -296,6 +368,26 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
             objects.iter().map(|object| object.identity()).collect();
         self.retain_pending_not_in(&ids);
         self.extend_to_be_finalized(objects);
+    }
+
+    pub fn promote_all_pending_to_old(&mut self) {
+        self.pending_reallyold = self.pending.len();
+        self.pending_old1 = 0;
+        self.pending_survival = 0;
+    }
+
+    pub fn reset_generation_boundaries(&mut self) {
+        self.pending_reallyold = 0;
+        self.pending_old1 = 0;
+        self.pending_survival = 0;
+    }
+
+    pub fn finish_minor_collection(&mut self) {
+        let new = self.pending_new_len();
+        self.pending_reallyold = self.pending_reallyold.saturating_add(self.pending_old1);
+        self.pending_old1 = self.pending_survival;
+        self.pending_survival = new;
+        self.debug_assert_pending_cohorts();
     }
 
     pub fn pop_to_be_finalized(&mut self) -> Option<T> {
@@ -1885,6 +1977,106 @@ mod tests {
                 m.mark(g);
             }
         }
+    }
+
+    #[derive(Clone)]
+    struct FinalizerCell {
+        id: usize,
+        age: GcAge,
+    }
+
+    impl FinalizerCell {
+        fn new(id: usize) -> Self {
+            Self { id, age: GcAge::New }
+        }
+    }
+
+    impl FinalizerEntry for FinalizerCell {
+        fn identity(&self) -> usize {
+            self.id
+        }
+
+        fn age(&self) -> GcAge {
+            self.age
+        }
+    }
+
+    fn finalizer_ids(objects: &[FinalizerCell]) -> Vec<usize> {
+        objects.iter().map(|object| object.id).collect()
+    }
+
+    #[test]
+    fn finalizer_registry_tracks_generational_cohorts() {
+        let mut registry = FinalizerRegistry::default();
+        registry.push_pending_unique(FinalizerCell::new(1));
+        registry.push_pending_unique(FinalizerCell::new(2));
+
+        let stats = registry.stats();
+        assert_eq!(stats.finobj_new, 2);
+        assert_eq!(stats.finobj_survival, 0);
+        assert_eq!(stats.finobj_old1, 0);
+        assert_eq!(stats.finobj_reallyold, 0);
+        assert_eq!(stats.finobj_minor_scan, 2);
+
+        registry.finish_minor_collection();
+        let stats = registry.stats();
+        assert_eq!(stats.finobj_new, 0);
+        assert_eq!(stats.finobj_survival, 2);
+        assert_eq!(stats.finobj_old1, 0);
+        assert_eq!(stats.finobj_reallyold, 0);
+        assert_eq!(stats.finobj_minor_scan, 2);
+
+        registry.push_pending_unique(FinalizerCell::new(3));
+        registry.finish_minor_collection();
+        let stats = registry.stats();
+        assert_eq!(stats.finobj_new, 0);
+        assert_eq!(stats.finobj_survival, 1);
+        assert_eq!(stats.finobj_old1, 2);
+        assert_eq!(stats.finobj_reallyold, 0);
+        assert_eq!(stats.finobj_minor_scan, 1);
+
+        registry.finish_minor_collection();
+        let stats = registry.stats();
+        assert_eq!(stats.finobj_new, 0);
+        assert_eq!(stats.finobj_survival, 0);
+        assert_eq!(stats.finobj_old1, 1);
+        assert_eq!(stats.finobj_reallyold, 2);
+        assert_eq!(stats.finobj_minor_scan, 0);
+    }
+
+    #[test]
+    fn finalizer_registry_minor_snapshot_uses_cohort_boundaries() {
+        let mut registry = FinalizerRegistry::default();
+        registry.push_pending_unique(FinalizerCell::new(1));
+        registry.push_pending_unique(FinalizerCell::new(2));
+        registry.push_pending_unique(FinalizerCell::new(3));
+        registry.finish_minor_collection();
+        registry.finish_minor_collection();
+        registry.push_pending_unique(FinalizerCell::new(4));
+        registry.push_pending_unique(FinalizerCell::new(5));
+
+        assert_eq!(
+            finalizer_ids(&registry.pending_minor_snapshot()),
+            vec![4, 5],
+            "minor finalizer scan must skip the old1/reallyold prefix"
+        );
+
+        registry.promote_pending_to_finalized(vec![
+            FinalizerCell::new(1),
+            FinalizerCell::new(2),
+            FinalizerCell::new(4),
+        ]);
+
+        let stats = registry.stats();
+        assert_eq!(stats.finobj_old1, 1);
+        assert_eq!(stats.finobj_new, 1);
+        assert_eq!(stats.finobj_minor_scan, 1);
+        assert_eq!(finalizer_ids(registry.pending()), vec![3, 5]);
+        assert_eq!(
+            finalizer_ids(registry.to_be_finalized()),
+            vec![1, 2, 4],
+            "promotion order must be preserved for LIFO finalizer draining"
+        );
     }
 
     #[test]

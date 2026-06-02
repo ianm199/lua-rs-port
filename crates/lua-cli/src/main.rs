@@ -1075,6 +1075,11 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         pendingfinold,
         tobefinyoung,
         tobefinold,
+        finobjnew,
+        finobjsur,
+        finobjold1,
+        finobjrold,
+        finobjscan,
         markstats,
         sweepstats,
     ) = {
@@ -1095,6 +1100,11 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             finstats.pending_old,
             finstats.to_be_finalized_young,
             finstats.to_be_finalized_old,
+            finstats.finobj_new,
+            finstats.finobj_survival,
+            finstats.finobj_old1,
+            finstats.finobj_reallyold,
+            finstats.finobj_minor_scan,
             g.heap.last_mark_stats(),
             g.heap.last_sweep_stats(),
         )
@@ -1105,7 +1115,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     let userdata = testc_type_count(state, b"userdata")?;
     let strings = testc_type_count(state, b"string")?;
     let stats = format!(
-        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} pendingfinyoung={} pendingfinold={} tobefinyoung={} tobefinold={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} sweepvisited={} sweepvisitedyoung={} sweepvisitedold={} sweeprevisit={} sweepfreed={} sweepfreedbytes={} tables={} functions={} threads={} userdata={} strings={}",
+        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} pendingfinyoung={} pendingfinold={} tobefinyoung={} tobefinold={} finobjnew={} finobjsur={} finobjold1={} finobjrold={} finobjscan={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} sweepvisited={} sweepvisitedyoung={} sweepvisitedold={} sweeprevisit={} sweepfreed={} sweepfreedbytes={} tables={} functions={} threads={} userdata={} strings={}",
         mode,
         gc_state,
         bytes,
@@ -1120,6 +1130,11 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         pendingfinold,
         tobefinyoung,
         tobefinold,
+        finobjnew,
+        finobjsur,
+        finobjold1,
+        finobjrold,
+        finobjscan,
         markstats.marked,
         markstats.marked_young,
         markstats.marked_old,

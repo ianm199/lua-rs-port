@@ -61,9 +61,13 @@ The current tree is no longer only startup/default scaffolding:
   deliberately skipped because they are old are not misclassified as dead.
 - Finalizer registry telemetry now splits pending and to-be-finalized objects
   by young vs old age (`pendingfinyoung`, `pendingfinold`, `tobefinyoung`,
-  `tobefinold`). `canary_m_testc_finalizer_cohorts.lua` pins the current
-  VM-side behavior: a rooted old finalizer stays pending-old across a minor
-  step, while a young unreachable finalizer moves to to-be-finalized-young.
+  `tobefinold`) and exposes registry cohort counts (`finobjnew`,
+  `finobjsur`, `finobjold1`, `finobjrold`, `finobjscan`). Minor finalizer
+  marking now snapshots only the registry's new/survival suffix, matching
+  C-Lua's "scan until `finobjold1`" shape for the current overlay model.
+  `canary_m_testc_finalizer_cohorts.lua` pins that rooted old finalizers stay
+  outside the minor scan while a young unreachable finalizer moves to
+  to-be-finalized-young.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
@@ -75,10 +79,11 @@ The real generational collector is still not complete:
   are held in a collector-owned revisit vector instead of an intrusive
   `grayagain` list.
 - Finalizers now live behind a generic `lua-gc::FinalizerRegistry<T>` with
-  pending and to-be-finalized list mechanics owned by the collector crate.
-  `lua-vm::FinalizerObject` implements the small `FinalizerEntry` trait, but
-  the registry still lacks `finobjsur` / `finobjold1` / `finobjrold`
-  generational finalizer cohorts.
+  pending/to-be-finalized list mechanics, `finobjsur`/`finobjold1`/`finobjrold`
+  cohort boundaries, and minor-scan selection owned by the collector crate.
+  `lua-vm::FinalizerObject` implements the small `FinalizerEntry` trait.
+  Remaining parity gap: finalizable objects are still an overlay on the heap's
+  `allgc` chain, not a true intrusive `finobj`/`tobefnz` ownership split.
 - Weak/ephemeron handling is correct enough for the current gates but still runs
   through VM snapshots and post-mark hooks instead of collector-owned weak-list
   processing for minor and major cycles.
@@ -201,7 +206,9 @@ Deliverables:
 - Done as structural slices: replace scattered raw VM vectors with a single
   `lua-gc::FinalizerRegistry<T>` abstraction, and move pending-to-finalized
   promotion mechanics into that registry.
-- Track finalizable cohorts: `finobjsur`, `finobjold1`, `finobjrold`.
+- Done for the registry overlay: track finalizable cohorts equivalent to
+  `finobjsur`, `finobjold1`, and `finobjrold`, and use them to bound minor
+  pending-finalizer scans.
 - Use the reserved finalized state consistently.
 - Separate, mark, run, and sweep finalizers from collector phases.
 - Preserve per-version finalizer error behavior.
@@ -210,6 +217,7 @@ Verification:
 
 - existing multiversion `__gc` tests
 - `canary_m_testc_finalizer_cohorts.lua` for pending/to-be-finalized age splits
+  and registry cohort/minor-scan boundaries
 - new tests for order, resurrection, errors, and finalizer-list age movement
 - official `gc.lua` finalizer sections
 
@@ -227,7 +235,8 @@ Deliverables:
 - Done for the normal allgc list: `sweep2old`-equivalent promotion and
   cursor-bounded young `sweepgen`.
 - Remaining: exact `correctgraylist(s)`/`markold` parity for intrusive
-  `grayagain`, weak, and finalizer lists.
+  `grayagain` and weak lists, plus a true `finobj`/`tobefnz` split instead of
+  the current finalizer registry overlay on `allgc`.
 - Ensure `enterinc` clears ages and cohort pointers safely.
 
 Verification:
@@ -246,7 +255,8 @@ Deliverables:
   and only then declares generational mode active.
 - `youngcollection` marks OLD1 and touched objects, runs atomic processing,
   sweeps nursery/survival cohorts, updates finalizer cohorts, and finishes the
-  generation cycle.
+  generation cycle. Done for normal-list sweep and finalizer registry cohorts;
+  still missing intrusive weak/gray/finalizer list parity.
 - `fullgen` and `stepgenfull` handle major and bad-major behavior.
 - `genstep` chooses minor vs major using real bytes, `GCestimate`,
   `lastatomic`, `genminormul`, and `genmajormul`.
@@ -322,7 +332,8 @@ Final command set:
 ## PR/Issue Summary
 
 #109 fixed only the default-mode startup bug in #93. The real generational
-collector remains open. The critical path is #104 accounting first, then real
-phase predicates and barriers, collector-owned finalizers, dual-white/age/cohort
-metadata, minor/major generational policy, weak/ephemeron integration, and a
-`testC`-equivalent harness that proves the meaningful `gengc.lua` assertions.
+collector remains open. Accounting, barriers, age/cohort metadata, minor/major
+policy, and collector-owned finalizer registry mechanics are now active in the
+branch. The remaining critical path is exact grayagain/weak/ephemeron ownership,
+true intrusive `finobj`/`tobefnz` separation, and a final full-suite sweep that
+proves the meaningful `gengc.lua` assertions stay exercised.
