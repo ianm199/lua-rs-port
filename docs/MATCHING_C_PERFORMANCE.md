@@ -596,6 +596,12 @@ Follow-up rejected call/frame spikes:
   (`harness/bench/results/20260602T190952Z-89161f2-compare.tsv`) matched the
   baseline shape (`binarytrees` 1.93x, `closure_ops` 1.94x, `fibonacci` 1.87x),
   so the change was dropped as noise.
+- Marking the `LuaState::trace_call` / `trace_exec` wrappers as
+  `#[cold] #[inline(never)]` looked like a clean dispatch cold-path split, but
+  a rebuilt debug CLI segfaulted in the hook-heavy official `db.lua` runner
+  before execution (`bash harness/run_official_test.sh reference/lua-c/testes/db.lua`).
+  It was dropped before benchmarking. Trap/debug path shape needs correctness
+  coverage before speed measurement.
 
 Tool gaps:
 
