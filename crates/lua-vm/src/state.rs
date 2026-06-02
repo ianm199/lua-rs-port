@@ -1508,7 +1508,7 @@ impl GlobalState {
     ///
     /// macros.tsv: `isdecGCmodegen → g.is_gen_mode()`
     pub fn is_gen_mode(&self) -> bool {
-        self.gckind == GcKind::Generational as u8
+        self.gckind == GcKind::Generational as u8 || self.lastatomic != 0
     }
 
     /// Returns `true` if the GC is currently running.
@@ -1522,22 +1522,23 @@ impl GlobalState {
     ///
     /// macros.tsv: `keepinvariant → g.keep_invariant()`
     pub fn keep_invariant(&self) -> bool {
-        // TODO(port): Phase D — check gcstate for propagation phases
-        false
+        matches!(
+            self.heap.gc_state(),
+            lua_gc::GcState::Propagate | lua_gc::GcState::Atomic
+        )
     }
 
     /// Returns `true` while the GC is in a sweep phase.
     ///
     /// macros.tsv: `issweepphase → g.is_sweep_phase()`
     pub fn is_sweep_phase(&self) -> bool {
-        // TODO(port): Phase D — check gcstate for sweep states (GCSswpallgc etc.)
-        false
+        self.heap.gc_state().is_sweep()
     }
 
     // ── Phase-B stubs ─────────────────────────────────────────────────────────
     pub fn gc_debt(&self) -> isize { self.gc_debt }
     pub fn set_gc_debt(&mut self, d: isize) { self.gc_debt = d; }
-    pub fn gc_at_pause(&self) -> bool { self.gcstate == 0 }
+    pub fn gc_at_pause(&self) -> bool { self.heap.gc_state().is_pause() }
     pub fn gc_pause_param(&self) -> u8 { self.gcpause }
     pub fn set_gc_pause_param(&mut self, p: u8) { self.gcpause = p; }
     pub fn gc_stepmul_param(&self) -> u8 { self.gcstepmul }
@@ -4855,6 +4856,57 @@ mod tests {
         state.gc().full_collect();
         assert_eq!(state.global().heap.bytes_used(), 0);
         assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn gc_phase_predicates_follow_heap_state() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        {
+            let mut g = state.global_mut();
+            g.gckind = GcKind::Incremental as u8;
+            g.lastatomic = 0;
+            assert!(!g.is_gen_mode());
+            g.lastatomic = 1;
+            assert!(g.is_gen_mode());
+            g.lastatomic = 0;
+        }
+
+        let mut roots = Vec::new();
+        for _ in 0..16 {
+            let table = state.new_table();
+            roots.push(state.external_root_value(LuaValue::Table(table)));
+        }
+
+        let mut saw_keep = false;
+        let mut saw_sweep = false;
+        for _ in 0..128 {
+            state.gc().incremental_step(1);
+            let g = state.global();
+            let heap_state = g.heap.gc_state();
+            assert_eq!(
+                g.keep_invariant(),
+                matches!(heap_state, lua_gc::GcState::Propagate | lua_gc::GcState::Atomic)
+            );
+            assert_eq!(g.is_sweep_phase(), heap_state.is_sweep());
+            saw_keep |= g.keep_invariant();
+            saw_sweep |= g.is_sweep_phase();
+            if heap_state.is_pause() && saw_keep && saw_sweep {
+                break;
+            }
+        }
+
+        assert!(saw_keep, "incremental cycle should expose an invariant phase");
+        assert!(saw_sweep, "incremental cycle should expose a sweep phase");
+
+        for key in roots {
+            assert!(state.external_unroot_value(key).is_some());
+        }
+        state.gc().full_collect();
     }
 }
 
