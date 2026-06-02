@@ -8,3 +8,5 @@ canary_d_weak_gen	incremental	PASS	-
 canary_d_weak_gen	generational	PASS	-
 canary_e_mode_switch	incremental	PASS	-
 canary_e_mode_switch	generational	PASS	-
+canary_f_testc_gengc_age	incremental	PASS	-
+canary_f_testc_gengc_age	generational	PASS	-

@@ -1024,7 +1024,7 @@ impl Lua {
             let raw = with_heap_guard(state, || {
                 let callback_payload = GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(Some(
                         Rc::new(RustCallbackCell { function: callable }) as Rc<dyn Any>,
@@ -1164,7 +1164,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })
@@ -1287,7 +1287,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })
@@ -1321,7 +1321,7 @@ impl Lua {
             let userdata = with_heap_guard(state, || {
                 GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: Vec::new(),
+                    uv: RefCell::new(Vec::new()),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
                 })

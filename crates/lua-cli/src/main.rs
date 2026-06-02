@@ -14,7 +14,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
-use lua_types::closure::LuaLClosure;
+use lua_types::closure::{LuaClosure, LuaLClosure};
 use lua_types::error::{LuaError, LuaExit};
 use lua_types::filehandle::LuaFileHandle;
 use lua_types::gc::GcRef;
@@ -807,19 +807,116 @@ fn parser_hook(
     }))
 }
 
+fn testc_push_string(state: &mut LuaState, bytes: &[u8]) -> Result<(), LuaError> {
+    let s = state.intern_str(bytes)?;
+    state.push(LuaValue::Str(s));
+    Ok(())
+}
+
+fn testc_gc_age(value: LuaValue) -> Option<lua_gc::GcAge> {
+    match value {
+        LuaValue::Str(v) => Some(v.0.age()),
+        LuaValue::Table(v) => Some(v.0.age()),
+        LuaValue::Function(LuaClosure::Lua(v)) => Some(v.0.age()),
+        LuaValue::Function(LuaClosure::C(v)) => Some(v.0.age()),
+        LuaValue::UserData(v) => Some(v.0.age()),
+        LuaValue::Thread(v) => Some(v.0.age()),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => None,
+    }
+}
+
+fn testc_gc_color(value: LuaValue) -> Option<lua_gc::Color> {
+    match value {
+        LuaValue::Str(v) => Some(v.0.color()),
+        LuaValue::Table(v) => Some(v.0.color()),
+        LuaValue::Function(LuaClosure::Lua(v)) => Some(v.0.color()),
+        LuaValue::Function(LuaClosure::C(v)) => Some(v.0.color()),
+        LuaValue::UserData(v) => Some(v.0.color()),
+        LuaValue::Thread(v) => Some(v.0.color()),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => None,
+    }
+}
+
+fn testc_gcage(state: &mut LuaState) -> Result<usize, LuaError> {
+    lua_vm::api::push_value(state, 1);
+    let value = state.pop();
+    let name = match testc_gc_age(value) {
+        Some(lua_gc::GcAge::New) => b"new".as_slice(),
+        Some(lua_gc::GcAge::Survival) => b"survival".as_slice(),
+        Some(lua_gc::GcAge::Old0) => b"old0".as_slice(),
+        Some(lua_gc::GcAge::Old1) => b"old1".as_slice(),
+        Some(lua_gc::GcAge::Old) => b"old".as_slice(),
+        Some(lua_gc::GcAge::Touched1) => b"touched1".as_slice(),
+        Some(lua_gc::GcAge::Touched2) => b"touched2".as_slice(),
+        None => b"no collectable".as_slice(),
+    };
+    testc_push_string(state, name)?;
+    Ok(1)
+}
+
+fn testc_gccolor(state: &mut LuaState) -> Result<usize, LuaError> {
+    lua_vm::api::push_value(state, 1);
+    let value = state.pop();
+    let name = match testc_gc_color(value) {
+        Some(lua_gc::Color::White) => b"white".as_slice(),
+        Some(lua_gc::Color::Gray) => b"gray".as_slice(),
+        Some(lua_gc::Color::Black) => b"black".as_slice(),
+        None => b"no collectable".as_slice(),
+    };
+    testc_push_string(state, name)?;
+    Ok(1)
+}
+
+fn testc_newuserdata(state: &mut LuaState) -> Result<usize, LuaError> {
+    let size = state.opt_arg_integer(1, 0)?;
+    let nuvalue = state.opt_arg_integer(2, 0)?;
+    if size < 0 {
+        return Err(LuaError::runtime(format_args!("userdata size must be non-negative")));
+    }
+    if nuvalue < 0 {
+        return Err(LuaError::runtime(format_args!("userdata value count must be non-negative")));
+    }
+    state.new_userdata_typed(b"testC", size as usize, nuvalue as i32)?;
+    Ok(1)
+}
+
+fn register_testc_table(state: &mut LuaState) -> Result<(), LuaError> {
+    let funcs: &[(&[u8], lua_vm::state::LuaCFunction)] = &[
+        (b"gcage", testc_gcage),
+        (b"gccolor", testc_gccolor),
+        (b"newuserdata", testc_newuserdata),
+    ];
+    state.new_lib(funcs)?;
+    lua_vm::api::set_global(state, b"T")
+}
+
 /// Install Rust-native modules that ship with `lua-cli` into
 /// `package.preload`. After `open_libs` has populated the `package` library,
 /// each entry written to `package.preload[name]` becomes a loader that
 /// `require(name)` will invoke through the preload searcher.
 ///
-/// Phase G-1 ships a single preloaded module — `lfs`, the Rust-native
-/// LuaFileSystem port from the `lua-rs-lfs` crate.
+/// Phase G-1 ships `lfs`, the Rust-native LuaFileSystem port from the
+/// `lua-rs-lfs` crate. `LUA_RS_TESTC=1` also installs a small internal `T`
+/// table for official-test instrumentation.
 fn register_preloaded_modules(state: &mut LuaState) -> Result<(), LuaError> {
     lua_vm::api::get_global(state, b"package")?;
     lua_vm::api::get_field(state, -1, b"preload")?;
     lua_vm::api::push_cclosure(state, lua_rs_lfs::luaopen_lfs, 0)?;
     lua_vm::api::set_field(state, -2, b"lfs")?;
     state.pop_n(2);
+    if std::env::var_os("LUA_RS_TESTC").is_some() {
+        register_testc_table(state)?;
+    }
     Ok(())
 }
 

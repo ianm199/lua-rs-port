@@ -822,7 +822,7 @@ impl LuaState {
         // TODO(D-1c-bridge): state.new_userdata is still todo!(); keep direct alloc
         let u = GcRef::new(LuaUserData {
             data: vec![0u8; size].into_boxed_slice(),
-            uv: vec![LuaValue::Nil; nuvalue as usize],
+            uv: std::cell::RefCell::new(vec![LuaValue::Nil; nuvalue as usize]),
             metatable: std::cell::RefCell::new(None),
             host_value: std::cell::RefCell::new(None),
         });
@@ -1317,12 +1317,13 @@ pub fn get_i_uservalue(state: &mut LuaState, idx: i32, n: i32) -> LuaType {
     let o = index_to_value(state, idx);
     debug_assert!(matches!(o, LuaValue::UserData(_)), "full userdata expected");
     if let LuaValue::UserData(ref u) = o {
-        let uv_count = u.uv.len() as i32;
+        let uv = u.uv.borrow();
+        let uv_count = uv.len() as i32;
         if n <= 0 || n > uv_count {
             state.push(LuaValue::Nil);
             LuaType::None
         } else {
-            let val = u.uv[(n - 1) as usize].clone();
+            let val = uv[(n - 1) as usize].clone();
             let t = val.base_type();
             state.push(val);
             t
@@ -1725,14 +1726,14 @@ pub fn set_i_uservalue(state: &mut LuaState, idx: i32, n: i32) -> Result<bool, L
     let top = state.top_idx();
     let val = state.get_at(top - 1);
     let res = if let LuaValue::UserData(ref ud) = o {
-        let nuvalue = ud.uv.len() as i32;
+        let mut uv = ud.uv.borrow_mut();
+        let nuvalue = uv.len() as i32;
         if n < 1 || n > nuvalue {
             false
         } else {
-            // TODO(port): LuaUserData uv field needs interior mutability for write
-            // ud.uv[(n - 1) as usize] = val.clone();
+            uv[(n - 1) as usize] = val.clone();
+            drop(uv);
             state.gc().barrier_back(ud, &val);
-            let _ = (n, ud);
             true
         }
     } else {

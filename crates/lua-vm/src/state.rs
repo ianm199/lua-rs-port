@@ -3605,7 +3605,11 @@ impl<'a> GcHandle<'a> {
 
     /// macros.tsv: `luaC_fullgc → state.gc().full_collect()`
     pub fn full_collect(&self) {
-        self.collect_via_heap(/* force = */ true);
+        if self._state.global().is_gen_mode() {
+            self.fullgen();
+        } else {
+            self.collect_via_heap(/* force = */ true);
+        }
     }
 
     fn negative_debt(bytes: usize) -> isize {
@@ -5343,6 +5347,27 @@ mod tests {
         assert_eq!(metatable.0.age(), lua_gc::GcAge::New);
 
         assert!(state.external_unroot_value(parent_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_full_collect_promotes_new_survivors_to_old() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        state.gc().change_mode(GcKind::Generational);
+        let table = state.new_table();
+        let table_key = state.external_root_value(LuaValue::Table(table));
+        assert_eq!(table.0.age(), lua_gc::GcAge::New);
+
+        state.gc().full_collect();
+        assert_eq!(table.0.age(), lua_gc::GcAge::Old);
+        assert_eq!(table.0.color(), lua_gc::Color::Black);
+
+        assert!(state.external_unroot_value(table_key).is_some());
         state.gc().full_collect();
     }
 

@@ -194,7 +194,7 @@ impl Trace for LuaUserData {
         if let Some(mt) = self.metatable() {
             mt.trace(m);
         }
-        for v in self.uv.iter() {
+        for v in self.uv.borrow().iter() {
             v.trace(m);
         }
     }

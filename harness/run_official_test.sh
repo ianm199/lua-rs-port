@@ -38,8 +38,12 @@ if [ ! -x "$BIN" ]; then
 fi
 
 BASE="$(basename "$TEST_FILE" .lua)"
-COMBINED="$OUT_DIR/$BASE.combined.lua"
-OUTFILE="$OUT_DIR/$BASE.out"
+OUT_SUFFIX=""
+if [ -n "${LUA_RS_TESTC+x}" ]; then
+    OUT_SUFFIX=".testc"
+fi
+COMBINED="$OUT_DIR/$BASE$OUT_SUFFIX.combined.lua"
+OUTFILE="$OUT_DIR/$BASE$OUT_SUFFIX.out"
 
 PREAMBLE_EXPR='_soft=true; _port=true; _nomsg=true; _U=false; arg=arg or {}; _G=_G or _ENV; if _VERSION==nil then _VERSION="Lua 5.4" end'
 

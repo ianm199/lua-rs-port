@@ -41,7 +41,11 @@ for f in "$DIR"/canary_*.lua; do
             printf '%s' "$mode_setup"
             cat "$f"
         } > "$src_file"
-        "$BIN" "$src_file" > "$outfile" 2>&1 &
+        if [[ "$base" == *testc* ]]; then
+            LUA_RS_TESTC=1 "$BIN" "$src_file" > "$outfile" 2>&1 &
+        else
+            "$BIN" "$src_file" > "$outfile" 2>&1 &
+        fi
         _pid=$!
         ( sleep 30 && kill -KILL "$_pid" 2>/dev/null ) &
         _watcher=$!
