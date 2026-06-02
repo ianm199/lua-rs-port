@@ -31,6 +31,10 @@ The current tree is no longer only startup/default scaffolding:
   the testC-equivalent `T.gcstate()`/`T.gcstats()` surface. The finalizer sweep
   states are currently explicit phase transitions over the registry overlay;
   true intrusive `finobj`/`tobefnz` sweep ownership remains separate work.
+- The Lua-facing incremental `collectgarbage("step")` path now treats
+  `callfin` as a real work phase: atomic promotion can stop there with
+  to-be-finalized objects, the step path dispatches up to the 5.4 `GCFINMAX`
+  finalizers, and an empty `callfin` step finishes the cycle back to pause.
 - VM stores route through active forward/backward barriers, including table
   writes, userdata uservalues, closure upvalues, and cross-thread upvalues.
 - `lua-gc` has dual-white colors and generational age metadata; the canary and
@@ -235,6 +239,10 @@ Deliverables:
 - Done for the registry overlay: use the heap header finalized bit as
   C-Lua's `FINALIZEDBIT`, setting it on pending/to-be-finalized registration
   and clearing it when an object is popped for its `__gc` call.
+- Done for the current overlay: explicit incremental steps stop at `callfin`,
+  dispatch bounded to-be-finalized work from that phase, and only finish the
+  cycle after the queue is empty. `canary_o_testc_callfin_finalizers.lua` pins
+  that behavior.
 - Separate, mark, run, and sweep finalizers from collector phases.
 - Preserve per-version finalizer error behavior.
 

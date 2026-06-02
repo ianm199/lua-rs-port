@@ -4165,6 +4165,15 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(std::collections::HashSet::new());
         let atomic_ran = std::cell::Cell::new(false);
 
+        let stop_target = {
+            let g = state_ref.global.borrow();
+            match (target, g.heap.gc_state()) {
+                (Some(target), _) => Some(target),
+                (None, lua_gc::GcState::CallFin) => None,
+                (None, _) => Some(lua_gc::GcState::CallFin),
+            }
+        };
+
         let outcome = {
             let global = state_ref.global.borrow();
             global.heap.unpause();
@@ -4247,7 +4256,7 @@ impl<'a> GcHandle<'a> {
                 record_live_interned_strings(&*global, marker, &live_interned_ids);
             };
             let budget = StepBudget::from_work(work_units);
-            if let Some(target) = target {
+            if let Some(target) = stop_target {
                 global.heap.incremental_run_until_state_with_post_mark(
                     &roots,
                     target,
@@ -4274,7 +4283,15 @@ impl<'a> GcHandle<'a> {
             g.finalizers.promote_pending_to_finalized(promote);
         }
 
-        matches!(outcome, StepOutcome::Paused)
+        let mut paused = matches!(outcome, StepOutcome::Paused);
+        if target.is_none()
+            && self._state.global().heap.gc_state() == lua_gc::GcState::CallFin
+            && !self._state.global().finalizers.has_to_be_finalized()
+        {
+            paused = self._state.global().heap.finish_callfin_phase();
+        }
+
+        paused
     }
 
     /// Run only the weak-table atomic cleanup used by legacy generational

@@ -1465,6 +1465,8 @@ pub fn run_pending_finalizers(state: &mut LuaState) {
     let _ = run_pending_finalizers_inner(state, false);
 }
 
+const GC_FIN_MAX: usize = 10;
+
 /// `__gc` driver that mirrors C-Lua's `GCTM(L, propagateerrors)`.
 ///
 /// `propagate` corresponds to C's `propagateerrors` argument. C calls
@@ -1488,9 +1490,27 @@ pub fn run_pending_finalizers_inner(
     state: &mut LuaState,
     propagate: bool,
 ) -> Result<(), LuaError> {
+    run_pending_finalizers_limited(state, propagate, None).map(|_| ())
+}
+
+pub(crate) fn run_some_pending_finalizers_inner(
+    state: &mut LuaState,
+    propagate: bool,
+) -> Result<usize, LuaError> {
+    run_pending_finalizers_limited(state, propagate, Some(GC_FIN_MAX))
+}
+
+fn run_pending_finalizers_limited(
+    state: &mut LuaState,
+    propagate: bool,
+    limit: Option<usize>,
+) -> Result<usize, LuaError> {
     let version = state.global().lua_version;
-    let mut did_run = false;
+    let mut processed = 0usize;
     loop {
+        if limit.map_or(false, |limit| processed >= limit) {
+            break;
+        }
         // `to_be_finalized` was populated by the most recent mark phase.
         // Drain in LIFO order so the most recently dead object runs its `__gc`
         // first, matching C-Lua's `finobj`/`tobefnz` ordering.
@@ -1511,6 +1531,7 @@ pub fn run_pending_finalizers_inner(
             .finalizers
             .pop_to_be_finalized()
             .expect("to-be-finalized checked non-empty");
+        processed += 1;
         let mt = object.metatable();
         let gc_fn = match mt {
             Some(ref m) => {
@@ -1522,7 +1543,6 @@ pub fn run_pending_finalizers_inner(
         if !matches!(gc_fn, LuaValue::Function(_)) {
             continue;
         }
-        did_run = true;
         let saved_top = state.top_idx();
         let ci_top = state.current_call_info().top;
         if saved_top.0 < ci_top.0 {
@@ -1602,8 +1622,7 @@ pub fn run_pending_finalizers_inner(
     // Post-finalizer weak sweep is also obsolete: any weak entries newly
     // exposed by the finalizer pass will be cleared on the NEXT
     // `Heap::full_collect_with_post_mark`. We accept the one-cycle lag.
-    let _ = did_run;
-    Ok(())
+    Ok(processed)
 }
 
 /// Run every still-pending `__gc` finalizer at state close.
@@ -2025,8 +2044,25 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             let cycle_complete = if gen_mode {
                 state.gc().generational_step();
                 debt_for_result > 0 && state.global().gc_at_pause()
+            } else if state.global().heap.gc_state() == lua_gc::GcState::CallFin
+                && state.global().finalizers.has_to_be_finalized()
+            {
+                if let Err(e) = run_some_pending_finalizers_inner(state, true) {
+                    state.global_mut().gc_finalizer_error = Some(e.into_value());
+                }
+                false
             } else {
-                state.gc().incremental_step(work_units)
+                let completed = state.gc().incremental_step(work_units);
+                if state.global().heap.gc_state() == lua_gc::GcState::CallFin
+                    && state.global().finalizers.has_to_be_finalized()
+                {
+                    if let Err(e) = run_some_pending_finalizers_inner(state, true) {
+                        state.global_mut().gc_finalizer_error = Some(e.into_value());
+                    }
+                    false
+                } else {
+                    completed
+                }
             };
             state.global_mut().set_gc_stop_flags(old_stp);
             // Sync the global gcstate byte for `gc_at_pause()` callers.

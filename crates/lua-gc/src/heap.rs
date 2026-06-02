@@ -2117,6 +2117,17 @@ impl Heap {
         self.collections.set(self.collections.get() + 1);
     }
 
+    /// Finish an idle `CallFin` phase after the runtime has drained any
+    /// pending to-be-finalized objects.
+    pub fn finish_callfin_phase(&self) -> bool {
+        if self.state.get() != GcState::CallFin {
+            return false;
+        }
+        self.finish_cycle();
+        self.state.set(GcState::Pause);
+        true
+    }
+
     fn abort_cycle(&self) {
         if !self.state.get().is_pause() {
             *self.marker.borrow_mut() = None;
