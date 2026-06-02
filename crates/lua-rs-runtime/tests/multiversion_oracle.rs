@@ -2247,3 +2247,69 @@ fn v55_named_vararg_survives_dump_roundtrip() {
         "99,2,3",
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #105 — Lua 5.1 quotes special near/expected tokens (<eof>, <name>, …).
+//
+// 5.1's `luaX_lexerror` wraps the offending token in `LUA_QS` ('%s')
+// unconditionally and `error_expected` wraps the expected token the same way,
+// so the special multi-char labels `<eof>`/`<name>`/`<number>`/`<string>` come
+// out quoted. 5.2 rewrote `txtToken`/`luaX_token2str` to leave those bare and
+// quote only symbols/reserved/literals. lua-rs implemented the 5.2+ rule on all
+// versions; the 5.1 column below was captured from upstream lua-5.1.5.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn issue105_v51_quotes_special_near_and_expected_tokens() {
+    err_contains(LuaVersion::V51, "if", "unexpected symbol near '<eof>'");
+    err_contains(LuaVersion::V51, "local", "'<name>' expected near '<eof>'");
+    err_contains(LuaVersion::V51, "return 1 2", "'<eof>' expected near '2'");
+}
+
+#[test]
+fn issue105_v52_plus_leave_special_tokens_bare() {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
+        err_contains(v, "if", "unexpected symbol near <eof>");
+        err_contains(v, "local", "<name> expected near <eof>");
+        err_contains(v, "return 1 2", "<eof> expected near '2'");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #95 — `break` outside a loop is worded five different ways across the
+// version family. The wording is gated in `breakstat`/`undef_goto`
+// (`crates/lua-parse/src/lib.rs`); these assertions pin every arm so a future
+// refactor can't silently collapse them back to one form. Reference wordings
+// captured from each upstream binary (see specs/followup/HARD_PROBLEMS_REPORT.md).
+//
+// 5.1 raises eagerly *after* consuming `break`, so its `near` token is the next
+// token (`<eof>` here) — and quoted, per issue #105. 5.5 raises eagerly *before*
+// consuming `break`. 5.2/5.3/5.4 defer to the goto-resolution machinery.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn issue95_break_outside_loop_wording_v51() {
+    err_contains(LuaVersion::V51, "break", "no loop to break near '<eof>'");
+}
+
+#[test]
+fn issue95_break_outside_loop_wording_v52_v53() {
+    for v in [LuaVersion::V52, LuaVersion::V53] {
+        err_contains(v, "break", "not inside a loop");
+    }
+}
+
+#[test]
+fn issue95_break_outside_loop_wording_v54() {
+    err_contains(LuaVersion::V54, "break", "break outside loop at line");
+}
+
+#[test]
+fn issue95_break_outside_loop_wording_v55() {
+    err_contains(LuaVersion::V55, "break", "break outside loop near 'break'");
+}

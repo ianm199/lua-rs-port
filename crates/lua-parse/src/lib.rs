@@ -4875,6 +4875,7 @@ pub fn parse(
         dyd: None,
         source: source_str.clone(),
         envn: envn_str.clone(),
+        version: state.global().lua_version,
     };
 
     let mut lexstate = LexState {
