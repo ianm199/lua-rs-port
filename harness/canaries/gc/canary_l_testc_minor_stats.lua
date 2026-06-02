@@ -20,6 +20,8 @@ assert(T.gcage(root) == "old", "FAIL: telemetry root did not become old")
 local before = statnum(T.gcstats(), "collections")
 root.child = { payload = string.rep("x", 1024) }
 assert(T.gcage(root) == "touched1", "FAIL: telemetry root was not touched")
+assert(statnum(T.gcstats(), "grayagain") > 0,
+       "FAIL: touched old root was not linked into grayagain")
 
 collectgarbage("step", 0)
 
@@ -32,6 +34,7 @@ assert(statnum(stats, "tracedyoung") > 0, "FAIL: minor step recorded no young sc
 assert(statnum(stats, "sweepvisited") > 0, "FAIL: minor step swept no objects")
 assert(statnum(stats, "sweepvisitedold") == 0, "FAIL: minor sweep walked old tail")
 assert(statnum(stats, "sweeprevisit") > 0, "FAIL: minor step skipped touched revisit work")
+assert(statnum(stats, "grayagain") > 0, "FAIL: touched root did not remain in grayagain")
 assert(root.child.payload:len() == 1024, "FAIL: telemetry payload corrupted")
 
 T.checkmemory()

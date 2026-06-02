@@ -12,7 +12,7 @@
 //! - **Gc<T>**: a pointer-sized handle. `Copy + Clone`. Replaces `GcRef<T>`.
 //! - **GcBox<T>**: the heap allocation; contains a header and the value.
 //! - **GcHeader**: per-object metadata (color, age, finalized flag, intrusive
-//!   `next` pointer for the allgc list).
+//!   `next` pointer for the allgc list, and grayagain revisit link).
 //! - **Trace**: trait every GC-rooted type implements. The `trace` method
 //!   walks all `Gc<_>` fields and calls `Marker::mark` on each.
 //! - **Marker**: passed to `trace`; carries the gray queue.
@@ -511,6 +511,10 @@ pub struct GcHeader {
     collected: Cell<bool>,
     /// Intrusive link into the heap's allgc chain.
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// Intrusive link into the collector's grayagain-style revisit list.
+    gray_next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    /// True while this object is linked into the grayagain revisit list.
+    gray_listed: Cell<bool>,
     /// Rough byte size charged to the pacer for this object. Starts at the
     /// `GcBox<T>` size and is adjusted in place by [`Gc::account_buffer`] when
     /// the value's owned heap buffers (table array/node Vecs) grow or shrink.
@@ -530,6 +534,8 @@ impl GcHeader {
             finalized: Cell::new(false),
             collected: Cell::new(false),
             next: Cell::new(None),
+            gray_next: Cell::new(None),
+            gray_listed: Cell::new(false),
             size: Cell::new(size),
             type_name,
         }
@@ -1086,9 +1092,10 @@ pub struct Heap {
     last_mark_stats: Cell<MarkerStats>,
     /// Diagnostic counters from the most recent sweep phase.
     last_sweep_stats: Cell<SweepStats>,
-    /// Objects that young collections must revisit even if they are not
-    /// reached through normal roots: OLD0/OLD1 and touched old objects.
-    minor_revisit: RefCell<Vec<NonNull<GcBox<dyn Trace>>>>,
+    /// Intrusive grayagain-style list of objects that young collections must
+    /// revisit even if they are not reached through normal roots: OLD0/OLD1
+    /// and touched old objects.
+    grayagain: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     /// In-progress marker state for incremental cycles. `Some` between
     /// `Propagate` start and `Sweep` start; `None` otherwise.
     marker: RefCell<Option<Marker>>,
@@ -1124,7 +1131,7 @@ impl Heap {
             collections: Cell::new(0),
             last_mark_stats: Cell::new(MarkerStats::default()),
             last_sweep_stats: Cell::new(SweepStats::default()),
-            minor_revisit: RefCell::new(Vec::new()),
+            grayagain: Cell::new(None),
             marker: RefCell::new(None),
             sweep_prev_next: Cell::new(None),
         }
@@ -1261,7 +1268,7 @@ impl Heap {
         self.old1.set(None);
         self.reallyold.set(None);
         self.firstold1.set(None);
-        self.minor_revisit.borrow_mut().clear();
+        self.clear_grayagain();
     }
 
     fn set_all_cursors_to_head(&self) {
@@ -1270,7 +1277,7 @@ impl Heap {
         self.old1.set(head);
         self.reallyold.set(head);
         self.firstold1.set(None);
-        self.minor_revisit.borrow_mut().clear();
+        self.clear_grayagain();
     }
 
     fn correct_generation_pointers(
@@ -1290,23 +1297,78 @@ impl Heap {
         if self.firstold1.get() == Some(removed) {
             self.firstold1.set(next);
         }
-        let mut revisit = self.minor_revisit.borrow_mut();
-        if !revisit.is_empty() {
-            let removed_id = removed.as_ptr() as *const () as usize;
-            revisit.retain(|candidate| candidate.as_ptr() as *const () as usize != removed_id);
-        }
+        self.unlink_grayagain(removed);
     }
 
     fn remember_minor_revisit(&self, ptr: NonNull<GcBox<dyn Trace>>) {
-        self.minor_revisit.borrow_mut().push(ptr);
+        let header = self.header_from_ptr(ptr);
+        if header.gray_listed.get() {
+            return;
+        }
+        header.gray_next.set(self.grayagain.get());
+        header.gray_listed.set(true);
+        self.grayagain.set(Some(ptr));
     }
 
     fn mark_minor_revisit_objects(&self, marker: &mut Marker) {
-        for ptr in self.minor_revisit.borrow().iter().copied() {
+        let mut cursor = self.grayagain.get();
+        while let Some(ptr) = cursor {
             let header = self.header_from_ptr(ptr);
+            cursor = header.gray_next.get();
             let id = ptr.as_ptr() as *const () as usize;
             marker.mark_box(ptr, header, id);
         }
+    }
+
+    fn clear_grayagain(&self) {
+        let mut cursor = self.grayagain.get();
+        self.grayagain.set(None);
+        while let Some(ptr) = cursor {
+            let header = self.header_from_ptr(ptr);
+            cursor = header.gray_next.get();
+            header.gray_next.set(None);
+            header.gray_listed.set(false);
+        }
+    }
+
+    fn take_grayagain(&self) -> Vec<NonNull<GcBox<dyn Trace>>> {
+        let mut objects = Vec::new();
+        let mut cursor = self.grayagain.get();
+        self.grayagain.set(None);
+        while let Some(ptr) = cursor {
+            let header = self.header_from_ptr(ptr);
+            cursor = header.gray_next.get();
+            header.gray_next.set(None);
+            header.gray_listed.set(false);
+            objects.push(ptr);
+        }
+        objects
+    }
+
+    fn replace_grayagain(&self, objects: Vec<NonNull<GcBox<dyn Trace>>>) {
+        self.clear_grayagain();
+        for ptr in objects.into_iter().rev() {
+            self.remember_minor_revisit(ptr);
+        }
+    }
+
+    fn unlink_grayagain(&self, removed: NonNull<GcBox<dyn Trace>>) {
+        let keep = self
+            .take_grayagain()
+            .into_iter()
+            .filter(|ptr| !std::ptr::addr_eq(ptr.as_ptr(), removed.as_ptr()))
+            .collect();
+        self.replace_grayagain(keep);
+    }
+
+    pub fn grayagain_count(&self) -> usize {
+        let mut count = 0usize;
+        let mut cursor = self.grayagain.get();
+        while let Some(ptr) = cursor {
+            count += 1;
+            cursor = self.header_from_ptr(ptr).gray_next.get();
+        }
+        count
     }
 
     /// Return the current heap token for a live allocation identity.
@@ -1890,6 +1952,7 @@ impl Heap {
         let mut processed = HashSet::new();
         let mut firstold1 = None;
         let mut stats = SweepStats::default();
+        let old_revisit = self.take_grayagain();
         let survival = self.survival.get();
         let old1 = self.old1.get();
 
@@ -1914,7 +1977,7 @@ impl Heap {
             &mut stats,
         );
 
-        for ptr in self.minor_revisit.borrow().iter().copied() {
+        for ptr in old_revisit {
             if processed.contains(&(ptr.as_ptr() as *const () as usize)) {
                 continue;
             }
@@ -1938,7 +2001,7 @@ impl Heap {
         if freed_bytes > 0 {
             self.bytes.set(self.bytes.get().saturating_sub(freed_bytes));
         }
-        *self.minor_revisit.borrow_mut() = next_revisit;
+        self.replace_grayagain(next_revisit);
         self.reallyold.set(old1);
         self.old1.set(new_old1);
         self.survival.set(self.head.get());
@@ -2623,7 +2686,7 @@ mod tests {
     }
 
     #[test]
-    fn full_sweep_prunes_freed_minor_revisit_entries() {
+    fn full_sweep_unlinks_freed_grayagain_entries() {
         let heap = Heap::new();
         heap.unpause();
         let parent = heap.allocate(Cell0 {
@@ -2632,12 +2695,12 @@ mod tests {
         });
         heap.promote_all_to_old();
         heap.generational_backward_barrier(parent);
-        assert_eq!(heap.minor_revisit.borrow().len(), 1);
+        assert_eq!(heap.grayagain_count(), 1);
 
         heap.full_collect(&OneRoot(None));
 
         assert_eq!(heap.allgc_count(), 0);
-        assert!(heap.minor_revisit.borrow().is_empty());
+        assert_eq!(heap.grayagain_count(), 0);
 
         let young = heap.allocate(Cell0 {
             next: Cell::new(None),
@@ -2648,7 +2711,24 @@ mod tests {
     }
 
     #[test]
-    fn minor_revisit_list_carries_old1_until_old() {
+    fn grayagain_links_object_once() {
+        let heap = Heap::new();
+        heap.unpause();
+        let parent = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        parent.set_age(GcAge::Old);
+        parent.set_color(Color::Black);
+
+        heap.generational_backward_barrier(parent);
+        heap.generational_backward_barrier(parent);
+
+        assert_eq!(heap.grayagain_count(), 1);
+    }
+
+    #[test]
+    fn grayagain_list_carries_old1_until_old() {
         let heap = Heap::new();
         heap.unpause();
         let survivor = heap.allocate(Cell0 {
@@ -2668,7 +2748,7 @@ mod tests {
     }
 
     #[test]
-    fn minor_revisit_list_carries_touched2_until_old() {
+    fn grayagain_list_carries_touched2_until_old() {
         let heap = Heap::new();
         heap.unpause();
         let parent = heap.allocate(Cell0 {

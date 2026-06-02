@@ -46,10 +46,11 @@ The current tree is no longer only startup/default scaffolding:
   `G_OLD` objects are counted as live but are not drained, while `G_OLD0`,
   `G_OLD1`, `G_TOUCHED1`, and `G_TOUCHED2` objects are explicitly revisited.
   The first telemetry canary dropped from `tracedold=246` to `tracedold=1`.
-- The revisit set is now collector-owned. Forward/backward barriers and minor
-  sweep record objects that must be revisited by the next young collection, so
-  minor marking no longer scans `allgc` just to discover `OLD0`/`OLD1`/touched
-  objects.
+- The revisit set is now a collector-owned intrusive grayagain-style list.
+  Forward/backward barriers link objects that must be revisited by the next
+  young collection, and minor sweep rebuilds that list for `OLD0`/`OLD1` and
+  touched objects. Minor marking no longer scans `allgc` just to discover
+  revisit candidates.
 - The normal `allgc` list now has collector cursors for `survival`, `old1`,
   `reallyold`, and `firstold1`. Young sweep walks the nursery and survival
   ranges instead of the full old tail, and the telemetry canary now asserts
@@ -81,9 +82,8 @@ The current tree is no longer only startup/default scaffolding:
 The real generational collector is still not complete:
 
 - Normal-list minor marking and sweeping are now cursor-bounded for the current
-  allgc architecture, but this is still not exact C-Lua parity: touched objects
-  are held in a collector-owned revisit vector instead of an intrusive
-  `grayagain` list.
+  allgc architecture, and touched/OLD1 revisit work is held in an intrusive
+  collector-owned grayagain-style list.
 - Finalizers now live behind a generic `lua-gc::FinalizerRegistry<T>` with
   pending/to-be-finalized list mechanics, `finobjsur`/`finobjold1`/`finobjrold`
   cohort boundaries, and minor-scan selection owned by the collector crate.
@@ -195,8 +195,8 @@ Deliverables:
   proto/string/object installation, and API stores.
 - Keep the lower-level heap barrier only as an implementation primitive; the VM
   needs Lua-object-aware barrier behavior, including age changes.
-- Add grayagain/touched tracking that can support both incremental and
-  generational correction.
+- Done for generational revisit work: old/touched objects are linked through an
+  intrusive collector-owned grayagain-style list instead of a side Vec.
 
 Verification:
 
@@ -243,11 +243,11 @@ Deliverables:
 - Done: add normal-list cohort boundaries equivalent to `survival`, `old1`,
   `reallyold`, and `firstold1`.
 - Make new allocations enter the correct age for the current collector state.
-- Done for the normal allgc list: `sweep2old`-equivalent promotion and
-  cursor-bounded young `sweepgen`.
-- Remaining: exact `correctgraylist(s)`/`markold` parity for intrusive
-  `grayagain` and weak lists, plus a true `finobj`/`tobefnz` split instead of
-  the current finalizer registry overlay on `allgc`.
+- Done for the normal allgc list: `sweep2old`-equivalent promotion,
+  cursor-bounded young `sweepgen`, and an intrusive grayagain-style revisit
+  list.
+- Remaining: exact weak-list ownership plus a true `finobj`/`tobefnz` split
+  instead of the current finalizer registry overlay on `allgc`.
 - Ensure `enterinc` clears ages and cohort pointers safely.
 
 Verification:
@@ -349,6 +349,6 @@ Final command set:
 #109 fixed only the default-mode startup bug in #93. The real generational
 collector remains open. Accounting, barriers, age/cohort metadata, minor/major
 policy, and collector-owned finalizer registry mechanics are now active in the
-branch. The remaining critical path is exact grayagain/weak/ephemeron ownership,
+branch. The remaining critical path is exact weak/ephemeron ownership,
 true intrusive `finobj`/`tobefnz` separation, and a final full-suite sweep that
 proves the meaningful `gengc.lua` assertions stay exercised.
