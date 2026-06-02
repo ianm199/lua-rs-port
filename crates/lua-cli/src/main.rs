@@ -1110,6 +1110,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
 }
 
 fn register_testc_table(state: &mut LuaState) -> Result<(), LuaError> {
+    state.enable_test_warning_handler()?;
     let funcs: &[(&[u8], lua_vm::state::LuaCFunction)] = &[
         (b"checkmemory", testc_checkmemory),
         (b"gcage", testc_gcage),

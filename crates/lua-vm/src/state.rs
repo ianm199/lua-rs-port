@@ -245,6 +245,14 @@ pub enum WarnMode {
     Cont,
 }
 
+/// Output mode for the testC/ltests warning sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestWarnMode {
+    Normal,
+    Allow,
+    Store,
+}
+
 // ─── LuaStatus enum ──────────────────────────────────────────────────────────
 
 /// Thread / call status codes.
@@ -1383,6 +1391,16 @@ pub struct GlobalState {
     /// consulted when no custom `warnf` was installed via the C API.
     pub warn_mode: WarnMode,
 
+    /// testC/ltests warning sink, enabled only by the CLI's `LUA_RS_TESTC`
+    /// support. It mirrors `ltests.c`'s `warnf`: a separate on/off bit, an
+    /// output mode (`normal`, `allow`, `store`), and a continuation buffer so
+    /// multi-part warnings can be asserted via global `_WARN`.
+    pub test_warn_enabled: bool,
+    pub test_warn_on: bool,
+    pub test_warn_mode: TestWarnMode,
+    pub test_warn_last_to_cont: bool,
+    pub test_warn_buffer: Vec<u8>,
+
     /// Registry of native `LuaCFunction` pointers. Lua-types cannot reference
     /// `LuaState`, so `LuaClosure::LightC` carries a `usize` index into this
     /// vector instead of the real function pointer. `push_c_function`
@@ -1782,6 +1800,20 @@ impl LuaState {
     /// Used in `new_thread` to give the child thread access to the same GlobalState.
     pub fn global_rc(&self) -> Rc<RefCell<GlobalState>> {
         Rc::clone(&self.global)
+    }
+
+    /// Enable the ltests-style warning sink used by `LUA_RS_TESTC`.
+    pub fn enable_test_warning_handler(&mut self) -> Result<(), LuaError> {
+        {
+            let mut g = self.global_mut();
+            g.test_warn_enabled = true;
+            g.test_warn_on = false;
+            g.test_warn_mode = TestWarnMode::Normal;
+            g.test_warn_last_to_cont = false;
+            g.test_warn_buffer.clear();
+        }
+        self.push(LuaValue::Bool(false));
+        crate::api::set_global(self, b"_WARN")
     }
 
     /// Return the current C-call recursion depth (lower 16 bits of `n_ccalls`).
@@ -5011,6 +5043,11 @@ pub fn new_state() -> Option<LuaState> {
         interned_lt: std::collections::HashMap::new(),
         warnf: None,
         warn_mode: WarnMode::Off,
+        test_warn_enabled: false,
+        test_warn_on: false,
+        test_warn_mode: TestWarnMode::Normal,
+        test_warn_last_to_cont: false,
+        test_warn_buffer: Vec::new(),
         c_functions: Vec::new(),
         heap: lua_gc::Heap::new(),
         cross_thread_upvals: std::collections::HashMap::new(),
@@ -5105,6 +5142,12 @@ pub fn close(mut state: LuaState) {
 /// // }
 /// ```
 pub(crate) fn warning(state: &mut LuaState, msg: &[u8], to_cont: bool) {
+    let test_warn_enabled = state.global().test_warn_enabled;
+    if test_warn_enabled {
+        test_warn(state, msg, to_cont);
+        return;
+    }
+
     // types.tsv: global_State.warnf → Option<Box<dyn FnMut(&[u8], bool)>>
     // types.tsv: global_State.ud_warn → (removed; folded into the closure)
     // PORT NOTE: We must drop the RefMut borrow before calling the closure to avoid
@@ -5125,6 +5168,71 @@ pub(crate) fn warning(state: &mut LuaState, msg: &[u8], to_cont: bool) {
         return;
     }
     default_warn(state, msg, to_cont);
+}
+
+fn test_warn(state: &mut LuaState, msg: &[u8], to_cont: bool) {
+    let is_control = {
+        let g = state.global();
+        !g.test_warn_last_to_cont && !to_cont && msg.first() == Some(&b'@')
+    };
+    if is_control {
+        let mut g = state.global_mut();
+        match &msg[1..] {
+            b"off" => g.test_warn_on = false,
+            b"on" => g.test_warn_on = true,
+            b"normal" => g.test_warn_mode = TestWarnMode::Normal,
+            b"allow" => g.test_warn_mode = TestWarnMode::Allow,
+            b"store" => g.test_warn_mode = TestWarnMode::Store,
+            _ => {}
+        }
+        return;
+    }
+
+    let finished = {
+        let mut g = state.global_mut();
+        g.test_warn_last_to_cont = to_cont;
+        g.test_warn_buffer.extend_from_slice(msg);
+        if to_cont {
+            None
+        } else {
+            Some((
+                std::mem::take(&mut g.test_warn_buffer),
+                g.test_warn_mode,
+                g.test_warn_on,
+            ))
+        }
+    };
+
+    let Some((message, mode, warn_on)) = finished else {
+        return;
+    };
+    match mode {
+        TestWarnMode::Normal => {
+            if warn_on && message.first() == Some(&b'#') {
+                write_warning_message(&message);
+            }
+        }
+        TestWarnMode::Allow => {
+            if warn_on {
+                write_warning_message(&message);
+            }
+        }
+        TestWarnMode::Store => {
+            if let Ok(s) = state.intern_str(&message) {
+                state.push(LuaValue::Str(s));
+                let _ = crate::api::set_global(state, b"_WARN");
+            }
+        }
+    }
+}
+
+fn write_warning_message(message: &[u8]) {
+    use std::io::Write;
+    let stderr = std::io::stderr();
+    let mut h = stderr.lock();
+    let _ = h.write_all(b"Lua warning: ");
+    let _ = h.write_all(message);
+    let _ = h.write_all(b"\n");
 }
 
 /// The default warning handler: a faithful port of the `warnfoff` /

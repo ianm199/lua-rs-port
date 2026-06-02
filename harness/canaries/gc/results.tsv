@@ -12,3 +12,5 @@ canary_f_testc_gengc_age	incremental	PASS	-
 canary_f_testc_gengc_age	generational	PASS	-
 canary_g_testc_gcstate	incremental	PASS	-
 canary_g_testc_gcstate	generational	PASS	-
+canary_h_testc_warn_store	incremental	PASS	-
+canary_h_testc_warn_store	generational	PASS	-
