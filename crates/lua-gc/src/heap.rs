@@ -203,7 +203,15 @@ pub trait WeakEntry: Clone {
     type Strong: Clone;
 
     fn identity(&self) -> usize;
+    fn list_kind(&self) -> WeakListKind;
     fn upgrade(&self) -> Option<Self::Strong>;
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WeakListKind {
+    WeakValues,
+    Ephemeron,
+    AllWeak,
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
@@ -212,72 +220,116 @@ pub struct WeakRegistryStats {
     pub snapshot_live: usize,
     pub snapshot_dead: usize,
     pub retained: usize,
+    pub weak_values: usize,
+    pub ephemeron: usize,
+    pub all_weak: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct WeakRegistry<T: WeakEntry> {
-    entries: Vec<T>,
+    weak_values: Vec<T>,
+    ephemeron: Vec<T>,
+    all_weak: Vec<T>,
     last_stats: WeakRegistryStats,
 }
 
 impl<T: WeakEntry> Default for WeakRegistry<T> {
     fn default() -> Self {
-        Self { entries: Vec::new(), last_stats: WeakRegistryStats::default() }
+        Self {
+            weak_values: Vec::new(),
+            ephemeron: Vec::new(),
+            all_weak: Vec::new(),
+            last_stats: WeakRegistryStats::default(),
+        }
     }
 }
 
 impl<T: WeakEntry> WeakRegistry<T> {
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.weak_values
+            .len()
+            .saturating_add(self.ephemeron.len())
+            .saturating_add(self.all_weak.len())
     }
 
     pub fn stats(&self) -> WeakRegistryStats {
         self.last_stats
     }
 
-    pub fn push_unique(&mut self, entry: T) {
-        let id = entry.identity();
-        if !self.entries.iter().any(|existing| existing.identity() == id) {
-            self.entries.push(entry);
-            self.last_stats.tracked = self.entries.len();
-            self.last_stats.retained = self.entries.len();
+    fn list_mut(&mut self, kind: WeakListKind) -> &mut Vec<T> {
+        match kind {
+            WeakListKind::WeakValues => &mut self.weak_values,
+            WeakListKind::Ephemeron => &mut self.ephemeron,
+            WeakListKind::AllWeak => &mut self.all_weak,
         }
     }
 
+    pub fn remove_identity(&mut self, id: usize) {
+        self.weak_values.retain(|entry| entry.identity() != id);
+        self.ephemeron.retain(|entry| entry.identity() != id);
+        self.all_weak.retain(|entry| entry.identity() != id);
+        self.last_stats.tracked = self.len();
+        self.last_stats.retained = self.len();
+        self.update_cohort_stats();
+    }
+
+    fn update_cohort_stats(&mut self) {
+        self.last_stats.weak_values = self.weak_values.len();
+        self.last_stats.ephemeron = self.ephemeron.len();
+        self.last_stats.all_weak = self.all_weak.len();
+    }
+
+    pub fn push_unique(&mut self, entry: T) {
+        let id = entry.identity();
+        self.remove_identity(id);
+        self.list_mut(entry.list_kind()).push(entry);
+        self.last_stats.tracked = self.len();
+        self.last_stats.retained = self.len();
+        self.update_cohort_stats();
+    }
+
     pub fn live_snapshot(&mut self) -> Vec<T::Strong> {
-        let tracked_before = self.entries.len();
+        let tracked_before = self.len();
         let mut seen = std::collections::HashSet::<usize>::new();
         let mut live = Vec::new();
-        let mut retained = Vec::with_capacity(self.entries.len());
         let mut dead = 0usize;
 
-        for entry in std::mem::take(&mut self.entries) {
+        let entries = std::mem::take(&mut self.weak_values)
+            .into_iter()
+            .chain(std::mem::take(&mut self.ephemeron))
+            .chain(std::mem::take(&mut self.all_weak));
+        for entry in entries {
             if !seen.insert(entry.identity()) {
                 continue;
             }
             match entry.upgrade() {
                 Some(strong) => {
                     live.push(strong);
-                    retained.push(entry);
+                    self.list_mut(entry.list_kind()).push(entry);
                 }
                 None => dead += 1,
             }
         }
 
-        self.entries = retained;
         self.last_stats = WeakRegistryStats {
             tracked: tracked_before,
             snapshot_live: live.len(),
             snapshot_dead: dead,
-            retained: self.entries.len(),
+            retained: self.len(),
+            weak_values: self.weak_values.len(),
+            ephemeron: self.ephemeron.len(),
+            all_weak: self.all_weak.len(),
         };
         live
     }
 
     pub fn retain_identities(&mut self, ids: &std::collections::HashSet<usize>) {
-        self.entries.retain(|entry| ids.contains(&entry.identity()));
-        self.last_stats.retained = self.entries.len();
-        self.last_stats.tracked = self.entries.len();
+        self.weak_values.retain(|entry| ids.contains(&entry.identity()));
+        self.ephemeron.retain(|entry| ids.contains(&entry.identity()));
+        self.all_weak.retain(|entry| ids.contains(&entry.identity()));
+        self.last_stats.retained = self.len();
+        self.last_stats.tracked = self.len();
+        self.update_cohort_stats();
     }
 }
 
@@ -2190,6 +2242,7 @@ mod tests {
     struct WeakCell {
         id: usize,
         live: bool,
+        kind: WeakListKind,
     }
 
     impl WeakEntry for WeakCell {
@@ -2197,6 +2250,10 @@ mod tests {
 
         fn identity(&self) -> usize {
             self.id
+        }
+
+        fn list_kind(&self) -> WeakListKind {
+            self.kind
         }
 
         fn upgrade(&self) -> Option<Self::Strong> {
@@ -2207,13 +2264,34 @@ mod tests {
     #[test]
     fn weak_registry_dedups_snapshots_and_retains_live_ids() {
         let mut registry = WeakRegistry::default();
-        registry.push_unique(WeakCell { id: 1, live: true });
-        registry.push_unique(WeakCell { id: 1, live: true });
-        registry.push_unique(WeakCell { id: 2, live: false });
-        registry.push_unique(WeakCell { id: 3, live: true });
+        registry.push_unique(WeakCell {
+            id: 1,
+            live: true,
+            kind: WeakListKind::WeakValues,
+        });
+        registry.push_unique(WeakCell {
+            id: 1,
+            live: true,
+            kind: WeakListKind::Ephemeron,
+        });
+        registry.push_unique(WeakCell {
+            id: 2,
+            live: false,
+            kind: WeakListKind::AllWeak,
+        });
+        registry.push_unique(WeakCell {
+            id: 3,
+            live: true,
+            kind: WeakListKind::WeakValues,
+        });
+
+        let stats = registry.stats();
+        assert_eq!(stats.weak_values, 1);
+        assert_eq!(stats.ephemeron, 1);
+        assert_eq!(stats.all_weak, 1);
 
         let snapshot = registry.live_snapshot();
-        assert_eq!(snapshot, vec![1, 3]);
+        assert_eq!(snapshot, vec![3, 1]);
         assert_eq!(
             registry.stats(),
             WeakRegistryStats {
@@ -2221,6 +2299,9 @@ mod tests {
                 snapshot_live: 2,
                 snapshot_dead: 1,
                 retained: 2,
+                weak_values: 1,
+                ephemeron: 1,
+                all_weak: 0,
             }
         );
 
@@ -2228,6 +2309,9 @@ mod tests {
         registry.retain_identities(&keep);
         assert_eq!(registry.len(), 1);
         assert_eq!(registry.stats().retained, 1);
+        assert_eq!(registry.stats().weak_values, 1);
+        registry.remove_identity(3);
+        assert_eq!(registry.len(), 0);
     }
 
     #[test]

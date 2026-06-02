@@ -1672,7 +1672,12 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
                 state.gc().obj_barrier(tbl, mt.as_ref().unwrap());
             }
             tbl.set_metatable(mt.clone());
-            if tbl.weak_mode() != 0 {
+            if tbl.weak_mode() == 0 {
+                state
+                    .global_mut()
+                    .weak_tables_registry
+                    .remove_identity(tbl.identity());
+            } else {
                 state
                     .global_mut()
                     .weak_tables_registry

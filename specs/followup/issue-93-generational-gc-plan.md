@@ -70,11 +70,15 @@ The current tree is no longer only startup/default scaffolding:
   outside the minor scan while a young unreachable finalizer moves to
   to-be-finalized-young.
 - Weak table registry selection is now collector-crate owned through
-  `lua-gc::WeakRegistry<T>`. The VM still provides the table-specific
-  ephemeron/prune hooks, but dedupe, dead weak-handle dropping, live snapshots,
-  retain-by-live-identity, and `T.gcstats()` telemetry (`weaklive`, `weakdead`,
-  `weakretained`) are centralized. `canary_n_testc_weak_registry.lua` pins that
-  rooted weak tables are snapshotted/retained while weak-only entries clear.
+  `lua-gc::WeakRegistry<T>`, split into C-Lua-style weak-value, ephemeron, and
+  all-weak cohorts. The VM still provides the table-specific ephemeron/prune
+  hooks, but dedupe, dead weak-handle dropping, live snapshots,
+  retain-by-live-identity, cohort moves/removal, and `T.gcstats()` telemetry
+  (`weaklive`, `weakdead`, `weakretained`, `weakvalues`, `ephemeron`,
+  `allweak`) are centralized. `canary_n_testc_weak_registry.lua` pins that
+  rooted weak tables are snapshotted/retained, mode changes remove stale
+  registry entries, all three weak cohorts are populated, and weak-only entries
+  clear.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
@@ -93,9 +97,10 @@ The real generational collector is still not complete:
   finalizable objects are still an overlay on the heap's `allgc` chain, not a
   true intrusive `finobj`/`tobefnz` ownership split.
 - Weak/ephemeron handling is correct enough for the current gates. Weak-table
-  registry mechanics are now collector-owned, but weak/ephemeron table
-  classification and mark/prune processing still run through VM post-mark hooks
-  instead of intrusive `weak` / `ephemeron` / `allweak` lists.
+  registry mechanics and weak/ephemeron/all-weak cohort ownership are now
+  collector-owned, but mark/prune processing still runs through VM post-mark
+  hooks instead of fully collector-owned `weak` / `ephemeron` / `allweak`
+  phase processing.
 - `GlobalState.totalbytes` has been removed; `gettotalbytes` maps to
   collector-owned heap bytes through `GlobalState::total_bytes()`.
 
@@ -246,8 +251,9 @@ Deliverables:
 - Done for the normal allgc list: `sweep2old`-equivalent promotion,
   cursor-bounded young `sweepgen`, and an intrusive grayagain-style revisit
   list.
-- Remaining: exact weak-list ownership plus a true `finobj`/`tobefnz` split
-  instead of the current finalizer registry overlay on `allgc`.
+- Remaining: exact weak mark/prune phase ownership plus a true
+  `finobj`/`tobefnz` split instead of the current finalizer registry overlay
+  on `allgc`.
 - Ensure `enterinc` clears ages and cohort pointers safely.
 
 Verification:
@@ -292,6 +298,9 @@ Deliverables:
 - Done for registry mechanics: collector-owned weak snapshots dedupe entries,
   drop stale weak handles, and retain only tables that stayed live through the
   mark/prune pass.
+- Done for registry cohorts: weak tables are classified into weak-value,
+  ephemeron, and all-weak cohorts in `lua-gc::WeakRegistry<T>`, and metatable
+  mode changes move/remove entries.
 - Weak string/key byte reclamation is collector-owned, not API cleanup.
 
 Verification:
@@ -349,6 +358,6 @@ Final command set:
 #109 fixed only the default-mode startup bug in #93. The real generational
 collector remains open. Accounting, barriers, age/cohort metadata, minor/major
 policy, and collector-owned finalizer registry mechanics are now active in the
-branch. The remaining critical path is exact weak/ephemeron ownership,
+branch. The remaining critical path is exact weak/ephemeron mark-prune ownership,
 true intrusive `finobj`/`tobefnz` separation, and a final full-suite sweep that
 proves the meaningful `gengc.lua` assertions stay exercised.

@@ -186,11 +186,23 @@ impl lua_gc::FinalizerEntry for FinalizerObject {
 }
 
 #[derive(Clone, Debug)]
-pub struct WeakTableEntry(lua_types::gc::GcWeak<LuaTable>);
+pub struct WeakTableEntry {
+    table: lua_types::gc::GcWeak<LuaTable>,
+    kind: lua_gc::WeakListKind,
+}
 
 impl WeakTableEntry {
     pub fn new(table: &GcRef<LuaTable>) -> Self {
-        Self(table.downgrade())
+        let mode = table.weak_mode();
+        let weak_keys = (mode & (1 << 0)) != 0;
+        let weak_values = (mode & (1 << 1)) != 0;
+        let kind = match (weak_keys, weak_values) {
+            (true, true) => lua_gc::WeakListKind::AllWeak,
+            (true, false) => lua_gc::WeakListKind::Ephemeron,
+            (false, true) => lua_gc::WeakListKind::WeakValues,
+            (false, false) => lua_gc::WeakListKind::WeakValues,
+        };
+        Self { table: table.downgrade(), kind }
     }
 }
 
@@ -198,11 +210,15 @@ impl lua_gc::WeakEntry for WeakTableEntry {
     type Strong = GcRef<LuaTable>;
 
     fn identity(&self) -> usize {
-        self.0.identity()
+        self.table.identity()
+    }
+
+    fn list_kind(&self) -> lua_gc::WeakListKind {
+        self.kind
     }
 
     fn upgrade(&self) -> Option<Self::Strong> {
-        self.0.upgrade()
+        self.table.upgrade()
     }
 }
 

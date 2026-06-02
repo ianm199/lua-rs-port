@@ -1072,6 +1072,9 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         weaklive,
         weakdead,
         weakretained,
+        weakvalues,
+        ephemeron,
+        allweak,
         grayagain,
         pendingfin,
         tobefin,
@@ -1102,6 +1105,9 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             weakstats.snapshot_live,
             weakstats.snapshot_dead,
             weakstats.retained,
+            weakstats.weak_values,
+            weakstats.ephemeron,
+            weakstats.all_weak,
             g.heap.grayagain_count(),
             g.finalizers.pending_len(),
             g.finalizers.to_be_finalized_len(),
@@ -1124,7 +1130,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     let userdata = testc_type_count(state, b"userdata")?;
     let strings = testc_type_count(state, b"string")?;
     let stats = format!(
-        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} weaklive={} weakdead={} weakretained={} grayagain={} pendingfin={} tobefin={} pendingfinyoung={} pendingfinold={} tobefinyoung={} tobefinold={} finobjnew={} finobjsur={} finobjold1={} finobjrold={} finobjscan={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} sweepvisited={} sweepvisitedyoung={} sweepvisitedold={} sweeprevisit={} sweepfreed={} sweepfreedbytes={} tables={} functions={} threads={} userdata={} strings={}",
+        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} weaklive={} weakdead={} weakretained={} weakvalues={} ephemeron={} allweak={} grayagain={} pendingfin={} tobefin={} pendingfinyoung={} pendingfinold={} tobefinyoung={} tobefinold={} finobjnew={} finobjsur={} finobjold1={} finobjrold={} finobjscan={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} sweepvisited={} sweepvisitedyoung={} sweepvisitedold={} sweeprevisit={} sweepfreed={} sweepfreedbytes={} tables={} functions={} threads={} userdata={} strings={}",
         mode,
         gc_state,
         bytes,
@@ -1136,6 +1142,9 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         weaklive,
         weakdead,
         weakretained,
+        weakvalues,
+        ephemeron,
+        allweak,
         grayagain,
         pendingfin,
         tobefin,
