@@ -1071,6 +1071,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         weak,
         pendingfin,
         tobefin,
+        markstats,
     ) = {
         let g = state.global();
         (
@@ -1084,6 +1085,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             g.weak_tables_registry.len(),
             g.pending_finalizers.len(),
             g.to_be_finalized.len(),
+            g.heap.last_mark_stats(),
         )
     };
     let tables = testc_type_count(state, b"table")?;
@@ -1092,7 +1094,7 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     let userdata = testc_type_count(state, b"userdata")?;
     let strings = testc_type_count(state, b"string")?;
     let stats = format!(
-        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} tables={} functions={} threads={} userdata={} strings={}",
+        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} tables={} functions={} threads={} userdata={} strings={}",
         mode,
         gc_state,
         bytes,
@@ -1103,6 +1105,12 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         weak,
         pendingfin,
         tobefin,
+        markstats.marked,
+        markstats.marked_young,
+        markstats.marked_old,
+        markstats.traced,
+        markstats.traced_young,
+        markstats.traced_old,
         tables,
         functions,
         threads,

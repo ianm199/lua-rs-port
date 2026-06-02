@@ -1,6 +1,7 @@
 # Issue #93: Generational GC Plan
 
-Status audited on `issue-93-gc-current` after GC checkpoint `879ed71`.
+Status audited on `issue-93-gc-current` after GC checkpoint `b20eb7a` plus
+the minor-traversal telemetry slice.
 
 ## What #109 Fixed
 
@@ -37,6 +38,9 @@ The current tree is no longer only startup/default scaffolding:
 - Payload bytes are charged/refunded for tables, strings, userdata payloads and
   uservalues, C-closure upvalue vectors, Lua-closure upvalue slots, and compiled
   proto vectors.
+- `lua-gc::MarkerStats` records marked/traced object counts split by young vs
+  old age. `T.gcstats()` exposes those counters, and GC canary pass rows can
+  now carry `METRIC ...` telemetry instead of only PASS/FAIL.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
@@ -45,7 +49,8 @@ The real generational collector is still not complete:
 
 - `minor_collect_with_post_mark` still traces the full root set for correctness
   and then limits sweeping to young objects. It is not yet a cohort-list young
-  collection.
+  collection. `canary_l_testc_minor_stats.lua` now makes this visible per run;
+  the current canary run traced hundreds of old objects during one minor step.
 - Normal-list cohort boundaries equivalent to `survival`, `old1`,
   `reallyold`, and `firstold1` are not represented as collector cursors.
 - Finalizers still live in VM-side `pending_finalizers` / `to_be_finalized`

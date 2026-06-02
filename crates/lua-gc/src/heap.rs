@@ -469,10 +469,25 @@ impl<T> Trace for std::marker::PhantomData<T> {
     fn trace(&self, _m: &mut Marker) {}
 }
 
+/// Diagnostic counters for the latest mark phase.
+///
+/// These are read-only telemetry for testC/canaries and unit tests. Collector
+/// decisions must continue to use object color/age metadata, not these counts.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct MarkerStats {
+    pub marked: usize,
+    pub marked_young: usize,
+    pub marked_old: usize,
+    pub traced: usize,
+    pub traced_young: usize,
+    pub traced_old: usize,
+}
+
 /// Holds the gray queue during a mark phase. Passed to `Trace::trace`.
 pub struct Marker {
     gray_queue: Vec<NonNull<GcBox<dyn Trace>>>,
     visited: std::collections::HashSet<usize>,
+    stats: MarkerStats,
 }
 
 impl Marker {
@@ -480,6 +495,7 @@ impl Marker {
         Self {
             gray_queue: Vec::with_capacity(256),
             visited: std::collections::HashSet::new(),
+            stats: MarkerStats::default(),
         }
     }
 
@@ -500,6 +516,12 @@ impl Marker {
         if self.visited.insert(id) {
             let header = gc.header();
             header.color.set(Color::Gray);
+            self.stats.marked += 1;
+            if header.age.get().is_old() {
+                self.stats.marked_old += 1;
+            } else {
+                self.stats.marked_young += 1;
+            }
             let ptr: NonNull<GcBox<dyn Trace>> = gc.ptr;
             self.gray_queue.push(ptr);
         }
@@ -528,6 +550,11 @@ impl Marker {
         self.visited.len()
     }
 
+    /// Return diagnostic counters for the current mark phase.
+    pub fn stats(&self) -> MarkerStats {
+        self.stats
+    }
+
     /// Drain the gray queue, transitively marking children. Each gray box
     /// becomes black; its `Trace::trace` is called so the children it points
     /// at get pushed onto the queue. Repeats until the queue is empty.
@@ -540,6 +567,12 @@ impl Marker {
         while let Some(gray_ptr) = self.gray_queue.pop() {
             unsafe {
                 let bx = gray_ptr.as_ref();
+                self.stats.traced += 1;
+                if bx.header.age.get().is_old() {
+                    self.stats.traced_old += 1;
+                } else {
+                    self.stats.traced_young += 1;
+                }
                 bx.header.color.set(Color::Black);
                 bx.value.trace(self);
             }
@@ -655,6 +688,8 @@ pub struct Heap {
     paused: Cell<bool>,
     /// Counter of full collections performed (for diagnostics).
     collections: Cell<usize>,
+    /// Diagnostic counters from the most recently completed mark phase.
+    last_mark_stats: Cell<MarkerStats>,
     /// In-progress marker state for incremental cycles. `Some` between
     /// `Propagate` start and `Sweep` start; `None` otherwise.
     marker: RefCell<Option<Marker>>,
@@ -684,6 +719,7 @@ impl Heap {
             state: Cell::new(GcState::Pause),
             paused: Cell::new(true), // start paused; caller enables when world is consistent
             collections: Cell::new(0),
+            last_mark_stats: Cell::new(MarkerStats::default()),
             marker: RefCell::new(None),
             sweep_prev_next: Cell::new(None),
         }
@@ -773,6 +809,10 @@ impl Heap {
 
     pub fn collections(&self) -> usize {
         self.collections.get()
+    }
+
+    pub fn last_mark_stats(&self) -> MarkerStats {
+        self.last_mark_stats.get()
     }
 
     fn next_token(&self) -> usize {
@@ -958,6 +998,7 @@ impl Heap {
         marker.drain_gray_queue();
         post_mark(&mut marker);
         marker.drain_gray_queue();
+        self.last_mark_stats.set(marker.stats());
     }
 
     /// Metadata transition used when entering generational mode after a full
@@ -1005,6 +1046,7 @@ impl Heap {
         self.state.set(GcState::Atomic);
         post_mark(&mut marker);
         marker.drain_gray_queue();
+        self.last_mark_stats.set(marker.stats());
 
         self.state.set(GcState::Sweep);
         self.sweep_young();
@@ -1205,6 +1247,12 @@ impl Heap {
             };
             unsafe {
                 let bx = next.as_ref();
+                marker.stats.traced += 1;
+                if bx.header.age.get().is_old() {
+                    marker.stats.traced_old += 1;
+                } else {
+                    marker.stats.traced_young += 1;
+                }
                 bx.header.color.set(Color::Black);
                 bx.value.trace(marker);
             }
@@ -1310,6 +1358,13 @@ impl Heap {
     }
 
     fn finish_cycle(&self) {
+        let stats = self
+            .marker
+            .borrow()
+            .as_ref()
+            .map(|marker| marker.stats())
+            .unwrap_or_default();
+        self.last_mark_stats.set(stats);
         *self.marker.borrow_mut() = None;
         self.sweep_prev_next.set(None);
         let next = self
@@ -1658,6 +1713,36 @@ mod tests {
         assert_eq!(old_unreachable.age(), GcAge::Old);
         assert_eq!(young_survivor.age(), GcAge::Survival);
         assert!(young_survivor.color().is_white());
+    }
+
+    #[test]
+    fn minor_collect_stats_expose_old_root_scan_work() {
+        let heap = Heap::new();
+        heap.unpause();
+        let old_root = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        old_root.set_age(GcAge::Old);
+        old_root.set_color(Color::Black);
+        let young_child = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        old_root.next.set(Some(young_child));
+
+        heap.minor_collect_with_post_mark(&OneRoot(Some(old_root)), |_| {});
+
+        let stats = heap.last_mark_stats();
+        assert_eq!(stats.marked, 2);
+        assert_eq!(stats.marked_old, 1);
+        assert_eq!(stats.marked_young, 1);
+        assert_eq!(stats.traced, 2);
+        assert_eq!(stats.traced_old, 1);
+        assert_eq!(stats.traced_young, 1);
+        assert_eq!(old_root.marker_calls.get(), 1);
+        assert_eq!(young_child.marker_calls.get(), 1);
+        assert_eq!(young_child.age(), GcAge::Survival);
     }
 
     #[test]

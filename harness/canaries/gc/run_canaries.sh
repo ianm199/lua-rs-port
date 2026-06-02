@@ -54,7 +54,11 @@ for f in "$DIR"/canary_*.lua; do
         kill "$_watcher" 2>/dev/null; wait "$_watcher" 2>/dev/null || true
         rm -f "$src_file"
         if [ "$rc" = "0" ] && grep -q "^PASS " "$outfile"; then
-            printf '%s\t%s\tPASS\t-\n' "$base" "$mode" >> "$TSV"
+            metric=$(grep -m1 "^METRIC " "$outfile" | tr '\t' ' ' | head -c 240)
+            if [ -z "$metric" ]; then
+                metric="-"
+            fi
+            printf '%s\t%s\tPASS\t%s\n' "$base" "$mode" "$metric" >> "$TSV"
             printf "  %-30s %-15s PASS\n" "$base" "$mode"
         else
             summary=$(head -3 "$outfile" | tr '\n' ' ' | head -c 120)

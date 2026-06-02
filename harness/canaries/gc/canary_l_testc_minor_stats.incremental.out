@@ -1,0 +1,2 @@
+METRIC minorstats mode=generational state=pause bytes=40382 debt=-8060 threshold=48442 allgc=248 collections=4 weak=0 pendingfin=4 tobefin=0 marked=278 markedyoung=32 markedold=246 traced=278 tracedyoung=32 tracedold=246 tables=21 functions=7 threads=0 userdata=3 strings=214
+PASS canary_l
