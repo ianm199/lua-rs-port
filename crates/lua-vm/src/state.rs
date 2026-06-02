@@ -3684,6 +3684,16 @@ fn finalizer_marked_or_old(marker: &lua_gc::Marker, object: &FinalizerObject) ->
     }
 }
 
+fn weak_snapshot_tables<'a>(
+    snapshot: &'a lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>>,
+) -> impl Iterator<Item = &'a GcRef<LuaTable>> {
+    snapshot
+        .weak_values
+        .iter()
+        .chain(snapshot.ephemeron.iter())
+        .chain(snapshot.all_weak.iter())
+}
+
 fn close_open_upvalues_for_unreachable_threads(
     global: &GlobalState,
     marker: &mut lua_gc::Marker,
@@ -3914,9 +3924,9 @@ impl<'a> GcHandle<'a> {
         // Snapshot weak tables BEFORE the collect. `identity()` reads only
         // the pointer address — safe even on still-dangling weak handles —
         // and dedup by identity keeps the iteration linear.
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
             let mut g = state_ref.global.borrow_mut();
-            g.weak_tables_registry.live_snapshot()
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         // Snapshot pending finalizers. `GlobalState::trace` deliberately
@@ -3953,7 +3963,7 @@ impl<'a> GcHandle<'a> {
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
@@ -3979,7 +3989,7 @@ impl<'a> GcHandle<'a> {
                 marker.drain_gray_queue();
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
@@ -3995,7 +4005,7 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     let id = t.identity();
                     if marker.is_marked_or_old(t.0) {
                         let to_mark = {
@@ -4140,9 +4150,9 @@ impl<'a> GcHandle<'a> {
         use lua_gc::{StepBudget, StepOutcome, Trace};
         let state_ref: &LuaState = &*self._state;
 
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
             let mut g = state_ref.global.borrow_mut();
-            g.weak_tables_registry.live_snapshot()
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         let pending_snapshot: Vec<FinalizerObject> = {
@@ -4181,7 +4191,7 @@ impl<'a> GcHandle<'a> {
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4208,7 +4218,7 @@ impl<'a> GcHandle<'a> {
                 marker.drain_gray_queue();
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4225,7 +4235,7 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     let id = t.identity();
                     if marker.is_visited(id) {
                         let to_mark = {
@@ -4301,9 +4311,9 @@ impl<'a> GcHandle<'a> {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
 
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
             let mut g = state_ref.global.borrow_mut();
-            g.weak_tables_registry.live_snapshot()
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4317,7 +4327,7 @@ impl<'a> GcHandle<'a> {
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4334,7 +4344,7 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     if marker.is_visited(t.identity()) {
                         let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
                         for v in &to_mark {

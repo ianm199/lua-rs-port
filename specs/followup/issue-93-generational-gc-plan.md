@@ -88,10 +88,12 @@ The current tree is no longer only startup/default scaffolding:
   hooks, but dedupe, dead weak-handle dropping, live snapshots,
   retain-by-live-identity, cohort moves/removal, and `T.gcstats()` telemetry
   (`weaklive`, `weakdead`, `weakretained`, `weakvalues`, `ephemeron`,
-  `allweak`) are centralized. `canary_n_testc_weak_registry.lua` pins that
-  rooted weak tables are snapshotted/retained, mode changes remove stale
-  registry entries, all three weak cohorts are populated, and weak-only entries
-  clear.
+  `allweak`) are centralized. Live snapshots now preserve the cohort split, so
+  atomic ephemeron convergence iterates only the ephemeron cohort while prune
+  processing still walks all weak cohorts. `canary_n_testc_weak_registry.lua`
+  pins that rooted weak tables are snapshotted/retained, mode changes remove
+  stale registry entries, all three weak cohorts are populated, and weak-only
+  entries clear.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
@@ -111,9 +113,9 @@ The real generational collector is still not complete:
   true intrusive `finobj`/`tobefnz` ownership split.
 - Weak/ephemeron handling is correct enough for the current gates. Weak-table
   registry mechanics and weak/ephemeron/all-weak cohort ownership are now
-  collector-owned, but mark/prune processing still runs through VM post-mark
-  hooks instead of fully collector-owned `weak` / `ephemeron` / `allweak`
-  phase processing.
+  collector-owned, and live snapshots preserve the split for phase-specific
+  iteration. Mark/prune processing still runs through VM post-mark hooks instead
+  of fully collector-owned `weak` / `ephemeron` / `allweak` phase processing.
 - `GlobalState.totalbytes` has been removed; `gettotalbytes` maps to
   collector-owned heap bytes through `GlobalState::total_bytes()`.
 

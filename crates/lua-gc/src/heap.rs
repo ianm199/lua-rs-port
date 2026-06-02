@@ -233,6 +233,40 @@ pub struct WeakRegistry<T: WeakEntry> {
     last_stats: WeakRegistryStats,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeakRegistrySnapshot<T> {
+    pub weak_values: Vec<T>,
+    pub ephemeron: Vec<T>,
+    pub all_weak: Vec<T>,
+}
+
+impl<T> Default for WeakRegistrySnapshot<T> {
+    fn default() -> Self {
+        Self {
+            weak_values: Vec::new(),
+            ephemeron: Vec::new(),
+            all_weak: Vec::new(),
+        }
+    }
+}
+
+impl<T> WeakRegistrySnapshot<T> {
+    pub fn len(&self) -> usize {
+        self.weak_values
+            .len()
+            .saturating_add(self.ephemeron.len())
+            .saturating_add(self.all_weak.len())
+    }
+
+    pub fn into_flat(self) -> Vec<T> {
+        self.weak_values
+            .into_iter()
+            .chain(self.ephemeron)
+            .chain(self.all_weak)
+            .collect()
+    }
+}
+
 impl<T: WeakEntry> Default for WeakRegistry<T> {
     fn default() -> Self {
         Self {
@@ -288,10 +322,10 @@ impl<T: WeakEntry> WeakRegistry<T> {
         self.update_cohort_stats();
     }
 
-    pub fn live_snapshot(&mut self) -> Vec<T::Strong> {
+    pub fn live_snapshot_by_kind(&mut self) -> WeakRegistrySnapshot<T::Strong> {
         let tracked_before = self.len();
         let mut seen = std::collections::HashSet::<usize>::new();
-        let mut live = Vec::new();
+        let mut live = WeakRegistrySnapshot::default();
         let mut dead = 0usize;
 
         let entries = std::mem::take(&mut self.weak_values)
@@ -304,7 +338,11 @@ impl<T: WeakEntry> WeakRegistry<T> {
             }
             match entry.upgrade() {
                 Some(strong) => {
-                    live.push(strong);
+                    match entry.list_kind() {
+                        WeakListKind::WeakValues => live.weak_values.push(strong),
+                        WeakListKind::Ephemeron => live.ephemeron.push(strong),
+                        WeakListKind::AllWeak => live.all_weak.push(strong),
+                    }
                     self.list_mut(entry.list_kind()).push(entry);
                 }
                 None => dead += 1,
@@ -321,6 +359,10 @@ impl<T: WeakEntry> WeakRegistry<T> {
             all_weak: self.all_weak.len(),
         };
         live
+    }
+
+    pub fn live_snapshot(&mut self) -> Vec<T::Strong> {
+        self.live_snapshot_by_kind().into_flat()
     }
 
     pub fn retain_identities(&mut self, ids: &std::collections::HashSet<usize>) {
