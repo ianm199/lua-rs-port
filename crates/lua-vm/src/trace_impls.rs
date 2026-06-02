@@ -185,7 +185,7 @@ impl Trace for GlobalState {
         // are awaiting their `__gc` call but are otherwise dead, and the
         // object (plus its descendants) must survive long enough for the
         // finalizer to run.
-        for object in self.to_be_finalized.iter() {
+        for object in self.finalizers.to_be_finalized().iter() {
             object.trace(m);
         }
 

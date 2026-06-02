@@ -144,6 +144,93 @@ impl FinalizerObject {
             FinalizerObject::UserData(u) => marker.mark(u.0),
         }
     }
+
+    pub fn heap_ptr(&self) -> Option<std::ptr::NonNull<lua_gc::GcBox<dyn lua_gc::Trace>>> {
+        Some(match self {
+            FinalizerObject::Table(t) => t.0.as_trace_ptr(),
+            FinalizerObject::UserData(u) => u.0.as_trace_ptr(),
+        })
+    }
+
+    pub fn age(&self) -> lua_gc::GcAge {
+        match self {
+            FinalizerObject::Table(t) => t.0.age(),
+            FinalizerObject::UserData(u) => u.0.age(),
+        }
+    }
+
+    pub fn is_finalized(&self) -> bool {
+        match self {
+            FinalizerObject::Table(t) => t.0.is_finalized(),
+            FinalizerObject::UserData(u) => u.0.is_finalized(),
+        }
+    }
+
+    pub fn set_finalized(&self, finalized: bool) {
+        match self {
+            FinalizerObject::Table(t) => t.0.set_finalized(finalized),
+            FinalizerObject::UserData(u) => u.0.set_finalized(finalized),
+        }
+    }
+}
+
+impl lua_gc::FinalizerEntry for FinalizerObject {
+    fn identity(&self) -> usize {
+        FinalizerObject::identity(self)
+    }
+
+    fn heap_ptr(&self) -> Option<std::ptr::NonNull<lua_gc::GcBox<dyn lua_gc::Trace>>> {
+        FinalizerObject::heap_ptr(self)
+    }
+
+    fn age(&self) -> lua_gc::GcAge {
+        FinalizerObject::age(self)
+    }
+
+    fn is_finalized(&self) -> bool {
+        FinalizerObject::is_finalized(self)
+    }
+
+    fn set_finalized(&self, finalized: bool) {
+        FinalizerObject::set_finalized(self, finalized);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WeakTableEntry {
+    table: lua_types::gc::GcWeak<LuaTable>,
+    kind: lua_gc::WeakListKind,
+}
+
+impl WeakTableEntry {
+    pub fn new(table: &GcRef<LuaTable>) -> Self {
+        let mode = table.weak_mode();
+        let weak_keys = (mode & (1 << 0)) != 0;
+        let weak_values = (mode & (1 << 1)) != 0;
+        let kind = match (weak_keys, weak_values) {
+            (true, true) => lua_gc::WeakListKind::AllWeak,
+            (true, false) => lua_gc::WeakListKind::Ephemeron,
+            (false, true) => lua_gc::WeakListKind::WeakValues,
+            (false, false) => lua_gc::WeakListKind::WeakValues,
+        };
+        Self { table: table.downgrade(), kind }
+    }
+}
+
+impl lua_gc::WeakEntry for WeakTableEntry {
+    type Strong = GcRef<LuaTable>;
+
+    fn identity(&self) -> usize {
+        self.table.identity()
+    }
+
+    fn list_kind(&self) -> lua_gc::WeakListKind {
+        self.kind
+    }
+
+    fn upgrade(&self) -> Option<Self::Strong> {
+        self.table.upgrade()
+    }
 }
 
 // ─── Constants (from macros.tsv) ──────────────────────────────────────────────
@@ -1188,9 +1275,6 @@ pub struct GlobalState {
     /// until process exit, which matches `libloading`'s safety model.
     pub dynlib_unload_hook: Option<DynLibUnloadHook>,
 
-    // types.tsv: global_State.totalbytes → isize
-    pub totalbytes: isize,
-
     /// Per-runtime sandbox budget shared across all threads. Inactive by
     /// default (`interval == 0`); see [`SandboxLimits`].
     pub sandbox: SandboxLimits,
@@ -1266,36 +1350,25 @@ pub struct GlobalState {
     /// values observed on the reference `lua5.5.0` binary.
     pub gc55_params: [i64; 6],
 
-    // Phase-D NOTE: the C-Lua intrusive GC lists (allgc, sweepgc, finobj,
-    // gray, grayagain, weak, ephemeron, allweak) were declared here as
+    // Phase-D NOTE: the old C-Lua intrusive GC list mirrors were declared here as
     // `Vec<GcRef<dyn Collectable>>` during Phase A but never populated or
-    // read. The real GC owns its own allgc chain inside `self.heap`
-    // (lua_gc::Heap). Removed during D-1e-prep to clear the `?Sized` blocker
-    // for swapping `GcRef<T> = Gc<T>` (Gc requires T: Sized for unsizing).
-    // sweepgc_cursor stayed because non-list bookkeeping kept it.
+    // read. The real GC owns its allgc/finobj/tobefnz/grayagain intrusive
+    // lists inside `self.heap` (lua_gc::Heap).
     pub sweepgc_cursor: usize,
 
     /// Cross-table weak-sweep registry.
     ///
     /// Heap collection snapshots this list before mark, then the post-mark
     /// weak-table pass clears entries whose weak target is held only by other
-    /// weak slots. The registry holds `GcWeak<LuaTable>` so it does not pin
+    /// weak slots. The registry holds weak table entries so it does not pin
     /// dead weak tables after sweep removes their heap allocation token.
     /// Replaced by proper `weak` / `ephemeron` / `allweak` cohorts once the
     /// Lua-style generational lists land.
-    pub weak_tables_registry: Vec<lua_types::gc::GcWeak<lua_types::value::LuaTable>>,
+    pub weak_tables_registry: lua_gc::WeakRegistry<WeakTableEntry>,
 
-    /// Finalizable tables and userdata whose metatable carried `__gc` when
-    /// installed. This mirrors C-Lua's `finobj` list: entries are deliberately
-    /// not traced as roots, so a mark phase can detect when an object is
-    /// reachable only through the finalizer registry.
-    pub pending_finalizers: Vec<FinalizerObject>,
-
-    /// Finalizable objects promoted by the most recent atomic mark phase
-    /// because they were otherwise unreachable. This mirrors C-Lua's
-    /// `tobefnz` list and is traced as a temporary root so the object survives
-    /// until its `__gc` call runs.
-    pub to_be_finalized: Vec<FinalizerObject>,
+    /// Typed handles for finalizable tables/userdata. The heap owns the
+    /// corresponding intrusive finobj/tobefnz list placement.
+    pub finalizers: lua_gc::FinalizerRegistry<FinalizerObject>,
 
     /// Error raised by a `__gc` finalizer during an explicit `collectgarbage`
     /// on 5.2 / 5.3, parked here for the `collectgarbage` wrapper to re-raise.
@@ -1309,10 +1382,9 @@ pub struct GlobalState {
     /// paths never do (matching `GCTM(L, 0)` and the dispatch-loop swallow).
     pub gc_finalizer_error: Option<LuaValue>,
 
-    // Phase-D NOTE: tobefnz + fixedgc removed (dead since Phase A — see
-    // sibling note above re allgc et al). Pending finalizers live in
-    // `pending_finalizers` above; fixed objects live in heap.allgc with the
-    // GC's own `fixed` bit.
+    // Phase-D NOTE: fixedgc removed (dead since Phase A — see sibling note
+    // above re allgc et al). Finalizable typed handles live in `finalizers`
+    // above; fixed objects live in heap.allgc with the GC's own `fixed` bit.
 
     // Generational cohort markers — Phase D only
     // types.tsv: global_State.survival/old1/reallyold/firstold1/finobjsur/finobjold1/finobjrold
@@ -1568,10 +1640,7 @@ impl GlobalState {
     ///
     /// macros.tsv: `keepinvariant → g.keep_invariant()`
     pub fn keep_invariant(&self) -> bool {
-        matches!(
-            self.heap.gc_state(),
-            lua_gc::GcState::Propagate | lua_gc::GcState::Atomic
-        )
+        self.heap.gc_state().is_invariant()
     }
 
     /// Returns `true` while the GC is in a sweep phase.
@@ -2620,7 +2689,9 @@ impl LuaState {
         for _ in 0..nupvals {
             upvals.push(std::cell::Cell::new(self.new_upval_closed(LuaValue::Nil)));
         }
-        GcRef::new(LuaClosureLua { proto, upvals })
+        let closure = GcRef::new(LuaClosureLua { proto, upvals });
+        closure.account_buffer(closure.buffer_bytes() as isize);
+        closure
     }
 
     /// Allocate a closed upvalue holding the given value.
@@ -2697,6 +2768,7 @@ impl LuaState {
             proto: child_proto.clone(),
             upvals,
         });
+        new_cl.account_buffer(new_cl.buffer_bytes() as isize);
         if cache_enabled {
             *child_proto.cache.borrow_mut() = Some(new_cl.clone());
         }
@@ -3267,7 +3339,7 @@ impl LuaState {
             return None;
         }
         let should_collect = g.heap.would_collect();
-        let has_finalizers = !g.to_be_finalized.is_empty();
+        let has_finalizers = g.finalizers.has_to_be_finalized();
         if should_collect || has_finalizers {
             Some((should_collect, has_finalizers))
         } else {
@@ -3280,7 +3352,7 @@ impl LuaState {
         if self.gc_check_needed {
             return true;
         }
-        if !self.global().to_be_finalized.is_empty() {
+        if self.global().finalizers.has_to_be_finalized() {
             self.gc_check_needed = true;
             return true;
         }
@@ -3313,7 +3385,7 @@ impl LuaState {
         }
         let should_keep_checking = {
             let g = self.global();
-            g.heap.would_collect() || !g.to_be_finalized.is_empty()
+            g.heap.would_collect() || g.finalizers.has_to_be_finalized()
         };
         self.gc_check_needed = should_keep_checking;
     }
@@ -3338,7 +3410,7 @@ impl LuaState {
         }
         let should_keep_checking = {
             let g = self.global();
-            g.heap.would_collect() || !g.to_be_finalized.is_empty()
+            g.heap.would_collect() || g.finalizers.has_to_be_finalized()
         };
         self.gc_check_needed = should_keep_checking;
     }
@@ -3468,6 +3540,8 @@ where
 {
     if generational && matches!(kind, BarrierKind::Forward) {
         heap.generational_forward_barrier(parent.0, child.0);
+    } else if matches!(kind, BarrierKind::Backward) {
+        heap.barrier_back(parent.0, child.0);
     } else {
         heap.barrier(parent.0, child.0);
     }
@@ -3573,7 +3647,58 @@ fn thread_entry_marked_alive(
     id: u64,
     entry: &ThreadRegistryEntry,
 ) -> bool {
-    marker.is_visited(entry.value.identity()) && entry.value.id == id
+    marker.is_marked_or_old(entry.value.0) && entry.value.id == id
+}
+
+fn lua_value_marked_or_old(marker: &lua_gc::Marker, value: &LuaValue) -> bool {
+    match value {
+        LuaValue::Str(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Table(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Function(LuaClosure::Lua(v)) => marker.is_marked_or_old(v.0),
+        LuaValue::Function(LuaClosure::C(v)) => marker.is_marked_or_old(v.0),
+        LuaValue::UserData(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Thread(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => true,
+    }
+}
+
+fn lua_value_identity(value: &LuaValue) -> Option<usize> {
+    match value {
+        LuaValue::Str(v) => Some(v.identity()),
+        LuaValue::Table(v) => Some(v.identity()),
+        LuaValue::Function(LuaClosure::Lua(v)) => Some(v.identity()),
+        LuaValue::Function(LuaClosure::C(v)) => Some(v.identity()),
+        LuaValue::UserData(v) => Some(v.identity()),
+        LuaValue::Thread(v) => Some(v.identity()),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => None,
+    }
+}
+
+fn finalizer_marked_or_old(marker: &lua_gc::Marker, object: &FinalizerObject) -> bool {
+    match object {
+        FinalizerObject::Table(t) => marker.is_marked_or_old(t.0),
+        FinalizerObject::UserData(u) => marker.is_marked_or_old(u.0),
+    }
+}
+
+fn weak_snapshot_tables<'a>(
+    snapshot: &'a lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>>,
+) -> impl Iterator<Item = &'a GcRef<LuaTable>> {
+    snapshot
+        .weak_values
+        .iter()
+        .chain(snapshot.ephemeron.iter())
+        .chain(snapshot.all_weak.iter())
 }
 
 fn close_open_upvalues_for_unreachable_threads(
@@ -3703,11 +3828,9 @@ impl<'a> GcHandle<'a> {
     }
 
     fn enter_incremental_mode(&self) {
-        {
-            let g = self._state.global();
-            g.heap.reset_all_ages();
-        }
         let mut g = self._state.global_mut();
+        g.heap.reset_all_ages();
+        g.finalizers.reset_generation_boundaries();
         g.gckind = GcKind::Incremental as u8;
         g.lastatomic = 0;
     }
@@ -3715,8 +3838,9 @@ impl<'a> GcHandle<'a> {
     fn enter_generational_mode(&self) -> usize {
         self.collect_via_heap_mode(HeapCollectMode::Full);
         let numobjs = {
-            let g = self._state.global();
+            let mut g = self._state.global_mut();
             g.heap.promote_all_to_old();
+            g.finalizers.promote_all_pending_to_old();
             g.heap.allgc_count()
         };
         let total = self._state.global().total_bytes();
@@ -3743,8 +3867,9 @@ impl<'a> GcHandle<'a> {
         let newatomic = self._state.global().heap.allgc_count().max(1);
         if newatomic < lastatomic.saturating_add(lastatomic >> 3) {
             {
-                let g = self._state.global();
+                let mut g = self._state.global_mut();
                 g.heap.promote_all_to_old();
+                g.finalizers.promote_all_pending_to_old();
             }
             let total = self._state.global().total_bytes();
             {
@@ -3756,8 +3881,9 @@ impl<'a> GcHandle<'a> {
             self.set_minor_debt();
         } else {
             {
-                let g = self._state.global();
+                let mut g = self._state.global_mut();
                 g.heap.reset_all_ages();
+                g.finalizers.reset_generation_boundaries();
             }
             let total = self._state.global().total_bytes();
             {
@@ -3805,14 +3931,9 @@ impl<'a> GcHandle<'a> {
         // Snapshot weak tables BEFORE the collect. `identity()` reads only
         // the pointer address — safe even on still-dangling weak handles —
         // and dedup by identity keeps the iteration linear.
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
-            let g = state_ref.global.borrow();
-            let mut seen = std::collections::HashSet::<usize>::new();
-            g.weak_tables_registry
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .filter(|t| seen.insert(t.identity()))
-                .collect()
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
+            let mut g = state_ref.global.borrow_mut();
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         // Snapshot pending finalizers. `GlobalState::trace` deliberately
@@ -3821,13 +3942,18 @@ impl<'a> GcHandle<'a> {
         // alive by the finalizer registry."
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.pending_finalizers.clone()
+            match mode {
+                HeapCollectMode::Minor => g.finalizers.pending_minor_snapshot(),
+                HeapCollectMode::Full | HeapCollectMode::Step => g.finalizers.pending_snapshot(),
+            }
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
+        let finalizing_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -3844,13 +3970,12 @@ impl<'a> GcHandle<'a> {
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
-                        let t_id = t.identity();
-                        if !marker.is_visited(t_id) {
+                    for t in &weak_tables_snapshot.ephemeron {
+                        if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
+                        let to_mark = t.ephemeron_values_to_mark_with_value(
+                            &|v| lua_value_marked_or_old(marker, v),
                         );
                         for v in &to_mark {
                             v.trace(marker);
@@ -3862,21 +3987,21 @@ impl<'a> GcHandle<'a> {
                     }
                 }
                 for pf in &pending_snapshot {
-                    if !marker.is_visited(pf.identity()) {
+                    if !finalizer_marked_or_old(marker, pf) {
                         pf.mark(marker);
+                        finalizing_ids.borrow_mut().insert(pf.identity());
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
                 marker.drain_gray_queue();
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
-                        let t_id = t.identity();
-                        if !marker.is_visited(t_id) {
+                    for t in &weak_tables_snapshot.ephemeron {
+                        if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
+                        let to_mark = t.ephemeron_values_to_mark_with_value(
+                            &|v| lua_value_marked_or_old(marker, v),
                         );
                         for v in &to_mark {
                             v.trace(marker);
@@ -3887,10 +4012,20 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     let id = t.identity();
-                    if marker.is_visited(id) {
-                        let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
+                    if marker.is_marked_or_old(t.0) {
+                        let to_mark = {
+                            let finalizing = finalizing_ids.borrow();
+                            t.prune_weak_dead_with_value(
+                                &|v| lua_value_marked_or_old(marker, v),
+                                &|v| {
+                                    lua_value_marked_or_old(marker, v)
+                                        && lua_value_identity(v)
+                                            .map_or(true, |id| !finalizing.contains(&id))
+                                },
+                            )
+                        };
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -3924,14 +4059,11 @@ impl<'a> GcHandle<'a> {
         // handles whose target can no longer upgrade.
         let alive_set = alive_ids.into_inner();
         let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
-        let promote_ids: std::collections::HashSet<usize> =
-            promote.iter().map(|t| t.identity()).collect();
         let alive_thread_ids = alive_thread_ids.into_inner();
         let live_interned_ids = live_interned_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
         retain_live_interned_strings(&mut *g, &live_interned_ids);
-        g.weak_tables_registry
-            .retain(|w| alive_set.contains(&w.identity()));
+        g.weak_tables_registry.retain_identities(&alive_set);
         let main_thread_id = g.main_thread_id;
         g.threads.retain(|id, _| alive_thread_ids.contains(id));
         g.cross_thread_upvals
@@ -3939,13 +4071,32 @@ impl<'a> GcHandle<'a> {
         // Move newly-unreachable finalizables from `pending_finalizers` to
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
-        g.pending_finalizers
-            .retain(|t| !promote_ids.contains(&t.identity()));
-        g.to_be_finalized.extend(promote);
+        let promoted = g.finalizers.promote_pending_to_finalized(promote);
+        for object in &promoted {
+            if let Some(ptr) = object.heap_ptr() {
+                g.heap.move_finobj_to_tobefnz(ptr);
+            }
+        }
+        if matches!(mode, HeapCollectMode::Minor) {
+            g.finalizers.finish_minor_collection();
+        }
     }
 
     /// Run one generational collection step.
     pub fn generational_step(&self) -> bool {
+        self.generational_step_with_major(true)
+    }
+
+    /// Run a generational step forced to the regular minor path.
+    ///
+    /// Used for `collectgarbage("step", 0)`: upstream `genstep` treats
+    /// `GCdebt <= 0` as an explicit zero-size step and performs a minor
+    /// collection, unless a previous bad major has already armed `lastatomic`.
+    pub fn generational_step_minor_only(&self) -> bool {
+        self.generational_step_with_major(false)
+    }
+
+    fn generational_step_with_major(&self, allow_major: bool) -> bool {
         let (lastatomic, majorbase, majorinc, should_major) = {
             let g = self._state.global();
             let majorbase = if g.gc_estimate == 0 {
@@ -3955,7 +4106,9 @@ impl<'a> GcHandle<'a> {
             };
             let majormul = g.gc_genmajormul_param().max(0) as usize;
             let majorinc = (majorbase / 100).saturating_mul(majormul);
-            let should_major = g.gc_debt() > 0
+            let debt_due = g.gc_debt() > 0 || g.heap.would_collect();
+            let should_major = allow_major
+                && debt_due
                 && g.total_bytes() > majorbase.saturating_add(majorinc);
             (g.lastatomic, majorbase, majorinc, should_major)
         };
@@ -4024,30 +4177,36 @@ impl<'a> GcHandle<'a> {
         use lua_gc::{StepBudget, StepOutcome, Trace};
         let state_ref: &LuaState = &*self._state;
 
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
-            let g = state_ref.global.borrow();
-            let mut seen = std::collections::HashSet::<usize>::new();
-            g.weak_tables_registry
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .filter(|t| seen.insert(t.identity()))
-                .collect()
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
+            let mut g = state_ref.global.borrow_mut();
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.pending_finalizers.clone()
+            g.finalizers.pending_snapshot()
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
+        let finalizing_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let atomic_ran = std::cell::Cell::new(false);
+
+        let stop_target = {
+            let g = state_ref.global.borrow();
+            match (target, g.heap.gc_state()) {
+                (Some(target), _) => Some(target),
+                (None, lua_gc::GcState::CallFin) => None,
+                (None, _) => Some(lua_gc::GcState::CallFin),
+            }
+        };
 
         let outcome = {
             let global = state_ref.global.borrow();
@@ -4059,7 +4218,7 @@ impl<'a> GcHandle<'a> {
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4079,13 +4238,14 @@ impl<'a> GcHandle<'a> {
                 for pf in &pending_snapshot {
                     if !marker.is_visited(pf.identity()) {
                         pf.mark(marker);
+                        finalizing_ids.borrow_mut().insert(pf.identity());
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
                 marker.drain_gray_queue();
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4102,10 +4262,16 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     let id = t.identity();
                     if marker.is_visited(id) {
-                        let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
+                        let to_mark = {
+                            let finalizing = finalizing_ids.borrow();
+                            t.prune_weak_dead_with(
+                                &|id| marker.is_visited(id),
+                                &|id| marker.is_visited(id) && !finalizing.contains(&id),
+                            )
+                        };
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4124,7 +4290,7 @@ impl<'a> GcHandle<'a> {
                 record_live_interned_strings(&*global, marker, &live_interned_ids);
             };
             let budget = StepBudget::from_work(work_units);
-            if let Some(target) = target {
+            if let Some(target) = stop_target {
                 global.heap.incremental_run_until_state_with_post_mark(
                     &roots,
                     target,
@@ -4139,24 +4305,32 @@ impl<'a> GcHandle<'a> {
         if atomic_ran.get() {
             let alive_set = alive_ids.into_inner();
             let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
-            let promote_ids: std::collections::HashSet<usize> =
-                promote.iter().map(|t| t.identity()).collect();
             let alive_thread_ids = alive_thread_ids.into_inner();
             let live_interned_ids = live_interned_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
             retain_live_interned_strings(&mut *g, &live_interned_ids);
-            g.weak_tables_registry
-                .retain(|w| alive_set.contains(&w.identity()));
+            g.weak_tables_registry.retain_identities(&alive_set);
             let main_thread_id = g.main_thread_id;
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals
                 .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
-            g.pending_finalizers
-                .retain(|t| !promote_ids.contains(&t.identity()));
-            g.to_be_finalized.extend(promote);
+            let promoted = g.finalizers.promote_pending_to_finalized(promote);
+            for object in &promoted {
+                if let Some(ptr) = object.heap_ptr() {
+                    g.heap.move_finobj_to_tobefnz(ptr);
+                }
+            }
         }
 
-        matches!(outcome, StepOutcome::Paused)
+        let mut paused = matches!(outcome, StepOutcome::Paused);
+        if target.is_none()
+            && self._state.global().heap.gc_state() == lua_gc::GcState::CallFin
+            && !self._state.global().finalizers.has_to_be_finalized()
+        {
+            paused = self._state.global().heap.finish_callfin_phase();
+        }
+
+        paused
     }
 
     /// Run only the weak-table atomic cleanup used by legacy generational
@@ -4169,14 +4343,9 @@ impl<'a> GcHandle<'a> {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
 
-        let weak_tables_snapshot: Vec<lua_types::gc::GcRef<lua_types::value::LuaTable>> = {
-            let g = state_ref.global.borrow();
-            let mut seen = std::collections::HashSet::<usize>::new();
-            g.weak_tables_registry
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .filter(|t| seen.insert(t.identity()))
-                .collect()
+        let weak_tables_snapshot: lua_gc::WeakRegistrySnapshot<GcRef<LuaTable>> = {
+            let mut g = state_ref.global.borrow_mut();
+            g.weak_tables_registry.live_snapshot_by_kind()
         };
 
         let live_interned_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4190,7 +4359,7 @@ impl<'a> GcHandle<'a> {
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
                 loop {
                     let visited_before = marker.visited_count();
-                    for t in &weak_tables_snapshot {
+                    for t in &weak_tables_snapshot.ephemeron {
                         let t_id = t.identity();
                         if !marker.is_visited(t_id) {
                             continue;
@@ -4207,7 +4376,7 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
-                for t in &weak_tables_snapshot {
+                for t in weak_snapshot_tables(&weak_tables_snapshot) {
                     if marker.is_visited(t.identity()) {
                         let to_mark = t.prune_weak_dead(&|id| marker.is_visited(id));
                         for v in &to_mark {
@@ -4318,8 +4487,8 @@ fn make_seed() -> u32 {
     }
 }
 
-/// Adjust the compatibility `GCdebt` split while preserving the collector's
-/// current total byte count in the shadow `totalbytes` field.
+/// Adjust the compatibility `GCdebt` value against the collector-owned live
+/// byte count.
 ///
 ///
 /// ```c
@@ -4328,7 +4497,6 @@ fn make_seed() -> u32 {
 /// //   lua_assert(tb > 0);
 /// //   if (debt < tb - MAX_LMEM)
 /// //     debt = tb - MAX_LMEM;
-/// //   g->totalbytes = tb - debt;
 /// //   g->GCdebt = debt;
 /// // }
 /// ```
@@ -4339,7 +4507,6 @@ pub(crate) fn set_debt(g: &mut GlobalState, mut debt: isize) {
     if debt < tb.saturating_sub(isize::MAX) {
         debt = tb - isize::MAX;
     }
-    g.totalbytes = tb - debt;
     g.gc_debt = debt;
 }
 
@@ -4993,7 +5160,6 @@ pub fn new_state() -> Option<LuaState> {
         dynlib_load_hook: None,
         dynlib_symbol_hook: None,
         dynlib_unload_hook: None,
-        totalbytes: std::mem::size_of::<GlobalState>() as isize,
         sandbox: SandboxLimits::default(),
         gc_debt: 0,
         gc_estimate: 0,
@@ -5022,9 +5188,8 @@ pub fn new_state() -> Option<LuaState> {
         // [minormul, majorminor, minormajor, pause, stepmul, stepsize].
         gc55_params: [20, 50, 68, 250, 200, 9600],
         sweepgc_cursor: 0,
-        weak_tables_registry: Vec::new(),
-        pending_finalizers: Vec::new(),
-        to_be_finalized: Vec::new(),
+        weak_tables_registry: lua_gc::WeakRegistry::default(),
+        finalizers: lua_gc::FinalizerRegistry::default(),
         gc_finalizer_error: None,
         twups: Vec::new(),
         panic: None,
@@ -5362,6 +5527,116 @@ mod tests {
     }
 
     #[test]
+    fn userdata_buffer_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let payload_len = 4096;
+        let userdata = state
+            .new_userdata_typed(b"accounting", payload_len, 3)
+            .expect("userdata allocation should succeed");
+        state.pop_n(1);
+        let key = state.external_root_value(LuaValue::UserData(userdata));
+        let allocated_bytes = state.global().heap.bytes_used();
+        assert!(
+            allocated_bytes > payload_len,
+            "userdata payload bytes must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            allocated_bytes,
+            "rooted userdata payload bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn cclosure_upvalue_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let nupvalues = 64;
+        for i in 0..nupvalues {
+            state.push(LuaValue::Int(i as i64));
+        }
+        crate::api::push_cclosure(&mut state, test_noop_cclosure, nupvalues as i32)
+            .expect("C closure creation should succeed");
+        let LuaValue::Function(LuaClosure::C(ccl)) = state.get_at(state.top_idx() - 1) else {
+            panic!("expected heavy C closure");
+        };
+        let expected_payload = ccl.buffer_bytes();
+        let key = state.external_root_value(LuaValue::Function(LuaClosure::C(ccl)));
+        state.pop_n(1);
+        let allocated_bytes = state.global().heap.bytes_used();
+        assert!(
+            allocated_bytes >= expected_payload,
+            "C closure upvalue vector bytes must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            allocated_bytes,
+            "rooted C closure payload bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
+    fn proto_and_lclosure_accounting_refunds_on_sweep() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let mut proto = LuaProto::placeholder();
+        proto.code = vec![lua_types::opcode::Instruction(0); 2048];
+        proto.lineinfo = vec![0; 2048];
+        proto.k = vec![LuaValue::Int(1); 512];
+        let expected_proto_payload = proto.buffer_bytes();
+        let proto = GcRef::new(proto);
+        proto.account_buffer(expected_proto_payload as isize);
+
+        let closure = state.new_lclosure(proto, 16);
+        let expected_closure_payload = closure.buffer_bytes();
+        let key = state.external_root_value(LuaValue::Function(LuaClosure::Lua(closure)));
+        let allocated_bytes = state.global().heap.bytes_used();
+        assert!(
+            allocated_bytes >= expected_proto_payload + expected_closure_payload,
+            "proto and Lua closure vector bytes must be charged to the GC heap"
+        );
+
+        state.gc().full_collect();
+        assert_eq!(
+            state.global().heap.bytes_used(),
+            allocated_bytes,
+            "rooted proto and Lua closure payload bytes should remain charged after collection"
+        );
+
+        assert!(state.external_unroot_value(key).is_some());
+        state.gc().full_collect();
+        assert_eq!(state.global().heap.bytes_used(), 0);
+        assert_eq!(state.global().heap.allgc_count(), 0);
+    }
+
+    #[test]
     fn string_buffer_accounting_refunds_on_sweep() {
         let mut state = new_state().expect("state should initialize");
         let _heap_guard = {
@@ -5469,7 +5744,7 @@ mod tests {
             let heap_state = g.heap.gc_state();
             assert_eq!(
                 g.keep_invariant(),
-                matches!(heap_state, lua_gc::GcState::Propagate | lua_gc::GcState::Atomic)
+                heap_state.is_invariant()
             );
             assert_eq!(g.is_sweep_phase(), heap_state.is_sweep());
             saw_keep |= g.keep_invariant();
@@ -5563,7 +5838,7 @@ mod tests {
         state.gc().obj_barrier(&parent, &metatable);
         assert_eq!(metatable.0.age(), lua_gc::GcAge::Old0);
 
-        assert!(state.gc().generational_step());
+        assert!(state.gc().generational_step_minor_only());
         assert_eq!(parent.0.age(), lua_gc::GcAge::Touched2);
         assert_eq!(child.0.age(), lua_gc::GcAge::Survival);
         assert_eq!(metatable.0.age(), lua_gc::GcAge::Old1);
@@ -5788,6 +6063,49 @@ mod tests {
         assert!(g.gc_estimate > 1);
         assert!(g.gc_debt() <= 0);
         assert_eq!(root.0.age(), lua_gc::GcAge::Old);
+        drop(g);
+
+        assert!(state.external_unroot_value(root_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn generational_implicit_step_runs_major_when_heap_threshold_exceeded() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let root = state.new_table();
+        let root_key = state.external_root_value(LuaValue::Table(root));
+        state.gc().change_mode(GcKind::Generational);
+
+        let root_value = LuaValue::Table(root);
+        for i in 1..=64 {
+            let child = state.new_table();
+            let child_value = LuaValue::Table(child);
+            root
+                .raw_set_int(&mut state, i, child_value.clone())
+                .expect("table store should succeed");
+            state.gc_barrier_back(&root_value, &child_value);
+        }
+
+        {
+            let mut g = state.global_mut();
+            g.gc_estimate = 1;
+            set_debt(&mut *g, -1);
+            g.heap.set_threshold_bytes(1);
+        }
+
+        assert!(state.gc().generational_step());
+        let g = state.global();
+        assert!(g.is_gen_mode());
+        assert!(
+            g.lastatomic > 0,
+            "implicit threshold-triggered growth should arm a bad major"
+        );
+        assert!(g.gc_debt() <= 0);
         drop(g);
 
         assert!(state.external_unroot_value(root_key).is_some());

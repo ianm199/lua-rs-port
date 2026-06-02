@@ -801,10 +801,14 @@ fn parser_hook(
     for _ in 0..nupvals {
         upvals.push(std::cell::Cell::new(GcRef::new(UpVal::closed(LuaValue::Nil))));
     }
-    Ok(GcRef::new(LuaLClosure {
-        proto: GcRef::new(*proto),
+    let proto_ref = GcRef::new(*proto);
+    proto_ref.account_buffer(proto_ref.buffer_bytes() as isize);
+    let closure = GcRef::new(LuaLClosure {
+        proto: proto_ref,
         upvals,
-    }))
+    });
+    closure.account_buffer(closure.buffer_bytes() as isize);
+    Ok(closure)
 }
 
 fn testc_push_string(state: &mut LuaState, bytes: &[u8]) -> Result<(), LuaError> {
@@ -882,18 +886,26 @@ fn testc_gc_state_name(gc_state: lua_gc::GcState) -> &'static [u8] {
     match gc_state {
         lua_gc::GcState::Pause => b"pause",
         lua_gc::GcState::Propagate => b"propagate",
-        lua_gc::GcState::Atomic => b"atomic",
-        lua_gc::GcState::Sweep => b"sweepallgc",
-        lua_gc::GcState::Finalize => b"callfin",
+        lua_gc::GcState::EnterAtomic => b"atomic",
+        lua_gc::GcState::Atomic => b"enteratomic",
+        lua_gc::GcState::SweepAllGc => b"sweepallgc",
+        lua_gc::GcState::SweepFinObj => b"sweepfinobj",
+        lua_gc::GcState::SweepToBeFnz => b"sweeptobefnz",
+        lua_gc::GcState::SweepEnd => b"sweepend",
+        lua_gc::GcState::CallFin => b"callfin",
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestcGcState {
     Propagate,
+    EnterAtomic,
     Atomic,
-    Sweep,
-    Finalize,
+    SweepAllGc,
+    SweepFinObj,
+    SweepToBeFnz,
+    SweepEnd,
+    CallFin,
     Pause,
 }
 
@@ -901,9 +913,13 @@ impl TestcGcState {
     fn heap_state(self) -> lua_gc::GcState {
         match self {
             TestcGcState::Propagate => lua_gc::GcState::Propagate,
+            TestcGcState::EnterAtomic => lua_gc::GcState::EnterAtomic,
             TestcGcState::Atomic => lua_gc::GcState::Atomic,
-            TestcGcState::Sweep => lua_gc::GcState::Sweep,
-            TestcGcState::Finalize => lua_gc::GcState::Finalize,
+            TestcGcState::SweepAllGc => lua_gc::GcState::SweepAllGc,
+            TestcGcState::SweepFinObj => lua_gc::GcState::SweepFinObj,
+            TestcGcState::SweepToBeFnz => lua_gc::GcState::SweepToBeFnz,
+            TestcGcState::SweepEnd => lua_gc::GcState::SweepEnd,
+            TestcGcState::CallFin => lua_gc::GcState::CallFin,
             TestcGcState::Pause => lua_gc::GcState::Pause,
         }
     }
@@ -912,11 +928,13 @@ impl TestcGcState {
 fn testc_gc_state_target(bytes: &[u8]) -> Option<TestcGcState> {
     match bytes {
         b"propagate" => Some(TestcGcState::Propagate),
-        b"atomic" | b"enteratomic" => Some(TestcGcState::Atomic),
-        b"sweepallgc" | b"sweepfinobj" | b"sweeptobefnz" | b"sweepend" => {
-            Some(TestcGcState::Sweep)
-        }
-        b"callfin" => Some(TestcGcState::Finalize),
+        b"atomic" => Some(TestcGcState::EnterAtomic),
+        b"enteratomic" => Some(TestcGcState::Atomic),
+        b"sweepallgc" => Some(TestcGcState::SweepAllGc),
+        b"sweepfinobj" => Some(TestcGcState::SweepFinObj),
+        b"sweeptobefnz" => Some(TestcGcState::SweepToBeFnz),
+        b"sweepend" => Some(TestcGcState::SweepEnd),
+        b"callfin" => Some(TestcGcState::CallFin),
         b"pause" => Some(TestcGcState::Pause),
         b"" => None,
         _ => None,
@@ -1063,12 +1081,36 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         debt,
         threshold,
         allgc,
+        allgc_cohorts,
         collections,
+        minor_collections,
+        full_collections,
         weak,
+        weaklive,
+        weakdead,
+        weakretained,
+        weakvalues,
+        ephemeron,
+        allweak,
+        grayagain,
         pendingfin,
         tobefin,
+        pendingfinyoung,
+        pendingfinold,
+        tobefinyoung,
+        tobefinold,
+        finobjnew,
+        finobjsur,
+        finobjold1,
+        finobjrold,
+        finobjscan,
+        markstats,
+        sweepstats,
     ) = {
         let g = state.global();
+        let finstats = g.finalizers.stats();
+        let weakstats = g.weak_tables_registry.stats();
+        let allgc_cohorts = g.heap.allgc_cohort_stats();
         (
             if g.is_gen_mode() { "generational" } else { "incremental" },
             String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
@@ -1076,10 +1118,31 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
             g.gc_debt(),
             g.heap.threshold_bytes(),
             g.heap.allgc_count(),
+            allgc_cohorts,
             g.heap.collections(),
+            g.heap.minor_collections(),
+            g.heap.full_collections(),
             g.weak_tables_registry.len(),
-            g.pending_finalizers.len(),
-            g.to_be_finalized.len(),
+            weakstats.snapshot_live,
+            weakstats.snapshot_dead,
+            weakstats.retained,
+            weakstats.weak_values,
+            weakstats.ephemeron,
+            weakstats.all_weak,
+            g.heap.grayagain_count(),
+            g.finalizers.pending_len(),
+            g.finalizers.to_be_finalized_len(),
+            finstats.pending_young,
+            finstats.pending_old,
+            finstats.to_be_finalized_young,
+            finstats.to_be_finalized_old,
+            finstats.finobj_new,
+            finstats.finobj_survival,
+            finstats.finobj_old1,
+            finstats.finobj_reallyold,
+            finstats.finobj_minor_scan,
+            g.heap.last_mark_stats(),
+            g.heap.last_sweep_stats(),
         )
     };
     let tables = testc_type_count(state, b"table")?;
@@ -1088,17 +1151,51 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
     let userdata = testc_type_count(state, b"userdata")?;
     let strings = testc_type_count(state, b"string")?;
     let stats = format!(
-        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} tables={} functions={} threads={} userdata={} strings={}",
+        "mode={} state={} bytes={} debt={} threshold={} allgc={} allgcnew={} allgcsurvival={} allgcold1={} allgcold={} collections={} minorcollections={} fullcollections={} weak={} weaklive={} weakdead={} weakretained={} weakvalues={} ephemeron={} allweak={} grayagain={} pendingfin={} tobefin={} pendingfinyoung={} pendingfinold={} tobefinyoung={} tobefinold={} finobjnew={} finobjsur={} finobjold1={} finobjrold={} finobjscan={} marked={} markedyoung={} markedold={} traced={} tracedyoung={} tracedold={} sweepvisited={} sweepvisitedyoung={} sweepvisitedold={} sweeprevisit={} sweepfreed={} sweepfreedbytes={} tables={} functions={} threads={} userdata={} strings={}",
         mode,
         gc_state,
         bytes,
         debt,
         threshold,
         allgc,
+        allgc_cohorts.new,
+        allgc_cohorts.survival,
+        allgc_cohorts.old1,
+        allgc_cohorts.old,
         collections,
+        minor_collections,
+        full_collections,
         weak,
+        weaklive,
+        weakdead,
+        weakretained,
+        weakvalues,
+        ephemeron,
+        allweak,
+        grayagain,
         pendingfin,
         tobefin,
+        pendingfinyoung,
+        pendingfinold,
+        tobefinyoung,
+        tobefinold,
+        finobjnew,
+        finobjsur,
+        finobjold1,
+        finobjrold,
+        finobjscan,
+        markstats.marked,
+        markstats.marked_young,
+        markstats.marked_old,
+        markstats.traced,
+        markstats.traced_young,
+        markstats.traced_old,
+        sweepstats.visited,
+        sweepstats.visited_young,
+        sweepstats.visited_old,
+        sweepstats.revisit,
+        sweepstats.freed,
+        sweepstats.freed_bytes,
         tables,
         functions,
         threads,

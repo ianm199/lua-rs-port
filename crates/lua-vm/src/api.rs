@@ -10,7 +10,7 @@
 use std::convert::Infallible;
 #[allow(unused_imports)] use crate::prelude::*;
 
-use crate::state::{FinalizerObject, LuaState, LuaCFunction, LuaCallable, StackIdx,
+use crate::state::{FinalizerObject, LuaState, LuaCFunction, LuaCallable, StackIdx, WeakTableEntry,
     LuaValueExt, LuaTypeExt, StackIdxExt,
     LuaTableRefExt, LuaUserDataRefExt};
 use lua_types::{
@@ -836,6 +836,7 @@ impl LuaState {
             metatable: std::cell::RefCell::new(None),
             host_value: std::cell::RefCell::new(None),
         });
+        u.account_buffer(u.buffer_bytes() as isize);
         self.push(LuaValue::UserData(u.clone()));
         self.gc().check_step();
         Ok(u)
@@ -1162,6 +1163,9 @@ pub fn push_cclosure(
             func: idx,
             upvalues: std::cell::RefCell::new(upvalues),
         }));
+        if let LuaClosure::C(ccl) = &cl {
+            ccl.account_buffer(ccl.buffer_bytes() as isize);
+        }
         state.push(LuaValue::Function(cl));
         state.gc().check_step();
     }
@@ -1452,14 +1456,12 @@ fn metatable_has_gc(state: &LuaState, mt: &GcRef<LuaTable>) -> bool {
 }
 
 fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
-    let id = object.identity();
-    let already = state
-        .global()
-        .pending_finalizers
-        .iter()
-        .any(|o| o.identity() == id);
-    if !already {
-        state.global_mut().pending_finalizers.push(object);
+    let heap_ptr = object.heap_ptr();
+    let mut g = state.global_mut();
+    if g.finalizers.push_pending_unique(object) {
+        if let Some(ptr) = heap_ptr {
+            g.heap.move_allgc_to_finobj(ptr);
+        }
     }
 }
 
@@ -1468,6 +1470,8 @@ fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
 pub fn run_pending_finalizers(state: &mut LuaState) {
     let _ = run_pending_finalizers_inner(state, false);
 }
+
+const GC_FIN_MAX: usize = 10;
 
 /// `__gc` driver that mirrors C-Lua's `GCTM(L, propagateerrors)`.
 ///
@@ -1492,17 +1496,33 @@ pub fn run_pending_finalizers_inner(
     state: &mut LuaState,
     propagate: bool,
 ) -> Result<(), LuaError> {
+    run_pending_finalizers_limited(state, propagate, None).map(|_| ())
+}
+
+pub(crate) fn run_some_pending_finalizers_inner(
+    state: &mut LuaState,
+    propagate: bool,
+) -> Result<usize, LuaError> {
+    run_pending_finalizers_limited(state, propagate, Some(GC_FIN_MAX))
+}
+
+fn run_pending_finalizers_limited(
+    state: &mut LuaState,
+    propagate: bool,
+    limit: Option<usize>,
+) -> Result<usize, LuaError> {
     let version = state.global().lua_version;
-    let mut did_run = false;
+    let mut processed = 0usize;
     loop {
-        // `to_be_finalized` was populated by the most recent mark phase.
-        // Drain in LIFO order so the most recently dead object runs its `__gc`
-        // first, matching C-Lua's `finobj`/`tobefnz` ordering.
-        let target_idx = {
-            let to_fin = &state.global().to_be_finalized;
-            if to_fin.is_empty() { None } else { Some(to_fin.len() - 1) }
-        };
-        let Some(i) = target_idx else { break; };
+        if limit.map_or(false, |limit| processed >= limit) {
+            break;
+        }
+        // `to_be_finalized` is stored in tobefnz head order. Newly unreachable
+        // objects are appended behind any older queued finalizers, matching
+        // C-Lua's `finobj`/`tobefnz` ordering.
+        if !state.global().finalizers.has_to_be_finalized() {
+            break;
+        }
         // The Phase-A pre-finalizer weak-value sweep (mirroring C-Lua's
         // `clearbyvalues(g, g->weak, NULL)` from `atomic()`) is no longer
         // needed: under D-2, weak-table sweeping runs inside the post-mark
@@ -1512,7 +1532,18 @@ pub fn run_pending_finalizers_inner(
         // ordering (finalizer-visible state) still requires reachability-
         // based detection of which finalizable tables are about to die — a
         // gap tracked under D-2 ephemeron/finalizer follow-up.
-        let object = state.global_mut().to_be_finalized.swap_remove(i);
+        let object = {
+            let mut g = state.global_mut();
+            let object = g
+                .finalizers
+                .pop_to_be_finalized()
+                .expect("to-be-finalized checked non-empty");
+            if let Some(ptr) = object.heap_ptr() {
+                g.heap.move_tobefnz_to_allgc(ptr);
+            }
+            object
+        };
+        processed += 1;
         let mt = object.metatable();
         let gc_fn = match mt {
             Some(ref m) => {
@@ -1524,7 +1555,6 @@ pub fn run_pending_finalizers_inner(
         if !matches!(gc_fn, LuaValue::Function(_)) {
             continue;
         }
-        did_run = true;
         let saved_top = state.top_idx();
         let ci_top = state.current_call_info().top;
         if saved_top.0 < ci_top.0 {
@@ -1604,8 +1634,7 @@ pub fn run_pending_finalizers_inner(
     // Post-finalizer weak sweep is also obsolete: any weak entries newly
     // exposed by the finalizer pass will be cleared on the NEXT
     // `Heap::full_collect_with_post_mark`. We accept the one-cycle lag.
-    let _ = did_run;
-    Ok(())
+    Ok(processed)
 }
 
 /// Run every still-pending `__gc` finalizer at state close.
@@ -1618,25 +1647,29 @@ pub fn run_pending_finalizers_inner(
 /// e.g. a table held by a global — still have their finalizer run; that is
 /// what emits messages like `>>> closing state <<<` from `gc.lua`.
 ///
-/// Phase-B note: the live registry of finalizable objects is
-    /// `pending_finalizers`. A single snapshot of that list is promoted into
-    /// `to_be_finalized` and drained by [`run_pending_finalizers`]. We snapshot
+/// The typed registry of finalizable objects is `pending_finalizers`. A single
+/// snapshot of that list is promoted into `to_be_finalized` and drained by
+/// [`run_pending_finalizers`]. We snapshot
 /// once (matching C's single `separatetobefnz` call): a finalizer may
 /// resurrect its object or register new finalizables via `setmetatable`, but
 /// C does not re-finalize those at close (`gcstp = GCSTPCLS`), so neither do
 /// we — the freshly-registered entries are left in `pending_finalizers` and
 /// simply dropped with the state.
 pub fn run_close_finalizers(state: &mut LuaState) {
-    let pending: Vec<FinalizerObject> = std::mem::take(&mut state.global_mut().pending_finalizers);
+    let pending: Vec<FinalizerObject> = state.global_mut().finalizers.take_pending();
     if pending.is_empty() {
         return;
     }
     let mut seen = std::collections::HashSet::<usize>::new();
     {
         let mut g = state.global_mut();
-        for object in pending {
+        for object in pending.into_iter().rev() {
+            let heap_ptr = object.heap_ptr();
             if seen.insert(object.identity()) {
-                g.to_be_finalized.push(object);
+                g.finalizers.push_to_be_finalized(object);
+                if let Some(ptr) = heap_ptr {
+                    g.heap.move_finobj_to_tobefnz(ptr);
+                }
             }
         }
     }
@@ -1650,20 +1683,7 @@ pub fn run_close_finalizers(state: &mut LuaState) {
 /// and by the explicit `collectgarbage("collect")` path.
 fn collect_live_weak_tables(state: &mut LuaState) -> Vec<GcRef<lua_types::value::LuaTable>> {
     let mut g = state.global_mut();
-    g.weak_tables_registry.retain(|w| w.strong_count() > 0);
-    let mut seen = std::collections::HashSet::<usize>::new();
-    g.weak_tables_registry
-        .iter()
-        .filter_map(|w| w.upgrade())
-        .filter_map(|rc| {
-            let id = rc.identity();
-            if seen.insert(id) {
-                Some(rc)
-            } else {
-                None
-            }
-        })
-        .collect()
+    g.weak_tables_registry.live_snapshot()
 }
 
 pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaError> {
@@ -1687,11 +1707,16 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
                 state.gc().obj_barrier(tbl, mt.as_ref().unwrap());
             }
             tbl.set_metatable(mt.clone());
-            if tbl.weak_mode() != 0 {
+            if tbl.weak_mode() == 0 {
                 state
                     .global_mut()
                     .weak_tables_registry
-                    .push(tbl.downgrade());
+                    .remove_identity(tbl.identity());
+            } else {
+                state
+                    .global_mut()
+                    .weak_tables_registry
+                    .push_unique(WeakTableEntry::new(tbl));
             }
             // Phase-B finalizer registration: if the new metatable carries
             // `__gc` and `obj` was not already registered, pin `obj` in the
@@ -2033,10 +2058,44 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             };
             let gen_mode = state.global().is_gen_mode();
             let cycle_complete = if gen_mode {
-                state.gc().generational_step();
+                if data == 0 {
+                    state.gc().generational_step_minor_only();
+                } else {
+                    state.gc().generational_step();
+                }
+                if state.global().finalizers.has_to_be_finalized() {
+                    if let Err(e) = run_pending_finalizers_inner(state, true) {
+                        state.global_mut().gc_finalizer_error = Some(e.into_value());
+                    }
+                }
                 debt_for_result > 0 && state.global().gc_at_pause()
+            } else if state.global().heap.gc_state() == lua_gc::GcState::CallFin
+                && state.global().finalizers.has_to_be_finalized()
+            {
+                if let Err(e) = run_some_pending_finalizers_inner(state, true) {
+                    state.global_mut().gc_finalizer_error = Some(e.into_value());
+                }
+                if state.global().finalizers.has_to_be_finalized() {
+                    false
+                } else {
+                    state.global().heap.finish_callfin_phase()
+                }
             } else {
-                state.gc().incremental_step(work_units)
+                let completed = state.gc().incremental_step(work_units);
+                if state.global().heap.gc_state() == lua_gc::GcState::CallFin
+                    && state.global().finalizers.has_to_be_finalized()
+                {
+                    if let Err(e) = run_some_pending_finalizers_inner(state, true) {
+                        state.global_mut().gc_finalizer_error = Some(e.into_value());
+                    }
+                    if state.global().finalizers.has_to_be_finalized() {
+                        false
+                    } else {
+                        state.global().heap.finish_callfin_phase()
+                    }
+                } else {
+                    completed
+                }
             };
             state.global_mut().set_gc_stop_flags(old_stp);
             // Sync the global gcstate byte for `gc_at_pause()` callers.

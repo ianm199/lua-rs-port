@@ -9,7 +9,11 @@
 
 pub mod heap;
 
-pub use heap::{Color, Gc, GcAge, GcBox, GcHeader, GcState, Heap, HeapGuard, HeapRef, Marker, StepBudget, StepOutcome, Trace, with_current_heap};
+pub use heap::{
+    with_current_heap, Color, FinalizerEntry, FinalizerRegistry, FinalizerRegistryStats, Gc,
+    GcAge, GcBox, GcHeader, GcState, Heap, HeapGuard, HeapRef, Marker, StepBudget, StepOutcome,
+    Trace, WeakEntry, WeakListKind, WeakRegistry, WeakRegistrySnapshot, WeakRegistryStats,
+};
 
 // ──────────────────────────────────────────────────────────────────────────
 // PORT STATUS
