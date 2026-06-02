@@ -1032,7 +1032,7 @@ impl Lua {
                 });
                 RawLuaValue::Function(RawLuaClosure::C(GcRef::new(RawLuaCClosure {
                     func: idx,
-                    upvalues: vec![RawLuaValue::UserData(callback_payload)],
+                    upvalues: RefCell::new(vec![RawLuaValue::UserData(callback_payload)]),
                 })))
             });
             let key = state.external_root_value(raw);
@@ -3138,7 +3138,8 @@ fn rust_callback_trampoline(state: &mut LuaState) -> Result<usize> {
     let func_idx = state.current_call_info().func;
     let callback = match state.get_at(func_idx) {
         RawLuaValue::Function(RawLuaClosure::C(closure)) => {
-            let Some(RawLuaValue::UserData(userdata)) = closure.upvalues.first() else {
+            let upvalues = closure.upvalues.borrow();
+            let Some(RawLuaValue::UserData(userdata)) = upvalues.first() else {
                 return Err(LuaError::runtime(format_args!(
                     "missing Rust callback payload"
                 )));

@@ -62,7 +62,8 @@ fn is_valid_index(state: &LuaState, idx: i32) -> bool {
         let upval_n = (LUA_REGISTRYINDEX - idx) as usize;
         let func_val = state.get_at(ci.func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
-            upval_n >= 1 && upval_n <= ccl.upvalues.len()
+            let upvalues = ccl.upvalues.borrow();
+            upval_n >= 1 && upval_n <= upvalues.len()
         } else {
             false
         }
@@ -105,8 +106,9 @@ fn index_to_value(state: &LuaState, idx: i32) -> LuaValue {
         let func_val = state.get_at(ci.func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
             // C closure upvalue
-            if upval_n >= 1 && upval_n <= ccl.upvalues.len() {
-                ccl.upvalues[upval_n - 1].clone()
+            let upvalues = ccl.upvalues.borrow();
+            if upval_n >= 1 && upval_n <= upvalues.len() {
+                upvalues[upval_n - 1].clone()
             } else {
                 LuaValue::Nil
             }
@@ -289,11 +291,19 @@ pub fn copy(state: &mut LuaState, fromidx: i32, toidx: i32) {
         let upval_n = (LUA_REGISTRYINDEX - toidx) as usize;
         let func_val = state.get_at(state.current_call_info().func);
         if let LuaValue::Function(LuaClosure::C(ref ccl)) = func_val {
-            // TODO(port): CClosure upvalue write requires interior mutability on GcRef<CClosure>
-            // state.gc().barrier(ccl, &fr);
-            let _ = (upval_n, ccl);
+            let wrote = {
+                let mut upvalues = ccl.upvalues.borrow_mut();
+                if upval_n >= 1 && upval_n <= upvalues.len() {
+                    upvalues[upval_n - 1] = fr.clone();
+                    true
+                } else {
+                    false
+                }
+            };
+            if wrote {
+                state.gc().barrier(ccl, &fr);
+            }
         }
-        // TODO(port): implement upvalue write for copy() to C closure upvalues
     } else if toidx == LUA_REGISTRYINDEX {
         // TODO(port): write to registry — needs GlobalState::set_registry(fr)
     } else {
@@ -1150,7 +1160,7 @@ pub fn push_cclosure(
         // TODO(D-1c-bridge): state.new_c_closure is still todo!(); keep direct alloc
         let cl = LuaClosure::C(GcRef::new(lua_types::closure::LuaCClosure {
             func: idx,
-            upvalues,
+            upvalues: std::cell::RefCell::new(upvalues),
         }));
         state.push(LuaValue::Function(cl));
         state.gc().check_step();
@@ -2210,11 +2220,12 @@ fn aux_upvalue(
 ) -> Option<(Vec<u8>, LuaValue)> {
     match fi {
         LuaValue::Function(LuaClosure::C(ccl)) => {
-            let nupvalues = ccl.upvalues.len() as i32;
+            let upvalues = ccl.upvalues.borrow();
+            let nupvalues = upvalues.len() as i32;
             if n < 1 || n > nupvalues {
                 return None;
             }
-            Some((Vec::new(), ccl.upvalues[(n - 1) as usize].clone()))
+            Some((Vec::new(), upvalues[(n - 1) as usize].clone()))
         }
         LuaValue::Function(LuaClosure::Lua(lcl)) => {
             let nupvalues = lcl.upvals.len() as i32;
@@ -2256,10 +2267,16 @@ pub fn setup_value(state: &mut LuaState, funcindex: i32, n: i32) -> Option<Vec<u
         LuaValue::Function(LuaClosure::Lua(lcl)) => {
             state.upvalue_set(lcl, (n - 1) as usize, new_val).ok()?;
         }
-        LuaValue::Function(LuaClosure::C(_ccl)) => {
-            // TODO(port): C-closure upvalue writes need interior mutability on
-            // LuaCClosure.upvalues. Not exercised by current tests.
-            let _ = new_val;
+        LuaValue::Function(LuaClosure::C(ccl)) => {
+            let idx = (n - 1) as usize;
+            {
+                let mut upvalues = ccl.upvalues.borrow_mut();
+                if idx >= upvalues.len() {
+                    return None;
+                }
+                upvalues[idx] = new_val.clone();
+            }
+            state.gc().barrier(ccl, &new_val);
         }
         _ => return None,
     }
@@ -2293,7 +2310,8 @@ pub fn upvalue_id(state: &LuaState, fidx: i32, n: i32) -> Option<usize> {
             Some(GcRef::identity(&lcl.upval(idx)))
         }
         LuaValue::Function(LuaClosure::C(ccl)) => {
-            if n >= 1 && n <= ccl.upvalues.len() as i32 {
+            let upvalues = ccl.upvalues.borrow();
+            if n >= 1 && n <= upvalues.len() as i32 {
                 // TODO(port): returning address of upvalue slot not possible without raw ptr.
                 // Return a synthetic identity based on the closure's identity + n.
                 Some(GcRef::identity(ccl) ^ (n as usize))

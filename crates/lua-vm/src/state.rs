@@ -696,7 +696,7 @@ impl LuaClosureExt for LuaClosure {
     fn nupvalues(&self) -> usize {
         match self {
             LuaClosure::Lua(l) => l.0.upvals.len(),
-            LuaClosure::C(c) => c.0.upvalues.len(),
+            LuaClosure::C(c) => c.0.upvalues.borrow().len(),
             LuaClosure::LightC(_) => 0,
         }
     }
@@ -5140,6 +5140,10 @@ fn default_warn(state: &mut LuaState, msg: &[u8], to_cont: bool) {
 mod tests {
     use super::*;
 
+    fn test_noop_cclosure(_: &mut LuaState) -> Result<usize, LuaError> {
+        Ok(0)
+    }
+
     #[test]
     fn external_root_keys_reject_stale_slot_after_reuse() {
         let mut roots = ExternalRootSet::default();
@@ -5460,6 +5464,65 @@ mod tests {
         state
             .upvalue_set(&closure, 0, LuaValue::Table(child))
             .expect("closed upvalue write should succeed");
+        assert_eq!(child.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.external_unroot_value(closure_key).is_some());
+        state.gc().full_collect();
+    }
+
+    #[test]
+    fn cclosure_setupvalue_replaces_upvalue() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        let first = state.new_table();
+        state.push(LuaValue::Table(first));
+        crate::api::push_cclosure(&mut state, test_noop_cclosure, 1)
+            .expect("C closure creation should succeed");
+        let LuaValue::Function(LuaClosure::C(ccl)) = state.get_at(state.top_idx() - 1) else {
+            panic!("expected heavy C closure");
+        };
+
+        let second = state.new_table();
+        state.push(LuaValue::Table(second));
+        let name = crate::api::setup_value(&mut state, -2, 1)
+            .expect("C closure upvalue should exist");
+
+        assert!(name.is_empty());
+        let upvalues = ccl.upvalues.borrow();
+        let LuaValue::Table(actual) = upvalues[0].clone() else {
+            panic!("expected table upvalue");
+        };
+        assert_eq!(actual.identity(), second.identity());
+    }
+
+    #[test]
+    fn generational_cclosure_setupvalue_barrier_marks_young_child_old0() {
+        let mut state = new_state().expect("state should initialize");
+        let _heap_guard = {
+            let g = state.global();
+            lua_gc::HeapGuard::push(&g.heap)
+        };
+
+        state.push(LuaValue::Nil);
+        crate::api::push_cclosure(&mut state, test_noop_cclosure, 1)
+            .expect("C closure creation should succeed");
+        let LuaValue::Function(LuaClosure::C(ccl)) = state.get_at(state.top_idx() - 1) else {
+            panic!("expected heavy C closure");
+        };
+        let closure_key = state.external_root_value(LuaValue::Function(LuaClosure::C(ccl)));
+
+        state.gc().change_mode(GcKind::Generational);
+        assert_eq!(ccl.0.age(), lua_gc::GcAge::Old);
+
+        let child = state.new_table();
+        state.push(LuaValue::Table(child));
+        crate::api::setup_value(&mut state, -2, 1)
+            .expect("C closure upvalue should exist");
+
         assert_eq!(child.0.age(), lua_gc::GcAge::Old0);
 
         assert!(state.external_unroot_value(closure_key).is_some());
