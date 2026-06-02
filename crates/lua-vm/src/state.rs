@@ -164,6 +164,10 @@ impl FinalizerRegistry {
         &self.pending
     }
 
+    pub fn pending_snapshot(&self) -> Vec<FinalizerObject> {
+        self.pending.clone()
+    }
+
     pub fn to_be_finalized(&self) -> &[FinalizerObject] {
         &self.to_be_finalized
     }
@@ -191,7 +195,7 @@ impl FinalizerRegistry {
         std::mem::take(&mut self.pending)
     }
 
-    pub fn retain_pending_not_in(&mut self, ids: &std::collections::HashSet<usize>) {
+    fn retain_pending_not_in(&mut self, ids: &std::collections::HashSet<usize>) {
         self.pending.retain(|object| !ids.contains(&object.identity()));
     }
 
@@ -199,8 +203,18 @@ impl FinalizerRegistry {
         self.to_be_finalized.push(object);
     }
 
-    pub fn extend_to_be_finalized(&mut self, objects: Vec<FinalizerObject>) {
+    fn extend_to_be_finalized(&mut self, objects: Vec<FinalizerObject>) {
         self.to_be_finalized.extend(objects);
+    }
+
+    pub fn promote_pending_to_finalized(&mut self, objects: Vec<FinalizerObject>) {
+        if objects.is_empty() {
+            return;
+        }
+        let ids: std::collections::HashSet<usize> =
+            objects.iter().map(|object| object.identity()).collect();
+        self.retain_pending_not_in(&ids);
+        self.extend_to_be_finalized(objects);
     }
 
     pub fn pop_to_be_finalized(&mut self) -> Option<FinalizerObject> {
@@ -3918,7 +3932,7 @@ impl<'a> GcHandle<'a> {
         // alive by the finalizer registry."
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.finalizers.pending().to_vec()
+            g.finalizers.pending_snapshot()
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4032,8 +4046,6 @@ impl<'a> GcHandle<'a> {
         // handles whose target can no longer upgrade.
         let alive_set = alive_ids.into_inner();
         let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
-        let promote_ids: std::collections::HashSet<usize> =
-            promote.iter().map(|t| t.identity()).collect();
         let alive_thread_ids = alive_thread_ids.into_inner();
         let live_interned_ids = live_interned_ids.into_inner();
         let mut g = state_ref.global.borrow_mut();
@@ -4047,8 +4059,7 @@ impl<'a> GcHandle<'a> {
         // Move newly-unreachable finalizables from `pending_finalizers` to
         // `to_be_finalized`. The latter is rooted by `GlobalState::trace`,
         // so these tables remain alive until their `__gc` runs.
-        g.finalizers.retain_pending_not_in(&promote_ids);
-        g.finalizers.extend_to_be_finalized(promote);
+        g.finalizers.promote_pending_to_finalized(promote);
     }
 
     /// Run one generational collection step.
@@ -4143,7 +4154,7 @@ impl<'a> GcHandle<'a> {
 
         let pending_snapshot: Vec<FinalizerObject> = {
             let g = state_ref.global.borrow();
-            g.finalizers.pending().to_vec()
+            g.finalizers.pending_snapshot()
         };
 
         let alive_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
@@ -4255,8 +4266,6 @@ impl<'a> GcHandle<'a> {
         if atomic_ran.get() {
             let alive_set = alive_ids.into_inner();
             let promote: Vec<FinalizerObject> = newly_unreachable.into_inner();
-            let promote_ids: std::collections::HashSet<usize> =
-                promote.iter().map(|t| t.identity()).collect();
             let alive_thread_ids = alive_thread_ids.into_inner();
             let live_interned_ids = live_interned_ids.into_inner();
             let mut g = state_ref.global.borrow_mut();
@@ -4267,8 +4276,7 @@ impl<'a> GcHandle<'a> {
             g.threads.retain(|id, _| alive_thread_ids.contains(id));
             g.cross_thread_upvals
                 .retain(|(id, _), _| *id == main_thread_id || alive_thread_ids.contains(id));
-            g.finalizers.retain_pending_not_in(&promote_ids);
-            g.finalizers.extend_to_be_finalized(promote);
+            g.finalizers.promote_pending_to_finalized(promote);
         }
 
         matches!(outcome, StepOutcome::Paused)
