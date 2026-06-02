@@ -3368,6 +3368,13 @@ struct CollectRoots<'a> {
     thread: &'a LuaState,
 }
 
+#[derive(Clone, Copy)]
+enum HeapCollectMode {
+    Full,
+    Step,
+    Minor,
+}
+
 impl<'a> lua_gc::Trace for CollectRoots<'a> {
     fn trace(&self, m: &mut lua_gc::Marker) {
         self.global.trace(m);
@@ -3597,6 +3604,14 @@ impl<'a> GcHandle<'a> {
     /// works for both modes — the heap short-circuits when force=false and
     /// the threshold isn't met.
     fn collect_via_heap(&self, force: bool) {
+        self.collect_via_heap_mode(if force {
+            HeapCollectMode::Full
+        } else {
+            HeapCollectMode::Step
+        });
+    }
+
+    fn collect_via_heap_mode(&self, mode: HeapCollectMode) {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
 
@@ -3605,7 +3620,7 @@ impl<'a> GcHandle<'a> {
         // the heap is paused or under threshold — a `step()` in that state
         // is a no-op, so the snapshot would be pure waste. Called millions
         // of times per recursive workload via `gc_check_step` in `precall`.
-        if !force {
+        if matches!(mode, HeapCollectMode::Step) {
             let g = state_ref.global.borrow();
             if !g.heap.would_collect() {
                 return;
@@ -3715,10 +3730,10 @@ impl<'a> GcHandle<'a> {
                     }
                 }
             };
-            if force {
-                global.heap.full_collect_with_post_mark(&roots, hook);
-            } else {
-                global.heap.step_with_post_mark(&roots, hook);
+            match mode {
+                HeapCollectMode::Full => global.heap.full_collect_with_post_mark(&roots, hook),
+                HeapCollectMode::Step => global.heap.step_with_post_mark(&roots, hook),
+                HeapCollectMode::Minor => global.heap.minor_collect_with_post_mark(&roots, hook),
             }
         }
 
@@ -3749,6 +3764,12 @@ impl<'a> GcHandle<'a> {
         g.pending_finalizers
             .retain(|t| !promote_ids.contains(&t.identity()));
         g.to_be_finalized.extend(promote);
+    }
+
+    /// Run one explicit generational minor collection.
+    pub fn generational_step(&self) -> bool {
+        self.collect_via_heap_mode(HeapCollectMode::Minor);
+        true
     }
 
     /// Phase-B stub for `luaC_step(L)`.
@@ -3891,12 +3912,12 @@ impl<'a> GcHandle<'a> {
         matches!(outcome, StepOutcome::Paused)
     }
 
-    /// Run only the weak-table atomic cleanup used by a generational step.
+    /// Run only the weak-table atomic cleanup used by legacy generational
+    /// callers that need mark/prune behavior without sweeping.
     ///
-    /// C-Lua's `genstep` performs young/full generational work and includes
-    /// weak-table clearing at the atomic boundary. This heap does not model
-    /// ages yet; this mark-only pass gives explicit generational steps the
-    /// weak cleanup they need without sweeping objects from suspended threads.
+    /// Explicit generational steps now use [`Self::generational_step`], which
+    /// performs a young sweep. This helper remains for call sites that only
+    /// need the weak-table atomic pass.
     pub fn prune_weak_tables_mark_only(&self) {
         use lua_gc::Trace;
         let state_ref: &LuaState = &*self._state;
@@ -5166,8 +5187,14 @@ mod tests {
         assert_eq!(child.0.age(), lua_gc::GcAge::New);
 
         let metatable = state.new_table();
+        parent.set_metatable(Some(metatable));
         state.gc().obj_barrier(&parent, &metatable);
         assert_eq!(metatable.0.age(), lua_gc::GcAge::Old0);
+
+        assert!(state.gc().generational_step());
+        assert_eq!(parent.0.age(), lua_gc::GcAge::Touched2);
+        assert_eq!(child.0.age(), lua_gc::GcAge::Survival);
+        assert_eq!(metatable.0.age(), lua_gc::GcAge::Old1);
 
         state.gc().change_mode(GcKind::Incremental);
         assert_eq!(parent.0.age(), lua_gc::GcAge::New);

@@ -138,6 +138,15 @@ impl GcAge {
     pub fn is_old(self) -> bool {
         !matches!(self, GcAge::New | GcAge::Survival)
     }
+
+    fn next_after_minor(self) -> Self {
+        match self {
+            GcAge::New => GcAge::Survival,
+            GcAge::Survival | GcAge::Old0 => GcAge::Old1,
+            GcAge::Old1 | GcAge::Old | GcAge::Touched2 => GcAge::Old,
+            GcAge::Touched1 => GcAge::Touched2,
+        }
+    }
 }
 
 /// Per-object GC metadata. Lives at the start of every `GcBox`.
@@ -698,10 +707,14 @@ impl Heap {
     fn for_each_header(&self, mut f: impl FnMut(&GcHeader)) {
         let mut cursor = self.head.get();
         while let Some(ptr) = cursor {
-            let header = unsafe { &(*ptr.as_ptr()).header };
+            let header = self.header_from_ptr(ptr);
             cursor = header.next.get();
             f(header);
         }
+    }
+
+    fn header_from_ptr<'a>(&'a self, ptr: NonNull<GcBox<dyn Trace>>) -> &'a GcHeader {
+        unsafe { &(*ptr.as_ptr()).header }
     }
 
     /// Forward write barrier: invoked when `parent` (already-traced black
@@ -834,6 +847,41 @@ impl Heap {
             header.age.set(GcAge::New);
             header.color.set(Color::White);
         });
+    }
+
+    /// Run a complete young-generation collection.
+    ///
+    /// This is the first generational path: it uses the normal root tracer for
+    /// correctness, then limits sweep/freeing to young objects. Later work can
+    /// replace the full root traversal with cohort-list traversal without
+    /// changing the age/sweep contract introduced here.
+    pub fn minor_collect_with_post_mark<F: FnMut(&mut Marker)>(
+        &self,
+        roots: &dyn Trace,
+        mut post_mark: F,
+    ) {
+        if self.paused.get() {
+            return;
+        }
+        if !self.state.get().is_pause() {
+            self.abort_cycle();
+        }
+
+        self.state.set(GcState::Propagate);
+        let mut marker = Marker::new();
+        roots.trace(&mut marker);
+        marker.drain_gray_queue();
+
+        self.state.set(GcState::Atomic);
+        post_mark(&mut marker);
+        marker.drain_gray_queue();
+
+        self.state.set(GcState::Sweep);
+        self.sweep_young();
+        *self.marker.borrow_mut() = None;
+        self.sweep_prev_next.set(None);
+        self.state.set(GcState::Pause);
+        self.collections.set(self.collections.get() + 1);
     }
 
     /// Stop-the-world full collect with a post-mark hook.
@@ -1011,7 +1059,7 @@ impl Heap {
                     break;
                 }
             };
-            let header = unsafe { &(*ptr.as_ptr()).header };
+            let header = self.header_from_ptr(ptr);
             let next = header.next.get();
             match header.color.get() {
                 Color::White => {
@@ -1036,6 +1084,39 @@ impl Heap {
             self.bytes.set(self.bytes.get().saturating_sub(freed_bytes));
         }
         work
+    }
+
+    fn sweep_young(&self) {
+        let mut freed_bytes = 0usize;
+        let mut prev_next_ptr = NonNull::from(&self.head);
+        loop {
+            let prev_cell = unsafe { prev_next_ptr.as_ref() };
+            let Some(ptr) = prev_cell.get() else { break; };
+            let header = self.header_from_ptr(ptr);
+            let next = header.next.get();
+            if header.color.get() == Color::White && !header.age.get().is_old() {
+                prev_cell.set(next);
+                freed_bytes += header.size.get();
+                unsafe {
+                    let _ = Box::from_raw(ptr.as_ptr());
+                }
+                continue;
+            }
+
+            if header.color.get() != Color::White {
+                let age = header.age.get();
+                header.age.set(age.next_after_minor());
+                match age {
+                    GcAge::New => header.color.set(Color::White),
+                    GcAge::Touched1 | GcAge::Touched2 => header.color.set(Color::Black),
+                    _ => {}
+                }
+            }
+            prev_next_ptr = unsafe { NonNull::from(&(*ptr.as_ptr()).header.next) };
+        }
+        if freed_bytes > 0 {
+            self.bytes.set(self.bytes.get().saturating_sub(freed_bytes));
+        }
     }
 
     fn finish_cycle(&self) {
@@ -1276,6 +1357,33 @@ mod tests {
 
         heap.generational_forward_barrier(parent, child);
         assert_eq!(child.age(), GcAge::Old0);
+    }
+
+    #[test]
+    fn minor_collect_frees_young_and_keeps_old() {
+        let heap = Heap::new();
+        heap.unpause();
+        let old_unreachable = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        old_unreachable.set_age(GcAge::Old);
+        old_unreachable.set_color(Color::Black);
+        let _young_unreachable = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        let young_survivor = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        heap.minor_collect_with_post_mark(&OneRoot(Some(young_survivor)), |_| {});
+
+        assert_eq!(heap.allgc_count(), 2);
+        assert_eq!(old_unreachable.age(), GcAge::Old);
+        assert_eq!(young_survivor.age(), GcAge::Survival);
+        assert_eq!(young_survivor.color(), Color::White);
     }
 
     #[test]

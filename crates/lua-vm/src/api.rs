@@ -2017,10 +2017,11 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
                 let mut g = state.global_mut();
                 crate::state::set_debt(&mut *g, debt);
             }
-            let cycle_complete = state.gc().incremental_step(work_units);
-            if state.global().is_gen_mode() {
-                state.gc().prune_weak_tables_mark_only();
-            }
+            let cycle_complete = if state.global().is_gen_mode() {
+                state.gc().generational_step()
+            } else {
+                state.gc().incremental_step(work_units)
+            };
             state.global_mut().set_gc_stop_flags(old_stp);
             // Sync the global gcstate byte for `gc_at_pause()` callers.
             {
