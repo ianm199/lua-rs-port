@@ -3468,6 +3468,8 @@ where
 {
     if generational && matches!(kind, BarrierKind::Forward) {
         heap.generational_forward_barrier(parent.0, child.0);
+    } else if matches!(kind, BarrierKind::Backward) {
+        heap.barrier_back(parent.0, child.0);
     } else {
         heap.barrier(parent.0, child.0);
     }
