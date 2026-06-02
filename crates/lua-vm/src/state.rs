@@ -3972,6 +3972,23 @@ impl<'a> GcHandle<'a> {
     /// the snapshot but never execute it. The snapshot is rebuilt on every
     /// call; the cost is `O(weak_tables_registry)` per step.
     pub fn incremental_step(&self, work_units: isize) -> bool {
+        self.incremental_step_to_state(work_units, None)
+    }
+
+    /// TestC/debug helper: run the incremental collector until a specific heap
+    /// state is entered, preserving the same weak-table/finalizer post-mark
+    /// hooks as [`Self::incremental_step`]. This is intentionally not used for
+    /// normal pacing; it exists so official tests can inspect mid-cycle colors.
+    pub fn run_until_gc_state_for_test(&self, target: lua_gc::GcState) -> bool {
+        self.incremental_step_to_state(isize::MAX / 4, Some(target));
+        self._state.global().heap.gc_state() == target
+    }
+
+    fn incremental_step_to_state(
+        &self,
+        work_units: isize,
+        target: Option<lua_gc::GcState>,
+    ) -> bool {
         use lua_gc::{StepBudget, StepOutcome, Trace};
         let state_ref: &LuaState = &*self._state;
 
@@ -4075,7 +4092,16 @@ impl<'a> GcHandle<'a> {
                 record_live_interned_strings(&*global, marker, &live_interned_ids);
             };
             let budget = StepBudget::from_work(work_units);
-            global.heap.incremental_step_with_post_mark(&roots, budget, hook)
+            if let Some(target) = target {
+                global.heap.incremental_run_until_state_with_post_mark(
+                    &roots,
+                    target,
+                    work_units,
+                    hook,
+                )
+            } else {
+                global.heap.incremental_step_with_post_mark(&roots, budget, hook)
+            }
         };
 
         if atomic_ran.get() {

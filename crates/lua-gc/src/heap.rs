@@ -203,10 +203,8 @@ pub struct GcHeader {
     /// have buffer bytes charged against the pacer (the charge would never be
     /// refunded). [`Gc::account_buffer`] is a no-op when this is false.
     ///
-    /// Placed adjacent to the other byte-sized flags (before `next`) so it
-    /// packs into existing alignment padding: the header stays the same size
-    /// it was before this field existed, so per-object allocation accounting
-    /// — and therefore collection timing — is unchanged by the plumbing.
+    /// Kept separate from `size`: `collected` controls whether buffer charges
+    /// are refundable; `size` remains the exact byte count refunded by sweep.
     collected: Cell<bool>,
     /// Intrusive link into the heap's allgc chain.
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
@@ -216,10 +214,13 @@ pub struct GcHeader {
     /// Invariant: this is always exactly the amount sweep will refund to the
     /// heap's byte counter when this object is freed.
     size: Cell<usize>,
+    /// Concrete Rust type name captured at allocation for testC/diagnostic
+    /// telemetry. Collector behavior must not branch on this field.
+    type_name: &'static str,
 }
 
 impl GcHeader {
-    fn new_white(size: usize, color: Color) -> Self {
+    fn new_white(size: usize, color: Color, type_name: &'static str) -> Self {
         Self {
             color: Cell::new(color),
             age: Cell::new(GcAge::New),
@@ -227,6 +228,7 @@ impl GcHeader {
             collected: Cell::new(false),
             next: Cell::new(None),
             size: Cell::new(size),
+            type_name,
         }
     }
 }
@@ -292,7 +294,7 @@ impl<T: Trace + 'static> Gc<T> {
     pub fn new_uncollected(value: T) -> Self {
         let size = std::mem::size_of::<T>();
         let boxed = Box::new(GcBox {
-            header: GcHeader::new_white(size, Color::White0),
+            header: GcHeader::new_white(size, Color::White0, std::any::type_name::<T>()),
             value,
         });
         Gc {
@@ -701,7 +703,11 @@ impl Heap {
     pub fn allocate<T: Trace + 'static>(&self, value: T) -> Gc<T> {
         let size = std::mem::size_of::<GcBox<T>>();
         let boxed = Box::new(GcBox {
-            header: GcHeader::new_white(size, self.current_white.get()),
+            header: GcHeader::new_white(
+                size,
+                self.current_white.get(),
+                std::any::type_name::<T>(),
+            ),
             value,
         });
         boxed.header.next.set(self.head.get());
@@ -1044,8 +1050,21 @@ impl Heap {
         budget: &mut StepBudget,
         post_mark: &mut dyn FnMut(&mut Marker),
     ) -> bool {
+        self.run_budgeted_until(roots, budget, post_mark, None)
+    }
+
+    fn run_budgeted_until(
+        &self,
+        roots: &dyn Trace,
+        budget: &mut StepBudget,
+        post_mark: &mut dyn FnMut(&mut Marker),
+        stop_at: Option<GcState>,
+    ) -> bool {
         let mut did_work = false;
         loop {
+            if stop_at == Some(self.state.get()) {
+                return did_work;
+            }
             if budget.remaining_work <= -budget.max_credit {
                 return did_work;
             }
@@ -1055,6 +1074,9 @@ impl Heap {
                     self.state.set(GcState::Propagate);
                     budget.remaining_work -= 1;
                     did_work = true;
+                    if stop_at == Some(GcState::Propagate) {
+                        return did_work;
+                    }
                 }
                 GcState::Propagate => {
                     let work = self.drain_gray_budgeted(budget.remaining_work.max(1));
@@ -1066,6 +1088,9 @@ impl Heap {
                     };
                     if empty {
                         self.state.set(GcState::Atomic);
+                        if stop_at == Some(GcState::Atomic) {
+                            return did_work;
+                        }
                     } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
@@ -1075,6 +1100,9 @@ impl Heap {
                     self.state.set(GcState::Sweep);
                     budget.remaining_work -= 1;
                     did_work = true;
+                    if stop_at == Some(GcState::Sweep) {
+                        return did_work;
+                    }
                 }
                 GcState::Sweep => {
                     let work = self.sweep_budgeted(budget.remaining_work.max(1));
@@ -1082,6 +1110,9 @@ impl Heap {
                     did_work = did_work || work > 0;
                     if self.sweep_prev_next.get().is_none() {
                         self.state.set(GcState::Finalize);
+                        if stop_at == Some(GcState::Finalize) {
+                            return did_work;
+                        }
                     } else if budget.remaining_work <= 0 {
                         return did_work;
                     }
@@ -1089,9 +1120,39 @@ impl Heap {
                 GcState::Finalize => {
                     self.finish_cycle();
                     self.state.set(GcState::Pause);
+                    if stop_at == Some(GcState::Pause) {
+                        return did_work;
+                    }
                     return did_work;
                 }
             }
+        }
+    }
+
+    /// Drive an incremental cycle until `target` is entered, stopping before any
+    /// subsequent phase work. Intended for testC-style inspection of mid-cycle
+    /// color/barrier invariants; normal collector pacing uses
+    /// [`Self::incremental_step_with_post_mark`].
+    pub fn incremental_run_until_state_with_post_mark<F: FnMut(&mut Marker)>(
+        &self,
+        roots: &dyn Trace,
+        target: GcState,
+        max_work: isize,
+        mut post_mark: F,
+    ) -> StepOutcome {
+        if self.paused.get() {
+            return StepOutcome::SkippedStopped;
+        }
+        let work = max_work.max(1);
+        let mut budget = StepBudget {
+            remaining_work: work,
+            max_credit: work,
+        };
+        self.run_budgeted_until(roots, &mut budget, &mut post_mark, Some(target));
+        if self.state.get().is_pause() {
+            StepOutcome::Paused
+        } else {
+            StepOutcome::InProgress
         }
     }
 
@@ -1257,6 +1318,19 @@ impl Heap {
         let mut count = 0usize;
         self.for_each_header(|_| {
             count += 1;
+        });
+        count
+    }
+
+    /// Count live allgc objects whose concrete Rust type name matches
+    /// `predicate`. This is diagnostic/testC telemetry only; collector logic
+    /// must not depend on Rust type names.
+    pub fn type_name_count(&self, mut predicate: impl FnMut(&'static str) -> bool) -> usize {
+        let mut count = 0usize;
+        self.for_each_header(|header| {
+            if predicate(header.type_name) {
+                count += 1;
+            }
         });
         count
     }
@@ -1697,6 +1771,35 @@ mod tests {
         let outcome = heap.incremental_step_with_post_mark(&roots, budget, |_| {});
         assert_ne!(outcome, StepOutcome::SkippedStopped);
         assert_ne!(heap.gc_state(), GcState::Pause);
+    }
+
+    #[test]
+    fn run_until_state_stops_before_next_phase_work() {
+        let heap = Heap::new();
+        heap.unpause();
+        let head = build_chain(&heap, 8);
+        let roots = OneRoot(Some(head));
+        let atomic_calls = Cell::new(0);
+
+        let outcome = heap.incremental_run_until_state_with_post_mark(
+            &roots,
+            GcState::Atomic,
+            1024,
+            |_| atomic_calls.set(atomic_calls.get() + 1),
+        );
+        assert_eq!(outcome, StepOutcome::InProgress);
+        assert_eq!(heap.gc_state(), GcState::Atomic);
+        assert_eq!(atomic_calls.get(), 0, "atomic hook must not run before inspection");
+
+        let outcome = heap.incremental_run_until_state_with_post_mark(
+            &roots,
+            GcState::Sweep,
+            1024,
+            |_| atomic_calls.set(atomic_calls.get() + 1),
+        );
+        assert_eq!(outcome, StepOutcome::InProgress);
+        assert_eq!(heap.gc_state(), GcState::Sweep);
+        assert_eq!(atomic_calls.get(), 1, "entering sweep must run the atomic hook once");
     }
 
     #[test]

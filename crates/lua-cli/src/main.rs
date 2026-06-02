@@ -21,7 +21,7 @@ use lua_types::gc::GcRef;
 use lua_types::upval::UpVal;
 use lua_types::value::LuaValue;
 use lua_vm::state::{
-    new_state, DynLibId, DynamicSymbol, LuaState, OsExecuteReason, OsExecuteResult,
+    new_state, DynLibId, DynamicSymbol, GcKind, LuaState, OsExecuteReason, OsExecuteResult,
 };
 
 mod interp;
@@ -878,6 +878,91 @@ fn testc_gccolor(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
+fn testc_gc_state_name(gc_state: lua_gc::GcState) -> &'static [u8] {
+    match gc_state {
+        lua_gc::GcState::Pause => b"pause",
+        lua_gc::GcState::Propagate => b"propagate",
+        lua_gc::GcState::Atomic => b"atomic",
+        lua_gc::GcState::Sweep => b"sweepallgc",
+        lua_gc::GcState::Finalize => b"callfin",
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestcGcState {
+    Propagate,
+    Atomic,
+    Sweep,
+    Finalize,
+    Pause,
+}
+
+impl TestcGcState {
+    fn heap_state(self) -> lua_gc::GcState {
+        match self {
+            TestcGcState::Propagate => lua_gc::GcState::Propagate,
+            TestcGcState::Atomic => lua_gc::GcState::Atomic,
+            TestcGcState::Sweep => lua_gc::GcState::Sweep,
+            TestcGcState::Finalize => lua_gc::GcState::Finalize,
+            TestcGcState::Pause => lua_gc::GcState::Pause,
+        }
+    }
+}
+
+fn testc_gc_state_target(bytes: &[u8]) -> Option<TestcGcState> {
+    match bytes {
+        b"propagate" => Some(TestcGcState::Propagate),
+        b"atomic" | b"enteratomic" => Some(TestcGcState::Atomic),
+        b"sweepallgc" | b"sweepfinobj" | b"sweeptobefnz" | b"sweepend" => {
+            Some(TestcGcState::Sweep)
+        }
+        b"callfin" => Some(TestcGcState::Finalize),
+        b"pause" => Some(TestcGcState::Pause),
+        b"" => None,
+        _ => None,
+    }
+}
+
+fn testc_drive_gcstate(state: &mut LuaState, target: TestcGcState) -> Result<(), LuaError> {
+    if state.global().gckind == GcKind::Generational as u8 {
+        return Err(LuaError::runtime(format_args!(
+            "cannot change states in generational mode"
+        )));
+    }
+
+    if state.gc().run_until_gc_state_for_test(target.heap_state()) {
+        Ok(())
+    } else {
+        Err(LuaError::runtime(format_args!(
+            "could not reach requested GC state"
+        )))
+    }
+}
+
+fn testc_gcstate(state: &mut LuaState) -> Result<usize, LuaError> {
+    if lua_vm::api::get_top(state) == 0 {
+        let name = testc_gc_state_name(state.global().heap.gc_state());
+        testc_push_string(state, name)?;
+        return Ok(1);
+    }
+
+    let option = state.check_arg_string(1)?;
+    if option.is_empty() {
+        let name = testc_gc_state_name(state.global().heap.gc_state());
+        testc_push_string(state, name)?;
+        return Ok(1);
+    }
+
+    let Some(target) = testc_gc_state_target(&option) else {
+        return Err(LuaError::runtime(format_args!(
+            "unknown GC state '{}'",
+            String::from_utf8_lossy(&option)
+        )));
+    };
+    testc_drive_gcstate(state, target)?;
+    Ok(0)
+}
+
 fn testc_newuserdata(state: &mut LuaState) -> Result<usize, LuaError> {
     let size = state.opt_arg_integer(1, 0)?;
     let nuvalue = state.opt_arg_integer(2, 0)?;
@@ -891,11 +976,148 @@ fn testc_newuserdata(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
+fn testc_type_count(state: &LuaState, name: &[u8]) -> Result<usize, LuaError> {
+    let count = match name {
+        b"string" => state.global().heap.type_name_count(|ty| ty.contains("LuaString")),
+        b"table" => state.global().heap.type_name_count(|ty| ty.contains("LuaTable")),
+        b"function" => state.global().heap.type_name_count(|ty| {
+            ty.contains("LuaLClosure") || ty.contains("LuaCClosure")
+        }),
+        b"userdata" => state.global().heap.type_name_count(|ty| ty.contains("LuaUserData")),
+        b"thread" => state.global().heap.type_name_count(|ty| ty.contains("LuaThread")),
+        _ => {
+            return Err(LuaError::runtime(format_args!(
+                "unknown type '{}'",
+                String::from_utf8_lossy(name)
+            )));
+        }
+    };
+    Ok(count)
+}
+
+fn testc_push_usize(state: &mut LuaState, value: usize) {
+    state.push(LuaValue::Int(value.min(i64::MAX as usize) as i64));
+}
+
+fn testc_totalmem(state: &mut LuaState) -> Result<usize, LuaError> {
+    if lua_vm::api::get_top(state) == 0 {
+        let total = state.global().total_bytes();
+        let blocks = state.global().heap.allgc_count();
+        let limit = state
+            .global()
+            .sandbox
+            .mem_limit
+            .get()
+            .unwrap_or(usize::MAX);
+        testc_push_usize(state, total);
+        testc_push_usize(state, blocks);
+        testc_push_usize(state, limit);
+        return Ok(3);
+    }
+
+    if let Some(limit) = lua_vm::api::to_integer_x(state, 1) {
+        let limit = if limit <= 0 {
+            None
+        } else {
+            Some(limit as usize)
+        };
+        state.global().sandbox.mem_limit.set(limit);
+        return Ok(0);
+    }
+
+    let name = state.check_arg_string(1)?;
+    let count = testc_type_count(state, &name)?;
+    testc_push_usize(state, count);
+    Ok(1)
+}
+
+fn testc_checkmemory(state: &mut LuaState) -> Result<usize, LuaError> {
+    let known = [
+        b"string".as_slice(),
+        b"table".as_slice(),
+        b"function".as_slice(),
+        b"userdata".as_slice(),
+        b"thread".as_slice(),
+    ]
+    .into_iter()
+    .try_fold(0usize, |acc, name| testc_type_count(state, name).map(|n| acc + n))?;
+    let allgc = state.global().heap.allgc_count();
+    if known > allgc {
+        return Err(LuaError::runtime(format_args!(
+            "GC type telemetry exceeds allgc count"
+        )));
+    }
+    if state.global().heap.bytes_used() == 0 && allgc != 0 {
+        return Err(LuaError::runtime(format_args!(
+            "GC has live objects but zero tracked bytes"
+        )));
+    }
+    Ok(0)
+}
+
+fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
+    let (
+        mode,
+        gc_state,
+        bytes,
+        debt,
+        threshold,
+        allgc,
+        collections,
+        weak,
+        pendingfin,
+        tobefin,
+    ) = {
+        let g = state.global();
+        (
+            if g.is_gen_mode() { "generational" } else { "incremental" },
+            String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
+            g.total_bytes(),
+            g.gc_debt(),
+            g.heap.threshold_bytes(),
+            g.heap.allgc_count(),
+            g.heap.collections(),
+            g.weak_tables_registry.len(),
+            g.pending_finalizers.len(),
+            g.to_be_finalized.len(),
+        )
+    };
+    let tables = testc_type_count(state, b"table")?;
+    let functions = testc_type_count(state, b"function")?;
+    let threads = testc_type_count(state, b"thread")?;
+    let userdata = testc_type_count(state, b"userdata")?;
+    let strings = testc_type_count(state, b"string")?;
+    let stats = format!(
+        "mode={} state={} bytes={} debt={} threshold={} allgc={} collections={} weak={} pendingfin={} tobefin={} tables={} functions={} threads={} userdata={} strings={}",
+        mode,
+        gc_state,
+        bytes,
+        debt,
+        threshold,
+        allgc,
+        collections,
+        weak,
+        pendingfin,
+        tobefin,
+        tables,
+        functions,
+        threads,
+        userdata,
+        strings,
+    );
+    testc_push_string(state, stats.as_bytes())?;
+    Ok(1)
+}
+
 fn register_testc_table(state: &mut LuaState) -> Result<(), LuaError> {
     let funcs: &[(&[u8], lua_vm::state::LuaCFunction)] = &[
+        (b"checkmemory", testc_checkmemory),
         (b"gcage", testc_gcage),
         (b"gccolor", testc_gccolor),
+        (b"gcstate", testc_gcstate),
+        (b"gcstats", testc_gcstats),
         (b"newuserdata", testc_newuserdata),
+        (b"totalmem", testc_totalmem),
     ];
     state.new_lib(funcs)?;
     lua_vm::api::set_global(state, b"T")
