@@ -1443,6 +1443,20 @@ impl LuaTable {
         is_key_reachable: &dyn Fn(usize) -> bool,
         is_value_reachable: &dyn Fn(usize) -> bool,
     ) -> Vec<LuaValue> {
+        self.prune_weak_dead_with_value(
+            &|v| collectable_identity(v).map_or(true, is_key_reachable),
+            &|v| collectable_identity(v).map_or(true, is_value_reachable),
+        )
+    }
+
+    /// Value-aware weak cleanup. Generational minor collection uses this to
+    /// treat unmarked old values as live, because young sweep will not free
+    /// them even when the minor marker skipped their subgraph.
+    pub fn prune_weak_dead_with_value(
+        &self,
+        is_key_reachable: &dyn Fn(&LuaValue) -> bool,
+        is_value_reachable: &dyn Fn(&LuaValue) -> bool,
+    ) -> Vec<LuaValue> {
         let mode = self.weak_mode.get();
         if mode == 0 { return Vec::new(); }
         let weak_k = (mode & WEAK_KEYS) != 0;
@@ -1489,6 +1503,17 @@ impl LuaTable {
 
     /// Ephemeron-convergence helper for pure `__mode = "k"` tables.
     pub fn ephemeron_values_to_mark(&self, is_reachable: &dyn Fn(usize) -> bool) -> Vec<LuaValue> {
+        self.ephemeron_values_to_mark_with_value(
+            &|v| collectable_identity(v).map_or(true, is_reachable),
+        )
+    }
+
+    /// Value-aware ephemeron helper for minor collections, where unmarked old
+    /// keys are still live.
+    pub fn ephemeron_values_to_mark_with_value(
+        &self,
+        is_reachable: &dyn Fn(&LuaValue) -> bool,
+    ) -> Vec<LuaValue> {
         let mode = self.weak_mode.get();
         if (mode & WEAK_KEYS) == 0 || (mode & WEAK_VALUES) != 0 {
             return Vec::new();
@@ -1516,22 +1541,26 @@ impl LuaTable {
 
 /// True iff `v` is a collectable non-string LuaValue whose target was
 /// unreached during the mark phase. Strings are explicitly excluded.
-fn value_is_dead_collectable(v: &LuaValue, is_reachable: &dyn Fn(usize) -> bool) -> bool {
+fn value_is_dead_collectable(v: &LuaValue, is_reachable: &dyn Fn(&LuaValue) -> bool) -> bool {
+    collectable_identity(v).is_some() && !is_reachable(v)
+}
+
+fn collectable_identity(v: &LuaValue) -> Option<usize> {
     match v {
-        LuaValue::Table(t) => !is_reachable(t.identity()),
-        LuaValue::UserData(u) => !is_reachable(u.identity()),
-        LuaValue::Thread(th) => !is_reachable(th.identity()),
+        LuaValue::Table(t) => Some(t.identity()),
+        LuaValue::UserData(u) => Some(u.identity()),
+        LuaValue::Thread(th) => Some(th.identity()),
         LuaValue::Function(c) => match c {
-            LuaClosure::Lua(x) => !is_reachable(x.identity()),
-            LuaClosure::C(x) => !is_reachable(x.identity()),
-            LuaClosure::LightC(_) => false,
+            LuaClosure::Lua(x) => Some(x.identity()),
+            LuaClosure::C(x) => Some(x.identity()),
+            LuaClosure::LightC(_) => None,
         },
         LuaValue::Str(_)
         | LuaValue::Nil
         | LuaValue::Bool(_)
         | LuaValue::Int(_)
         | LuaValue::Float(_)
-        | LuaValue::LightUserData(_) => false,
+        | LuaValue::LightUserData(_) => None,
     }
 }
 

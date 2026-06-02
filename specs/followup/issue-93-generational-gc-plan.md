@@ -41,16 +41,22 @@ The current tree is no longer only startup/default scaffolding:
 - `lua-gc::MarkerStats` records marked/traced object counts split by young vs
   old age. `T.gcstats()` exposes those counters, and GC canary pass rows can
   now carry `METRIC ...` telemetry instead of only PASS/FAIL.
+- Minor collection now runs the marker in a young-generation mode: plain
+  `G_OLD` objects are counted as live but are not drained, while `G_OLD0`,
+  `G_OLD1`, `G_TOUCHED1`, and `G_TOUCHED2` objects are explicitly revisited.
+  The first telemetry canary dropped from `tracedold=246` to `tracedold=1`.
+- Minor weak/ephemeron/finalizer cleanup uses age-aware liveness, so objects
+  deliberately skipped because they are old are not misclassified as dead.
 - Internal testC telemetry exists for GC state, age/color, type counts, warning
   capture, and memory accounting. Both normal and `LUA_RS_TESTC=1` official
   `gc.lua`/`gengc.lua` currently pass.
 
 The real generational collector is still not complete:
 
-- `minor_collect_with_post_mark` still traces the full root set for correctness
-  and then limits sweeping to young objects. It is not yet a cohort-list young
-  collection. `canary_l_testc_minor_stats.lua` now makes this visible per run;
-  the current canary run traced hundreds of old objects during one minor step.
+- `minor_collect_with_post_mark` no longer drains plain `G_OLD` objects, but
+  it still discovers revisit cohorts by scanning `allgc`. It is not yet a true
+  intrusive cohort-list young collection with `survival`, `old1`, `reallyold`,
+  and `firstold1` cursors.
 - Normal-list cohort boundaries equivalent to `survival`, `old1`,
   `reallyold`, and `firstold1` are not represented as collector cursors.
 - Finalizers still live in VM-side `pending_finalizers` / `to_be_finalized`

@@ -3575,7 +3575,48 @@ fn thread_entry_marked_alive(
     id: u64,
     entry: &ThreadRegistryEntry,
 ) -> bool {
-    marker.is_visited(entry.value.identity()) && entry.value.id == id
+    marker.is_marked_or_old(entry.value.0) && entry.value.id == id
+}
+
+fn lua_value_marked_or_old(marker: &lua_gc::Marker, value: &LuaValue) -> bool {
+    match value {
+        LuaValue::Str(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Table(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Function(LuaClosure::Lua(v)) => marker.is_marked_or_old(v.0),
+        LuaValue::Function(LuaClosure::C(v)) => marker.is_marked_or_old(v.0),
+        LuaValue::UserData(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Thread(v) => marker.is_marked_or_old(v.0),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => true,
+    }
+}
+
+fn lua_value_identity(value: &LuaValue) -> Option<usize> {
+    match value {
+        LuaValue::Str(v) => Some(v.identity()),
+        LuaValue::Table(v) => Some(v.identity()),
+        LuaValue::Function(LuaClosure::Lua(v)) => Some(v.identity()),
+        LuaValue::Function(LuaClosure::C(v)) => Some(v.identity()),
+        LuaValue::UserData(v) => Some(v.identity()),
+        LuaValue::Thread(v) => Some(v.identity()),
+        LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_)
+        | LuaValue::Function(LuaClosure::LightC(_)) => None,
+    }
+}
+
+fn finalizer_marked_or_old(marker: &lua_gc::Marker, object: &FinalizerObject) -> bool {
+    match object {
+        FinalizerObject::Table(t) => marker.is_marked_or_old(t.0),
+        FinalizerObject::UserData(u) => marker.is_marked_or_old(u.0),
+    }
 }
 
 fn close_open_upvalues_for_unreachable_threads(
@@ -3849,12 +3890,11 @@ impl<'a> GcHandle<'a> {
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot {
-                        let t_id = t.identity();
-                        if !marker.is_visited(t_id) {
+                        if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
+                        let to_mark = t.ephemeron_values_to_mark_with_value(
+                            &|v| lua_value_marked_or_old(marker, v),
                         );
                         for v in &to_mark {
                             v.trace(marker);
@@ -3866,7 +3906,7 @@ impl<'a> GcHandle<'a> {
                     }
                 }
                 for pf in &pending_snapshot {
-                    if !marker.is_visited(pf.identity()) {
+                    if !finalizer_marked_or_old(marker, pf) {
                         pf.mark(marker);
                         finalizing_ids.borrow_mut().insert(pf.identity());
                         newly_unreachable.borrow_mut().push(pf.clone());
@@ -3876,12 +3916,11 @@ impl<'a> GcHandle<'a> {
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot {
-                        let t_id = t.identity();
-                        if !marker.is_visited(t_id) {
+                        if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
+                        let to_mark = t.ephemeron_values_to_mark_with_value(
+                            &|v| lua_value_marked_or_old(marker, v),
                         );
                         for v in &to_mark {
                             v.trace(marker);
@@ -3894,12 +3933,16 @@ impl<'a> GcHandle<'a> {
                 }
                 for t in &weak_tables_snapshot {
                     let id = t.identity();
-                    if marker.is_visited(id) {
+                    if marker.is_marked_or_old(t.0) {
                         let to_mark = {
                             let finalizing = finalizing_ids.borrow();
-                            t.prune_weak_dead_with(
-                                &|id| marker.is_visited(id),
-                                &|id| marker.is_visited(id) && !finalizing.contains(&id),
+                            t.prune_weak_dead_with_value(
+                                &|v| lua_value_marked_or_old(marker, v),
+                                &|v| {
+                                    lua_value_marked_or_old(marker, v)
+                                        && lua_value_identity(v)
+                                            .map_or(true, |id| !finalizing.contains(&id))
+                                },
                             )
                         };
                         for v in &to_mark {

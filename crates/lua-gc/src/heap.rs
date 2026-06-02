@@ -483,19 +483,42 @@ pub struct MarkerStats {
     pub traced_old: usize,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum MarkerMode {
+    Full,
+    Minor,
+}
+
 /// Holds the gray queue during a mark phase. Passed to `Trace::trace`.
 pub struct Marker {
     gray_queue: Vec<NonNull<GcBox<dyn Trace>>>,
     visited: std::collections::HashSet<usize>,
     stats: MarkerStats,
+    mode: MarkerMode,
 }
 
 impl Marker {
     fn new() -> Self {
+        Self::new_with_mode(MarkerMode::Full)
+    }
+
+    fn new_minor() -> Self {
+        Self::new_with_mode(MarkerMode::Minor)
+    }
+
+    fn new_with_mode(mode: MarkerMode) -> Self {
         Self {
             gray_queue: Vec::with_capacity(256),
             visited: std::collections::HashSet::new(),
             stats: MarkerStats::default(),
+            mode,
+        }
+    }
+
+    fn should_trace_age(&self, age: GcAge) -> bool {
+        match self.mode {
+            MarkerMode::Full => true,
+            MarkerMode::Minor => !matches!(age, GcAge::Old),
         }
     }
 
@@ -512,18 +535,23 @@ impl Marker {
     /// is rebuilt every `full_collect` (Marker::new), so this dedup is
     /// always per-cycle.
     pub fn mark<T: Trace + 'static>(&mut self, gc: Gc<T>) {
-        let id = gc.identity();
+        let ptr: NonNull<GcBox<dyn Trace>> = gc.ptr;
+        self.mark_box(ptr, gc.header(), gc.identity());
+    }
+
+    fn mark_box(&mut self, ptr: NonNull<GcBox<dyn Trace>>, header: &GcHeader, id: usize) {
         if self.visited.insert(id) {
-            let header = gc.header();
-            header.color.set(Color::Gray);
+            let age = header.age.get();
             self.stats.marked += 1;
-            if header.age.get().is_old() {
+            if age.is_old() {
                 self.stats.marked_old += 1;
             } else {
                 self.stats.marked_young += 1;
             }
-            let ptr: NonNull<GcBox<dyn Trace>> = gc.ptr;
-            self.gray_queue.push(ptr);
+            if self.should_trace_age(age) {
+                header.color.set(Color::Gray);
+                self.gray_queue.push(ptr);
+            }
         }
     }
 
@@ -541,6 +569,13 @@ impl Marker {
     /// callers cannot add entries.
     pub fn is_visited(&self, id: usize) -> bool {
         self.visited.contains(&id)
+    }
+
+    /// True when the object was marked in this cycle, or when a minor cycle
+    /// deliberately skipped an old object that the young sweep will not free.
+    pub fn is_marked_or_old<T: Trace + 'static>(&self, gc: Gc<T>) -> bool {
+        self.is_visited(gc.identity())
+            || (matches!(self.mode, MarkerMode::Minor) && gc.age().is_old())
     }
 
     /// Number of objects marked so far. Used by the post-mark hook's
@@ -847,6 +882,21 @@ impl Heap {
         unsafe { &(*ptr.as_ptr()).header }
     }
 
+    fn mark_minor_revisit_objects(&self, marker: &mut Marker) {
+        let mut cursor = self.head.get();
+        while let Some(ptr) = cursor {
+            let header = self.header_from_ptr(ptr);
+            cursor = header.next.get();
+            if matches!(
+                header.age.get(),
+                GcAge::Old0 | GcAge::Old1 | GcAge::Touched1 | GcAge::Touched2
+            ) {
+                let id = ptr.as_ptr() as *const () as usize;
+                marker.mark_box(ptr, header, id);
+            }
+        }
+    }
+
     /// Return the current heap token for a live allocation identity.
     ///
     /// Weak handles use this before sweep to capture their target allocation
@@ -1039,7 +1089,8 @@ impl Heap {
         }
 
         self.state.set(GcState::Propagate);
-        let mut marker = Marker::new();
+        let mut marker = Marker::new_minor();
+        self.mark_minor_revisit_objects(&mut marker);
         roots.trace(&mut marker);
         marker.drain_gray_queue();
 
@@ -1478,6 +1529,22 @@ mod tests {
         }
     }
 
+    struct TwoRoots {
+        first: Option<Gc<Cell0>>,
+        second: Option<Gc<Cell0>>,
+    }
+
+    impl Trace for TwoRoots {
+        fn trace(&self, m: &mut Marker) {
+            if let Some(g) = self.first {
+                m.mark(g);
+            }
+            if let Some(g) = self.second {
+                m.mark(g);
+            }
+        }
+    }
+
     #[test]
     fn alloc_and_drop_all() {
         let heap = Heap::new();
@@ -1716,7 +1783,43 @@ mod tests {
     }
 
     #[test]
-    fn minor_collect_stats_expose_old_root_scan_work() {
+    fn minor_collect_skips_untouched_old_root_scan_work() {
+        let heap = Heap::new();
+        heap.unpause();
+        let old_root = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+        old_root.set_age(GcAge::Old);
+        old_root.set_color(Color::Black);
+        let young_root = heap.allocate(Cell0 {
+            next: Cell::new(None),
+            marker_calls: Cell::new(0),
+        });
+
+        heap.minor_collect_with_post_mark(
+            &TwoRoots {
+                first: Some(old_root),
+                second: Some(young_root),
+            },
+            |_| {},
+        );
+
+        let stats = heap.last_mark_stats();
+        assert_eq!(stats.marked, 2);
+        assert_eq!(stats.marked_old, 1);
+        assert_eq!(stats.marked_young, 1);
+        assert_eq!(stats.traced, 1);
+        assert_eq!(stats.traced_old, 0);
+        assert_eq!(stats.traced_young, 1);
+        assert_eq!(old_root.marker_calls.get(), 0);
+        assert_eq!(young_root.marker_calls.get(), 1);
+        assert_eq!(old_root.age(), GcAge::Old);
+        assert_eq!(young_root.age(), GcAge::Survival);
+    }
+
+    #[test]
+    fn minor_collect_traces_touched_old_parent() {
         let heap = Heap::new();
         heap.unpause();
         let old_root = heap.allocate(Cell0 {
@@ -1730,6 +1833,7 @@ mod tests {
             marker_calls: Cell::new(0),
         });
         old_root.next.set(Some(young_child));
+        heap.generational_backward_barrier(old_root);
 
         heap.minor_collect_with_post_mark(&OneRoot(Some(old_root)), |_| {});
 
@@ -1742,6 +1846,7 @@ mod tests {
         assert_eq!(stats.traced_young, 1);
         assert_eq!(old_root.marker_calls.get(), 1);
         assert_eq!(young_child.marker_calls.get(), 1);
+        assert_eq!(old_root.age(), GcAge::Touched2);
         assert_eq!(young_child.age(), GcAge::Survival);
     }
 
