@@ -24,6 +24,8 @@ jobs:
         run: make test
       - name: Lua 5.5 reference build
         run: make lua55-reference
+      - name: Lua 5.5 snippet oracle
+        run: ./specs/oracle/check.sh 5.5
       - name: Lua 5.5 official suite
         run: make conformance-55
 
