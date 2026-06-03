@@ -21,8 +21,8 @@ use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
 use rustyline::history::FileHistory;
+use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 
 use lua_stdlib::auxlib::load_buffer;
@@ -39,9 +39,8 @@ const MULTRET: i32 = -1;
 /// Lua 5.4 reserved words — seed the completion set and drive keyword
 /// highlighting.
 const KEYWORDS: &[&str] = &[
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
-    "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then",
-    "true", "until", "while",
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
 ];
 
 /// Outcome of reading and compiling one logical line (a primary line plus any
@@ -76,7 +75,11 @@ fn history_path() -> Option<PathBuf> {
 /// `lua.c`: `get_prompt` — `_PROMPT`/`_PROMPT2` if set, else the defaults.
 fn get_prompt(state: &mut LuaState, firstline: bool) -> Vec<u8> {
     let name: &[u8] = if firstline { b"_PROMPT" } else { b"_PROMPT2" };
-    let default: Vec<u8> = if firstline { b"> ".to_vec() } else { b">> ".to_vec() };
+    let default: Vec<u8> = if firstline {
+        b"> ".to_vec()
+    } else {
+        b">> ".to_vec()
+    };
     let ty = api::get_global(state, name).unwrap_or(LuaType::Nil);
     let prompt = if ty == LuaType::Nil {
         default
@@ -289,8 +292,7 @@ fn refresh_completions(state: &mut LuaState, completions: &Rc<RefCell<Vec<String
         }
         for (name, is_table) in &top_level {
             if *is_table && name != "_G" && name != "package" {
-                if api::get_global(state, name.as_bytes()).unwrap_or(LuaType::Nil)
-                    == LuaType::Table
+                if api::get_global(state, name.as_bytes()).unwrap_or(LuaType::Nil) == LuaType::Table
                 {
                     for (field, _) in iter_string_keys(state) {
                         names.push(format!("{}.{}", name, field));

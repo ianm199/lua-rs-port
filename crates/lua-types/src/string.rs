@@ -14,17 +14,35 @@ impl LuaString {
     pub fn from_bytes(b: Vec<u8>) -> Self {
         let is_short = b.len() <= 40;
         let hash = Self::hash_bytes(&b, 0);
-        LuaString { bytes: b.into(), is_short, hash }
+        LuaString {
+            bytes: b.into(),
+            is_short,
+            hash,
+        }
     }
 
-    pub fn placeholder() -> Self { Self::from_bytes(Vec::new()) }
+    pub fn placeholder() -> Self {
+        Self::from_bytes(Vec::new())
+    }
 
-    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
-    pub fn len(&self) -> usize { self.bytes.len() }
-    pub fn is_empty(&self) -> bool { self.bytes.is_empty() }
-    pub fn is_short(&self) -> bool { self.is_short }
-    pub fn is_long(&self) -> bool { !self.is_short }
-    pub fn hash(&self) -> u32 { self.hash }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+    pub fn is_short(&self) -> bool {
+        self.is_short
+    }
+    pub fn is_long(&self) -> bool {
+        !self.is_short
+    }
+    pub fn hash(&self) -> u32 {
+        self.hash
+    }
     pub fn buffer_bytes(&self) -> usize {
         self.bytes.len() + 2 * std::mem::size_of::<usize>()
     }
@@ -44,11 +62,15 @@ impl LuaString {
         h
     }
 
-    pub fn hash_long(&mut self) -> u32 { self.hash }
+    pub fn hash_long(&mut self) -> u32 {
+        self.hash
+    }
 }
 
 impl PartialEq for LuaString {
-    fn eq(&self, other: &Self) -> bool { self.bytes == other.bytes }
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
 }
 impl Eq for LuaString {}
 

@@ -27,59 +27,84 @@ impl LuaValue {
     pub fn type_tag(&self) -> crate::LuaType {
         use crate::LuaType::*;
         match self {
-            LuaValue::Nil               => Nil,
-            LuaValue::Bool(_)           => Boolean,
-            LuaValue::Int(_)            => Number,
-            LuaValue::Float(_)          => Number,
-            LuaValue::Str(_)            => String,
-            LuaValue::Table(_)          => Table,
-            LuaValue::Function(_)       => Function,
-            LuaValue::UserData(_)       => UserData,
-            LuaValue::LightUserData(_)  => LightUserData,
-            LuaValue::Thread(_)         => Thread,
+            LuaValue::Nil => Nil,
+            LuaValue::Bool(_) => Boolean,
+            LuaValue::Int(_) => Number,
+            LuaValue::Float(_) => Number,
+            LuaValue::Str(_) => String,
+            LuaValue::Table(_) => Table,
+            LuaValue::Function(_) => Function,
+            LuaValue::UserData(_) => UserData,
+            LuaValue::LightUserData(_) => LightUserData,
+            LuaValue::Thread(_) => Thread,
         }
     }
 
     pub fn type_name(&self) -> &'static str {
         match self {
-            LuaValue::Nil               => "nil",
-            LuaValue::Bool(_)           => "boolean",
-            LuaValue::Int(_)            => "number",
-            LuaValue::Float(_)          => "number",
-            LuaValue::Str(_)            => "string",
-            LuaValue::Table(_)          => "table",
-            LuaValue::Function(_)       => "function",
-            LuaValue::UserData(_)       => "userdata",
-            LuaValue::LightUserData(_)  => "userdata",
-            LuaValue::Thread(_)         => "thread",
+            LuaValue::Nil => "nil",
+            LuaValue::Bool(_) => "boolean",
+            LuaValue::Int(_) => "number",
+            LuaValue::Float(_) => "number",
+            LuaValue::Str(_) => "string",
+            LuaValue::Table(_) => "table",
+            LuaValue::Function(_) => "function",
+            LuaValue::UserData(_) => "userdata",
+            LuaValue::LightUserData(_) => "userdata",
+            LuaValue::Thread(_) => "thread",
         }
     }
 
-    pub fn is_nil(&self) -> bool   { matches!(self, LuaValue::Nil) }
-    pub fn is_falsy(&self) -> bool { matches!(self, LuaValue::Nil | LuaValue::Bool(false)) }
-    pub fn is_truthy(&self) -> bool { !self.is_falsy() }
+    pub fn is_nil(&self) -> bool {
+        matches!(self, LuaValue::Nil)
+    }
+    pub fn is_falsy(&self) -> bool {
+        matches!(self, LuaValue::Nil | LuaValue::Bool(false))
+    }
+    pub fn is_truthy(&self) -> bool {
+        !self.is_falsy()
+    }
     pub fn is_collectable(&self) -> bool {
-        matches!(self,
-            LuaValue::Str(_) | LuaValue::Table(_) | LuaValue::Function(_) |
-            LuaValue::UserData(_) | LuaValue::Thread(_))
+        matches!(
+            self,
+            LuaValue::Str(_)
+                | LuaValue::Table(_)
+                | LuaValue::Function(_)
+                | LuaValue::UserData(_)
+                | LuaValue::Thread(_)
+        )
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        match self { LuaValue::Int(i) => Some(*i), _ => None }
+        match self {
+            LuaValue::Int(i) => Some(*i),
+            _ => None,
+        }
     }
     pub fn as_float(&self) -> Option<f64> {
-        match self { LuaValue::Float(f) => Some(*f), _ => None }
+        match self {
+            LuaValue::Float(f) => Some(*f),
+            _ => None,
+        }
     }
     pub fn as_string(&self) -> Option<&GcRef<LuaString>> {
-        match self { LuaValue::Str(s) => Some(s), _ => None }
+        match self {
+            LuaValue::Str(s) => Some(s),
+            _ => None,
+        }
     }
     pub fn as_table(&self) -> Option<&GcRef<LuaTable>> {
-        match self { LuaValue::Table(t) => Some(t), _ => None }
+        match self {
+            LuaValue::Table(t) => Some(t),
+            _ => None,
+        }
     }
 }
 
 impl Default for LuaValue {
-    fn default() -> Self { LuaValue::Nil }
+    fn default() -> Self {
+        LuaValue::Nil
+    }
 }
 
 impl PartialEq for LuaValue {
@@ -138,8 +163,12 @@ pub struct LuaThread {
     pub id: u64,
 }
 impl LuaThread {
-    pub fn new(id: u64) -> Self { LuaThread { id } }
-    pub fn placeholder() -> Self { LuaThread { id: 0 } }
+    pub fn new(id: u64) -> Self {
+        LuaThread { id }
+    }
+    pub fn placeholder() -> Self {
+        LuaThread { id: 0 }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

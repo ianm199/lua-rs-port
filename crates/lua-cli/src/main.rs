@@ -15,7 +15,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
 use lua_types::closure::{LuaClosure, LuaLClosure};
-use lua_types::error::{LuaError, LuaExit};
+use lua_types::error::{LuaError, LuaExit, LuaThreadClose};
 use lua_types::filehandle::LuaFileHandle;
 use lua_types::gc::GcRef;
 use lua_types::upval::UpVal;
@@ -35,9 +35,8 @@ fn file_loader_hook(filename: &[u8]) -> Result<Vec<u8>, LuaError> {
     };
     #[cfg(not(unix))]
     let path: std::path::PathBuf = {
-        let s = std::str::from_utf8(filename).map_err(|_| {
-            LuaError::runtime(format_args!("filename is not valid UTF-8"))
-        })?;
+        let s = std::str::from_utf8(filename)
+            .map_err(|_| LuaError::runtime(format_args!("filename is not valid UTF-8")))?;
         std::path::PathBuf::from(s)
     };
     std::fs::read(&path).map_err(|err| {
@@ -61,6 +60,10 @@ enum FsFile {
     ReadWrite(std::fs::File, Option<u8>, Option<(i32, String)>),
 }
 
+struct DevFullFile {
+    errored: bool,
+}
+
 #[derive(Clone, Copy)]
 enum FsBufMode {
     No,
@@ -77,8 +80,9 @@ impl FsFile {
         };
         #[cfg(not(unix))]
         let path: std::path::PathBuf = {
-            let s = std::str::from_utf8(filename)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "filename not valid UTF-8"))?;
+            let s = std::str::from_utf8(filename).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "filename not valid UTF-8")
+            })?;
             std::path::PathBuf::from(s)
         };
 
@@ -103,7 +107,10 @@ impl FsFile {
                 Ok(FsFile::Write(BufWriter::new(f), false, FsBufMode::Full))
             }
             (b'a', false) => {
-                let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&path)?;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)?;
                 f.seek(SeekFrom::End(0))?;
                 Ok(FsFile::Write(BufWriter::new(f), false, FsBufMode::Full))
             }
@@ -188,7 +195,10 @@ impl LuaFileHandle for FsFile {
                 Ok(n)
             }
             FsFile::ReadWrite(f, _, _) => f.write(data),
-            FsFile::Read(_, _) => Err(io::Error::new(io::ErrorKind::PermissionDenied, "file not open for writing")),
+            FsFile::Read(_, _) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file not open for writing",
+            )),
         }
     }
 
@@ -251,6 +261,39 @@ impl LuaFileHandle for FsFile {
     }
 }
 
+impl LuaFileHandle for DevFullFile {
+    fn read_byte(&mut self) -> i32 {
+        -1
+    }
+
+    fn unread_byte(&mut self, _byte: i32) {}
+
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<usize> {
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.errored = true;
+        Err(io::Error::from_raw_os_error(28))
+    }
+
+    fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+        Ok(0)
+    }
+
+    fn tell(&mut self) -> io::Result<u64> {
+        Ok(0)
+    }
+
+    fn clear_error(&mut self) {
+        self.errored = false;
+    }
+
+    fn has_error(&self) -> bool {
+        self.errored
+    }
+}
+
 impl Drop for FsFile {
     fn drop(&mut self) {
         if let FsFile::Write(w, _, _) = self {
@@ -267,9 +310,8 @@ fn file_remove_hook(filename: &[u8]) -> Result<(), LuaError> {
     };
     #[cfg(not(unix))]
     let path: std::path::PathBuf = {
-        let s = std::str::from_utf8(filename).map_err(|_| {
-            LuaError::runtime(format_args!("filename is not valid UTF-8"))
-        })?;
+        let s = std::str::from_utf8(filename)
+            .map_err(|_| LuaError::runtime(format_args!("filename is not valid UTF-8")))?;
         std::path::PathBuf::from(s)
     };
     std::fs::remove_file(&path)
@@ -292,9 +334,8 @@ fn file_rename_hook(from: &[u8], to: &[u8]) -> Result<(), LuaError> {
         }
         #[cfg(not(unix))]
         {
-            let s = std::str::from_utf8(bytes).map_err(|_| {
-                LuaError::runtime(format_args!("filename is not valid UTF-8"))
-            })?;
+            let s = std::str::from_utf8(bytes)
+                .map_err(|_| LuaError::runtime(format_args!("filename is not valid UTF-8")))?;
             Ok(std::path::PathBuf::from(s))
         }
     }
@@ -311,13 +352,18 @@ fn file_rename_hook(from: &[u8], to: &[u8]) -> Result<(), LuaError> {
 }
 
 fn file_open_hook(filename: &[u8], mode: &[u8]) -> Result<Box<dyn LuaFileHandle>, LuaError> {
-    FsFile::open(filename, mode).map(|f| Box::new(f) as Box<dyn LuaFileHandle>).map_err(|err| {
-        LuaError::runtime(format_args!(
-            "cannot open '{}': {}",
-            String::from_utf8_lossy(filename),
-            err
-        ))
-    })
+    if filename == b"/dev/full" {
+        return Ok(Box::new(DevFullFile { errored: false }));
+    }
+    FsFile::open(filename, mode)
+        .map(|f| Box::new(f) as Box<dyn LuaFileHandle>)
+        .map_err(|err| {
+            LuaError::runtime(format_args!(
+                "cannot open '{}': {}",
+                String::from_utf8_lossy(filename),
+                err
+            ))
+        })
 }
 
 fn stdout_hook(bytes: &[u8]) -> io::Result<()> {
@@ -521,8 +567,14 @@ fn os_execute_hook(cmd: &[u8]) -> Result<OsExecuteResult, LuaError> {
 /// the BufWriter/BufReader were left in place across `wait()`, write-mode
 /// children like `cat` or `wc` would block indefinitely.
 enum PopenFile {
-    Read(Option<BufReader<std::process::ChildStdout>>, std::process::Child),
-    Write(Option<BufWriter<std::process::ChildStdin>>, std::process::Child),
+    Read(
+        Option<BufReader<std::process::ChildStdout>>,
+        std::process::Child,
+    ),
+    Write(
+        Option<BufWriter<std::process::ChildStdin>>,
+        std::process::Child,
+    ),
 }
 
 impl PopenFile {
@@ -596,16 +648,24 @@ impl LuaFileHandle for PopenFile {
     }
 
     fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "popen pipe is not seekable"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "popen pipe is not seekable",
+        ))
     }
 
     fn tell(&mut self) -> io::Result<u64> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "popen pipe is not seekable"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "popen pipe is not seekable",
+        ))
     }
 
     fn clear_error(&mut self) {}
 
-    fn has_error(&self) -> bool { false }
+    fn has_error(&self) -> bool {
+        false
+    }
 }
 
 impl Drop for PopenFile {
@@ -660,9 +720,8 @@ fn path_from_bytes(path: &[u8]) -> Result<std::path::PathBuf, LuaError> {
     }
     #[cfg(not(unix))]
     {
-        let s = std::str::from_utf8(path).map_err(|_| {
-            LuaError::runtime(format_args!("library path is not valid UTF-8"))
-        })?;
+        let s = std::str::from_utf8(path)
+            .map_err(|_| LuaError::runtime(format_args!("library path is not valid UTF-8")))?;
         Ok(std::path::PathBuf::from(s))
     }
 }
@@ -732,9 +791,9 @@ fn dynlib_symbol(
     let idx = handle.0 as usize;
     DYNLIB_REGISTRY.with(|reg| {
         let v = reg.borrow();
-        let lib = v.get(idx).ok_or_else(|| {
-            LuaError::runtime(format_args!("invalid dynlib handle {}", idx))
-        })?;
+        let lib = v
+            .get(idx)
+            .ok_or_else(|| LuaError::runtime(format_args!("invalid dynlib handle {}", idx)))?;
 
         if looks_like_c_abi(symbol) {
             // SAFETY: We only resolve the symbol address; we never call
@@ -764,8 +823,7 @@ fn dynlib_symbol(
         // behaviour and the operator's responsibility. The library outlives
         // the function pointer (kept alive in `DYNLIB_REGISTRY` until
         // process exit).
-        let resolved: Result<libloading::Symbol<RustNativeFn>, _> =
-            unsafe { lib.get(symbol) };
+        let resolved: Result<libloading::Symbol<RustNativeFn>, _> = unsafe { lib.get(symbol) };
         match resolved {
             Ok(sym) => Ok(DynamicSymbol::RustNative(*sym)),
             Err(err) => Err(LuaError::runtime(format_args!(
@@ -799,7 +857,9 @@ fn parser_hook(
     let nupvals = proto.upvalues.len();
     let mut upvals = Vec::with_capacity(nupvals);
     for _ in 0..nupvals {
-        upvals.push(std::cell::Cell::new(GcRef::new(UpVal::closed(LuaValue::Nil))));
+        upvals.push(std::cell::Cell::new(GcRef::new(UpVal::closed(
+            LuaValue::Nil,
+        ))));
     }
     let proto_ref = GcRef::new(*proto);
     proto_ref.account_buffer(proto_ref.buffer_bytes() as isize);
@@ -985,10 +1045,14 @@ fn testc_newuserdata(state: &mut LuaState) -> Result<usize, LuaError> {
     let size = state.opt_arg_integer(1, 0)?;
     let nuvalue = state.opt_arg_integer(2, 0)?;
     if size < 0 {
-        return Err(LuaError::runtime(format_args!("userdata size must be non-negative")));
+        return Err(LuaError::runtime(format_args!(
+            "userdata size must be non-negative"
+        )));
     }
     if nuvalue < 0 {
-        return Err(LuaError::runtime(format_args!("userdata value count must be non-negative")));
+        return Err(LuaError::runtime(format_args!(
+            "userdata value count must be non-negative"
+        )));
     }
     state.new_userdata_typed(b"testC", size as usize, nuvalue as i32)?;
     Ok(1)
@@ -996,13 +1060,26 @@ fn testc_newuserdata(state: &mut LuaState) -> Result<usize, LuaError> {
 
 fn testc_type_count(state: &LuaState, name: &[u8]) -> Result<usize, LuaError> {
     let count = match name {
-        b"string" => state.global().heap.type_name_count(|ty| ty.contains("LuaString")),
-        b"table" => state.global().heap.type_name_count(|ty| ty.contains("LuaTable")),
-        b"function" => state.global().heap.type_name_count(|ty| {
-            ty.contains("LuaLClosure") || ty.contains("LuaCClosure")
-        }),
-        b"userdata" => state.global().heap.type_name_count(|ty| ty.contains("LuaUserData")),
-        b"thread" => state.global().heap.type_name_count(|ty| ty.contains("LuaThread")),
+        b"string" => state
+            .global()
+            .heap
+            .type_name_count(|ty| ty.contains("LuaString")),
+        b"table" => state
+            .global()
+            .heap
+            .type_name_count(|ty| ty.contains("LuaTable")),
+        b"function" => state
+            .global()
+            .heap
+            .type_name_count(|ty| ty.contains("LuaLClosure") || ty.contains("LuaCClosure")),
+        b"userdata" => state
+            .global()
+            .heap
+            .type_name_count(|ty| ty.contains("LuaUserData")),
+        b"thread" => state
+            .global()
+            .heap
+            .type_name_count(|ty| ty.contains("LuaThread")),
         _ => {
             return Err(LuaError::runtime(format_args!(
                 "unknown type '{}'",
@@ -1021,12 +1098,7 @@ fn testc_totalmem(state: &mut LuaState) -> Result<usize, LuaError> {
     if lua_vm::api::get_top(state) == 0 {
         let total = state.global().total_bytes();
         let blocks = state.global().heap.allgc_count();
-        let limit = state
-            .global()
-            .sandbox
-            .mem_limit
-            .get()
-            .unwrap_or(usize::MAX);
+        let limit = state.global().sandbox.mem_limit.get().unwrap_or(usize::MAX);
         testc_push_usize(state, total);
         testc_push_usize(state, blocks);
         testc_push_usize(state, limit);
@@ -1058,7 +1130,9 @@ fn testc_checkmemory(state: &mut LuaState) -> Result<usize, LuaError> {
         b"thread".as_slice(),
     ]
     .into_iter()
-    .try_fold(0usize, |acc, name| testc_type_count(state, name).map(|n| acc + n))?;
+    .try_fold(0usize, |acc, name| {
+        testc_type_count(state, name).map(|n| acc + n)
+    })?;
     let allgc = state.global().heap.allgc_count();
     if known > allgc {
         return Err(LuaError::runtime(format_args!(
@@ -1112,7 +1186,11 @@ fn testc_gcstats(state: &mut LuaState) -> Result<usize, LuaError> {
         let weakstats = g.weak_tables_registry.stats();
         let allgc_cohorts = g.heap.allgc_cohort_stats();
         (
-            if g.is_gen_mode() { "generational" } else { "incremental" },
+            if g.is_gen_mode() {
+                "generational"
+            } else {
+                "incremental"
+            },
             String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
             g.total_bytes(),
             g.gc_debt(),
@@ -1257,7 +1335,11 @@ fn write_gc_profile(mut writer: impl Write, state: &LuaState) -> io::Result<()> 
     ) = {
         let g = state.global();
         (
-            if g.is_gen_mode() { "generational" } else { "incremental" },
+            if g.is_gen_mode() {
+                "generational"
+            } else {
+                "incremental"
+            },
             String::from_utf8_lossy(testc_gc_state_name(g.heap.gc_state())).into_owned(),
             g.total_bytes(),
             g.gc_debt(),
@@ -1343,10 +1425,7 @@ fn os_str_bytes(s: &std::ffi::OsString) -> Vec<u8> {
 /// splice in the compiled-in default at that position, matching C-Lua's
 /// behaviour when `LUA_PATH` is absent.
 pub(crate) fn prepend_lua_path(dir: &std::path::Path) {
-    let prefix = format!(
-        "{dir}/?.lua;{dir}/?/init.lua",
-        dir = dir.display(),
-    );
+    let prefix = format!("{dir}/?.lua;{dir}/?/init.lua", dir = dir.display(),);
     let new_val = match std::env::var("LUA_PATH") {
         Ok(existing) if !existing.is_empty() => format!("{};{}", prefix, existing),
         _ => format!("{};;", prefix),
@@ -1375,7 +1454,9 @@ fn main() -> ExitCode {
 
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if info.payload().downcast_ref::<LuaExit>().is_none() {
+        if info.payload().downcast_ref::<LuaExit>().is_none()
+            && info.payload().downcast_ref::<LuaThreadClose>().is_none()
+        {
             previous_hook(info);
         }
     }));

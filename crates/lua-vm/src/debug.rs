@@ -6,16 +6,16 @@
 //! # C source
 //! `reference/lua-5.4.7/src/ldebug.c` (962 lines, 30 functions)
 
-
-#[allow(unused_imports)] use crate::prelude::*;
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::state::{
-    CallInfo, GcRef, LuaClosure, LuaClosureLua, LuaProto, LuaState, LuaTable, LuaValue,
-    CIST_FIN, CIST_HOOKED, CIST_HOOKYIELD, CIST_TAIL, CIST_TRAN,
+    CallInfo, GcRef, LuaClosure, LuaClosureLua, LuaProto, LuaState, LuaTable, LuaValue, CIST_FIN,
+    CIST_HOOKED, CIST_HOOKYIELD, CIST_TAIL, CIST_TRAN,
 };
-use lua_types::{CallInfoIdx, StackIdx, LuaString};
+use crate::vm::InstructionExt;
 use lua_types::error::LuaError;
 use lua_types::opcode::Instruction;
-use crate::vm::InstructionExt;
+use lua_types::{CallInfoIdx, LuaString, StackIdx};
 
 // TODO(port): the following are cross-crate imports that will resolve in Phase B:
 //   - LuaDebug  (lua_Debug struct; Phase E debug)
@@ -82,12 +82,7 @@ fn prefixed_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
     let proto = ci_lua_proto(&ci, state);
     let src = proto.source_string();
     let line = get_current_line(&ci, state);
-    let prefixed = add_info(
-        None,
-        &msg,
-        src.map(|s| &**s),
-        line,
-    );
+    let prefixed = add_info(None, &msg, src.map(|s| &**s), line);
     runtime_bytes(prefixed)
 }
 
@@ -116,7 +111,12 @@ pub fn c_api_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
 /// overflow via re-entrant error generation). Reserved for a future
 /// `debug.findfield` Lua binding.
 #[allow(dead_code)]
-fn find_func_in_table(table: &LuaTable, target: &LuaValue, prefix: &[u8], depth: u8) -> Option<Vec<u8>> {
+fn find_func_in_table(
+    table: &LuaTable,
+    target: &LuaValue,
+    prefix: &[u8],
+    depth: u8,
+) -> Option<Vec<u8>> {
     let mut key = LuaValue::Nil;
     loop {
         let (k, v) = match table.next_pair(&key) {
@@ -148,7 +148,9 @@ fn find_func_in_table(table: &LuaTable, target: &LuaValue, prefix: &[u8], depth:
                             p.extend_from_slice(&kb);
                             p
                         };
-                        if let Some(name) = find_func_in_table(&**sub, target, &new_prefix, depth - 1) {
+                        if let Some(name) =
+                            find_func_in_table(&**sub, target, &new_prefix, depth - 1)
+                        {
                             return Some(name);
                         }
                     }
@@ -202,7 +204,11 @@ fn find_func_name_in_loaded(state: &LuaState, func_val: &LuaValue) -> Option<Vec
 pub fn arg_error_impl(state: &mut LuaState, mut arg: i32, extramsg: &[u8]) -> LuaError {
     let mut ar = LuaDebug::default();
     if !get_stack(state, 0, &mut ar) {
-        let msg = format!("bad argument #{} ({})", arg, String::from_utf8_lossy(extramsg));
+        let msg = format!(
+            "bad argument #{} ({})",
+            arg,
+            String::from_utf8_lossy(extramsg)
+        );
         return c_api_runtime(state, msg.into_bytes());
     }
     get_info(state, b"n", &mut ar);
@@ -218,17 +224,21 @@ pub fn arg_error_impl(state: &mut LuaState, mut arg: i32, extramsg: &[u8]) -> Lu
             return c_api_runtime(state, msg.into_bytes());
         }
     }
-    let fname = ar.name.clone().or_else(|| {
-        let ci_idx = ar.i_ci?;
-        let func_slot = state.get_ci(ci_idx).func;
-        let func_val = state.get_at(func_slot).clone();
-        let found = find_func_name_in_loaded(state, &func_val)?;
-        if found.starts_with(b"_G.") {
-            Some(found[3..].to_vec())
-        } else {
-            Some(found)
-        }
-    }).unwrap_or_else(|| b"?".to_vec());
+    let fname = ar
+        .name
+        .clone()
+        .or_else(|| {
+            let ci_idx = ar.i_ci?;
+            let func_slot = state.get_ci(ci_idx).func;
+            let func_val = state.get_at(func_slot).clone();
+            let found = find_func_name_in_loaded(state, &func_val)?;
+            if found.starts_with(b"_G.") {
+                Some(found[3..].to_vec())
+            } else {
+                Some(found)
+            }
+        })
+        .unwrap_or_else(|| b"?".to_vec());
     let msg = format!(
         "bad argument #{} to '{}' ({})",
         arg,
@@ -262,6 +272,7 @@ pub struct LuaDebug {
     pub nparams: u8,
     pub isvararg: bool,
     pub istailcall: bool,
+    pub extraargs: u8,
     pub ftransfer: u16,
     pub ntransfer: u16,
     pub short_src: [u8; LUA_IDSIZE],
@@ -285,6 +296,7 @@ impl Default for LuaDebug {
             nparams: 0,
             isvararg: false,
             istailcall: false,
+            extraargs: 0,
             ftransfer: 0,
             ntransfer: 0,
             short_src: [0u8; LUA_IDSIZE],
@@ -492,7 +504,10 @@ fn upval_name(p: &LuaProto, uv: usize) -> &[u8] {
     debug_assert!(uv < p.upvalues.len(), "upval_name: index out of range");
     // TODO(port): UpvalDesc.name is GcRef<LuaString>; calling .as_bytes() requires
     // access to the interned string's data. Actual lifetime is tied to the GcRef.
-    p.upvalues[uv].name.as_ref().map_or(b"?" as &[u8], |s| s.as_bytes())
+    p.upvalues[uv]
+        .name
+        .as_ref()
+        .map_or(b"?" as &[u8], |s| s.as_bytes())
 }
 
 /// Finds the stack slot for vararg value number `n` (n is negative) in `ci`.
@@ -562,7 +577,11 @@ pub(crate) fn find_local(
                 .unwrap_or_else(|| state.top_idx().0)
         };
         if n > 0 && limit.saturating_sub(base.0) >= n as u32 {
-            name = Some(if ci.is_lua() { b"(temporary)".to_vec() } else { b"(C temporary)".to_vec() });
+            name = Some(if ci.is_lua() {
+                b"(temporary)".to_vec()
+            } else {
+                b"(C temporary)".to_vec()
+            });
         } else {
             return None;
         }
@@ -660,7 +679,11 @@ fn func_info(ar: &mut LuaDebug, cl: Option<&LuaClosure>) {
         ar.what = Some(if ar.linedefined == 0 { b"main" } else { b"Lua" });
     }
     // TODO(port): luaO_chunkid lives in crate::object; call it once available
-    chunk_id(&mut ar.short_src, ar.source.as_deref().unwrap_or(b"?"), ar.srclen);
+    chunk_id(
+        &mut ar.short_src,
+        ar.source.as_deref().unwrap_or(b"?"),
+        ar.srclen,
+    );
 }
 
 /// Returns the line number after advancing by one instruction from `currentline`.
@@ -784,7 +807,13 @@ fn aux_get_info(
                 }
             }
             b't' => {
-                ar.istailcall = ci.map_or(false, |ci| ci.callstatus & CIST_TAIL != 0);
+                if let Some(ci) = ci {
+                    ar.istailcall = ci.callstatus & CIST_TAIL != 0;
+                    ar.extraargs = ci.call_metamethods;
+                } else {
+                    ar.istailcall = false;
+                    ar.extraargs = 0;
+                }
             }
             b'n' => {
                 let mut name: Option<Vec<u8>> = None;
@@ -828,29 +857,28 @@ pub fn get_info(state: &mut LuaState, what: &[u8], ar: &mut LuaDebug) -> bool {
             "get_info: function expected"
         );
         let cl = match &func_val {
-            LuaValue::Function(LuaClosure::Lua(_) | LuaClosure::C(_)) => {
-                Some(match &func_val {
-                    LuaValue::Function(c) => c.clone(),
-                    _ => unreachable!(),
-                })
-            }
+            LuaValue::Function(LuaClosure::Lua(_) | LuaClosure::C(_)) => Some(match &func_val {
+                LuaValue::Function(c) => c.clone(),
+                _ => unreachable!(),
+            }),
             _ => None,
         };
         (cl, None, func_val, &what[1..])
     } else {
-        let ci_idx = match ar.i_ci { Some(i) => i, None => return false };
+        let ci_idx = match ar.i_ci {
+            Some(i) => i,
+            None => return false,
+        };
         let func_val = state.get_at(state.get_ci(ci_idx).func).clone();
         debug_assert!(
             matches!(func_val, LuaValue::Function(_)),
             "get_info: non-function at ci->func"
         );
         let cl = match &func_val {
-            LuaValue::Function(LuaClosure::Lua(_) | LuaClosure::C(_)) => {
-                Some(match &func_val {
-                    LuaValue::Function(c) => c.clone(),
-                    _ => unreachable!(),
-                })
-            }
+            LuaValue::Function(LuaClosure::Lua(_) | LuaClosure::C(_)) => Some(match &func_val {
+                LuaValue::Function(c) => c.clone(),
+                _ => unreachable!(),
+            }),
             _ => None,
         };
         (cl, Some(ci_idx), func_val, what)
@@ -876,7 +904,11 @@ pub fn get_info(state: &mut LuaState, what: &[u8], ar: &mut LuaDebug) -> bool {
 ///
 #[inline]
 fn filter_pc(pc: i32, jmptarget: i32) -> i32 {
-    if pc < jmptarget { -1 } else { pc }
+    if pc < jmptarget {
+        -1
+    } else {
+        pc
+    }
 }
 
 /// Finds the last instruction before `lastpc` that wrote to register `reg`.
@@ -888,7 +920,11 @@ fn find_set_reg(p: &LuaProto, lastpc: i32, reg: i32) -> i32 {
 
     // macros.tsv: testMMMode(op) → (luaP_opmodes[op as usize] & (1 << 7)) != 0
     // TODO(port): GET_OPCODE and opmode tests live in lua_code crate
-    let effective_lastpc = if p.code.get(lastpc as usize).map_or(false, |i| i.is_mm_mode()) {
+    let effective_lastpc = if p
+        .code
+        .get(lastpc as usize)
+        .map_or(false, |i| i.is_mm_mode())
+    {
         lastpc - 1
     } else {
         lastpc
@@ -1030,9 +1066,16 @@ fn is_env<'a>(p: &'a LuaProto, pc: i32, instr: Instruction, isup: bool) -> &'sta
         name = upval_name(p, t);
     } else {
         let mut pc = pc;
-        basic_get_obj_name(p, &mut pc, t as i32, &mut name);
+        let what = basic_get_obj_name(p, &mut pc, t as i32, &mut name);
+        if !matches!(what, Some(kind) if kind == b"local" || kind == b"upvalue") {
+            name = b"?";
+        }
     }
-    if name == LUA_ENV { b"global" } else { b"field" }
+    if name == LUA_ENV {
+        b"global"
+    } else {
+        b"field"
+    }
 }
 
 /// Extended version of `basic_get_obj_name` that also handles table accesses.
@@ -1149,14 +1192,12 @@ fn get_tm_name(
     // macros.tsv: getshrstr(ts) → ts.as_bytes(); G → state.global()
     // PORT NOTE: reshaped for borrowck — tm_name returns Option<GcRef<LuaString>>;
     // materialise the bytes before stripping so there is no borrow of a temporary.
-    let raw_bytes: Vec<u8> = state.global()
+    let raw_bytes: Vec<u8> = state
+        .global()
         .tm_name(tm)
         .map(|s| s.as_bytes().to_vec())
         .unwrap_or_default();
-    let stripped = raw_bytes
-        .strip_prefix(b"__")
-        .unwrap_or(&raw_bytes)
-        .to_vec();
+    let stripped = raw_bytes.strip_prefix(b"__").unwrap_or(&raw_bytes).to_vec();
     *name = Some(stripped);
     Some(b"metamethod")
 }
@@ -1294,19 +1335,21 @@ fn var_info(state: &LuaState, val_idx: StackIdx) -> Vec<u8> {
             }
         }
     }
-    format_var_info(kind, if kind.is_some() { Some(&name_owned) } else { None })
+    format_var_info(
+        kind,
+        if kind.is_some() {
+            Some(&name_owned)
+        } else {
+            None
+        },
+    )
 }
 
 // ─── Error-raising functions ──────────────────────────────────────────────────
 
 /// Internal helper: raises a type error with the given `extra` info string.
 ///
-fn typeerror_inner(
-    state: &LuaState,
-    val: &LuaValue,
-    op: &[u8],
-    extra: &[u8],
-) -> LuaError {
+fn typeerror_inner(state: &LuaState, val: &LuaValue, op: &[u8], extra: &[u8]) -> LuaError {
     let t = state.obj_type_name(val);
     let mut msg = Vec::new();
     msg.extend_from_slice(b"attempt to ");
@@ -1321,7 +1364,12 @@ fn typeerror_inner(
 /// Raises a type error for performing operation `op` on value `val`.
 /// Includes variable-info context (e.g. "local 'x'") if available.
 ///
-pub(crate) fn type_error(state: &LuaState, val: &LuaValue, val_idx: StackIdx, op: &[u8]) -> LuaError {
+pub(crate) fn type_error(
+    state: &LuaState,
+    val: &LuaValue,
+    val_idx: StackIdx,
+    op: &[u8],
+) -> LuaError {
     let extra = var_info(state, val_idx);
     typeerror_inner(state, val, op, &extra)
 }
@@ -1502,11 +1550,17 @@ pub(crate) fn add_info(
         // TODO(port): luaO_chunkid lives in crate::object
         chunk_id(&mut buff, src.as_bytes(), src.len());
     } else {
-        buff[0] = b'?';
+        let mut out = Vec::with_capacity(5 + msg.len());
+        out.extend_from_slice(b"?:?: ");
+        out.extend_from_slice(msg);
+        return out;
     }
     // PORT NOTE: Instead of pushing on the stack, we return the formatted Vec<u8>.
     // Callers that need the result on the stack should push it themselves.
-    let src_part = buff.iter().position(|&b| b == 0).map_or(&buff[..], |n| &buff[..n]);
+    let src_part = buff
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(&buff[..], |n| &buff[..n]);
     let mut out = Vec::with_capacity(src_part.len() + 12 + msg.len());
     out.extend_from_slice(src_part);
     out.push(b':');
@@ -1517,7 +1571,6 @@ pub(crate) fn add_info(
     out.extend_from_slice(msg);
     out
 }
-
 
 // ─── Line change detection ────────────────────────────────────────────────────
 

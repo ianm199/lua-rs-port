@@ -1,8 +1,8 @@
 //! `UpVal` — closure upvalues. PORT_STRATEGY §3.8.
 
-use std::cell::{Cell, Ref, RefCell};
-use crate::StackIdx;
 use crate::value::LuaValue;
+use crate::StackIdx;
+use std::cell::{Cell, Ref, RefCell};
 
 /// Discriminator state for an upvalue: either still pointing at a thread's
 /// stack slot, or owning the value after close.
@@ -13,10 +13,7 @@ use crate::value::LuaValue;
 /// kept for existing `slot()` callers that need the open/closed shape.
 #[derive(Debug, Clone)]
 pub enum UpValState {
-    Open {
-        thread_id: usize,
-        idx: StackIdx,
-    },
+    Open { thread_id: usize, idx: StackIdx },
     Closed(LuaValue),
 }
 
@@ -68,10 +65,16 @@ impl UpVal {
     /// Backwards-compat handle on the full `UpValState`. Out-of-crate code
     /// matches against this through `Ref::deref`. Hot-path callers should
     /// use `try_open_payload` / `closed_value` instead.
-    pub fn slot(&self) -> Ref<'_, UpValState> { self.state.borrow() }
+    pub fn slot(&self) -> Ref<'_, UpValState> {
+        self.state.borrow()
+    }
 
-    pub fn is_open(&self) -> bool { self.open_thread_id.get() >= 0 }
-    pub fn is_closed(&self) -> bool { self.open_thread_id.get() < 0 }
+    pub fn is_open(&self) -> bool {
+        self.open_thread_id.get() >= 0
+    }
+    pub fn is_closed(&self) -> bool {
+        self.open_thread_id.get() < 0
+    }
 
     /// Zero-`RefCell` fast path used by `upvalue_get` / `upvalue_set`.
     /// Returns `Some((thread_id, idx))` when the upvalue is still open,
@@ -89,7 +92,9 @@ impl UpVal {
     /// Returns the closed-side value. Callers must have confirmed the
     /// upvalue is closed (`try_open_payload` returned `None`).
     #[inline(always)]
-    pub fn closed_value(&self) -> LuaValue { self.closed_value.get() }
+    pub fn closed_value(&self) -> LuaValue {
+        self.closed_value.get()
+    }
 
     pub fn close_with(&self, v: LuaValue) {
         self.open_thread_id.set(CLOSED_TAG);

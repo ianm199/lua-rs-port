@@ -17,8 +17,8 @@ use lua_vm::api;
 use lua_vm::state::LuaState;
 
 use crate::any::{
-    push_any, push_hashable, read_any, read_map, read_sequence, string_bytes_at, AnyHashableLuaValue,
-    AnyLuaValue,
+    push_any, push_hashable, read_any, read_map, read_sequence, string_bytes_at,
+    AnyHashableLuaValue, AnyLuaValue,
 };
 use crate::{Lua, LuaError};
 

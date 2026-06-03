@@ -3,7 +3,6 @@
 //! Translates `reference/lua-5.4.7/src/ldump.c` (230 lines, 9 functions + 1 public entry point).
 //! Writes a `LuaProto` to a byte sink in the standard Lua 5.4 bytecode format.
 
-
 // TODO(port): Adjust import paths once crate boundaries stabilise in Phase B.
 // The types below are expected to resolve as follows:
 //   GcRef        — lua_types (or lua-gc Phase D)
@@ -12,12 +11,13 @@
 //   LuaString    — lua-vm / lua-types
 //   LuaValue     — lua_types
 //   LuaState     — lua-vm (this crate)
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::mem::size_of;
-#[allow(unused_imports)] use crate::prelude::*;
 
 use crate::state::LuaState;
-use lua_types::{GcRef, LuaError, LuaString, LuaValue};
 use lua_types::proto::LuaProto;
+use lua_types::{GcRef, LuaError, LuaString, LuaValue, LuaVersion};
 
 // ── Constants from lundump.h ─────────────────────────────────────────────────
 
@@ -28,9 +28,10 @@ const LUA_SIGNATURE: &[u8] = b"\x1bLua";
 
 // With LUA_VERSION_NUM = 504 (macros.tsv):
 //   (504 / 100) * 16 + 504 % 100 = 5 * 16 + 4 = 84 = 0x54
-const LUA_VERSION_NUM_DUMP: i32 = 504;
-const LUAC_VERSION: u8 =
-    ((LUA_VERSION_NUM_DUMP / 100) * 16 + LUA_VERSION_NUM_DUMP % 100) as u8;
+const LUA_VERSION_NUM_DUMP_54: i32 = 504;
+const LUAC_VERSION_54: u8 =
+    ((LUA_VERSION_NUM_DUMP_54 / 100) * 16 + LUA_VERSION_NUM_DUMP_54 % 100) as u8;
+const LUAC_VERSION_55: u8 = 0x55;
 
 const LUAC_FORMAT: u8 = 0;
 
@@ -41,6 +42,12 @@ const LUAC_DATA: &[u8] = b"\x19\x93\r\n\x1a\n";
 const LUAC_INT: i64 = 0x5678;
 
 const LUAC_NUM: f64 = 370.5;
+
+const LUAC_INT_55: i64 = -0x5678;
+
+const LUAC_INST_55: u32 = 0x12345678;
+
+const LUAC_NUM_55: f64 = -370.5;
 
 const INSTRUCTION_SIZE: u8 = size_of::<u32>() as u8;
 
@@ -62,6 +69,7 @@ struct DumpState<'a> {
     writer: &'a mut dyn FnMut(&[u8]) -> Result<(), LuaError>,
     /// When true, strip all debug information from the output.
     strip: bool,
+    version: LuaVersion,
 }
 
 impl<'a> DumpState<'a> {
@@ -151,6 +159,14 @@ impl<'a> DumpState<'a> {
         self.dump_block(&x.to_ne_bytes())
     }
 
+    fn dump_raw_i32(&mut self, x: i32) -> Result<(), LuaError> {
+        self.dump_block(&x.to_ne_bytes())
+    }
+
+    fn dump_raw_u32(&mut self, x: u32) -> Result<(), LuaError> {
+        self.dump_block(&x.to_ne_bytes())
+    }
+
     // ── Mid-level serialisers ─────────────────────────────────────────────────
 
     /// Write an interned or long string, or a null sentinel (encoded size = 0).
@@ -228,7 +244,10 @@ impl<'a> DumpState<'a> {
                     // TODO(port): LuaValue variant not valid as a constant-pool entry.
                     // In C the default branch asserts nil/false/true only. Any other variant
                     // here indicates a malformed proto; flag for Phase B investigation.
-                    debug_assert!(false, "dump_constants: unexpected LuaValue variant in constant pool");
+                    debug_assert!(
+                        false,
+                        "dump_constants: unexpected LuaValue variant in constant pool"
+                    );
                 }
             }
         }
@@ -292,7 +311,11 @@ impl<'a> DumpState<'a> {
             .collect();
         self.dump_block(&lineinfo_bytes)?;
 
-        let n_absline = if self.strip { 0 } else { proto.abslineinfo.len() };
+        let n_absline = if self.strip {
+            0
+        } else {
+            proto.abslineinfo.len()
+        };
         self.dump_int(n_absline as i32)?;
 
         for abs in proto.abslineinfo.iter().take(n_absline) {
@@ -382,22 +405,40 @@ impl<'a> DumpState<'a> {
         // C expansion of sizeof("\x1bLua")-1 = 4 bytes.
         self.dump_block(LUA_SIGNATURE)?;
 
-        self.dump_byte(LUAC_VERSION)?;
+        self.dump_byte(if matches!(self.version, LuaVersion::V55) {
+            LUAC_VERSION_55
+        } else {
+            LUAC_VERSION_54
+        })?;
 
         self.dump_byte(LUAC_FORMAT)?;
 
         // b"\x19\x93\r\n\x1a\n" is &[u8; 6], matching sizeof(LUAC_DATA)-1 = 6 bytes.
         self.dump_block(LUAC_DATA)?;
 
-        self.dump_byte(INSTRUCTION_SIZE)?;
+        if matches!(self.version, LuaVersion::V55) {
+            self.dump_byte(size_of::<i32>() as u8)?;
+            self.dump_raw_i32(LUAC_INT_55 as i32)?;
 
-        self.dump_byte(LUA_INTEGER_SIZE)?;
+            self.dump_byte(INSTRUCTION_SIZE)?;
+            self.dump_raw_u32(LUAC_INST_55)?;
 
-        self.dump_byte(LUA_NUMBER_SIZE)?;
+            self.dump_byte(LUA_INTEGER_SIZE)?;
+            self.dump_integer(LUAC_INT_55)?;
 
-        self.dump_integer(LUAC_INT)?;
+            self.dump_byte(LUA_NUMBER_SIZE)?;
+            self.dump_number(LUAC_NUM_55)?;
+        } else {
+            self.dump_byte(INSTRUCTION_SIZE)?;
 
-        self.dump_number(LUAC_NUM)?;
+            self.dump_byte(LUA_INTEGER_SIZE)?;
+
+            self.dump_byte(LUA_NUMBER_SIZE)?;
+
+            self.dump_integer(LUAC_INT)?;
+
+            self.dump_number(LUAC_NUM)?;
+        }
 
         Ok(())
     }
@@ -419,7 +460,7 @@ impl<'a> DumpState<'a> {
 /// macros.tsv. Return type changes from `int` (0 = ok, non-zero = writer error) to
 /// `Result<(), LuaError>`.
 pub(crate) fn dump(
-    _state: &LuaState,
+    state: &LuaState,
     proto: &GcRef<LuaProto>,
     writer: &mut dyn FnMut(&[u8]) -> Result<(), LuaError>,
     strip: bool,
@@ -427,6 +468,7 @@ pub(crate) fn dump(
     let mut d = DumpState {
         writer,
         strip,
+        version: state.global().lua_version,
     };
 
     d.dump_header()?;

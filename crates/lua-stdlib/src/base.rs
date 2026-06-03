@@ -3,14 +3,8 @@
 //! Translated from: `reference/lua-5.4.7/src/lbaselib.c` (549 lines, 32 functions)
 //! Target crate: `lua-stdlib`
 
-use lua_types::{
-    closure::LuaClosure,
-    error::LuaError,
-    value::LuaValue,
-    LuaType,
-    LuaStatus,
-};
 use crate::state_stub::{LuaState, LuaStateStubExt as _};
+use lua_types::{closure::LuaClosure, error::LuaError, value::LuaValue, LuaStatus, LuaType};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 
@@ -35,19 +29,22 @@ const LUA_MULTRET: i32 = -1;
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GcOp {
-    Stop       = 0,
-    Restart    = 1,
-    Collect    = 2,
-    Count      = 3,
-    #[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
-    CountB     = 4,
-    Step       = 5,
-    SetPause   = 6,
+    Stop = 0,
+    Restart = 1,
+    Collect = 2,
+    Count = 3,
+    #[expect(
+        dead_code,
+        reason = "ported stdlib helper; not yet wired into the runtime"
+    )]
+    CountB = 4,
+    Step = 5,
+    SetPause = 6,
     SetStepMul = 7,
-    IsRunning  = 9,
-    Gen        = 10,
-    Inc        = 11,
-    Param      = 12,
+    IsRunning = 9,
+    Gen = 10,
+    Inc = 11,
+    Param = 12,
 }
 
 // ── LuaState forward declaration ─────────────────────────────────────────────
@@ -176,6 +173,14 @@ fn load_aux(state: &mut LuaState, status_ok: bool, envidx: i32) -> Result<usize,
     }
 }
 
+fn check_load_mode(state: &mut LuaState, idx: i32, default: &[u8]) -> Result<Vec<u8>, LuaError> {
+    let mode = state.opt_arg_string(idx, default)?;
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V55) && mode.contains(&b'B') {
+        return Err(lua_vm::debug::arg_error_impl(state, idx, b"invalid mode"));
+    }
+    Ok(mode)
+}
+
 // ── print ─────────────────────────────────────────────────────────────────────
 
 /// Converts each argument to a string, separates them with tabs, writes them to
@@ -301,7 +306,11 @@ pub(crate) fn tonumber_fn(state: &mut LuaState) -> Result<usize, LuaError> {
             .map(|b| b.to_vec())
             .unwrap_or_default();
         if !(2..=36).contains(&base) {
-            return Err(lua_vm::debug::arg_error_impl(state, 2, b"base out of range"));
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                2,
+                b"base out of range",
+            ));
         }
         if let Some((consumed, n)) = b_str2int(&bytes, base as u32) {
             if consumed == bytes.len() {
@@ -444,32 +453,68 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
     // accept `isrunning`/`generational`, so it stays on OPTS_54.) See
     // specs/followup/5.1-roster-syntax.md §1.
     static OPTS_51: &[&[u8]] = &[
-        b"stop", b"restart", b"collect",
-        b"count", b"step", b"setpause", b"setstepmul",
+        b"stop",
+        b"restart",
+        b"collect",
+        b"count",
+        b"step",
+        b"setpause",
+        b"setstepmul",
     ];
     static OPTS_NUM_51: &[GcOp] = &[
-        GcOp::Stop, GcOp::Restart, GcOp::Collect,
-        GcOp::Count, GcOp::Step, GcOp::SetPause, GcOp::SetStepMul,
+        GcOp::Stop,
+        GcOp::Restart,
+        GcOp::Collect,
+        GcOp::Count,
+        GcOp::Step,
+        GcOp::SetPause,
+        GcOp::SetStepMul,
     ];
     static OPTS_54: &[&[u8]] = &[
-        b"stop", b"restart", b"collect",
-        b"count", b"step", b"setpause", b"setstepmul",
-        b"isrunning", b"generational", b"incremental",
+        b"stop",
+        b"restart",
+        b"collect",
+        b"count",
+        b"step",
+        b"setpause",
+        b"setstepmul",
+        b"isrunning",
+        b"generational",
+        b"incremental",
     ];
     static OPTS_NUM_54: &[GcOp] = &[
-        GcOp::Stop, GcOp::Restart, GcOp::Collect,
-        GcOp::Count, GcOp::Step, GcOp::SetPause, GcOp::SetStepMul,
-        GcOp::IsRunning, GcOp::Gen, GcOp::Inc,
+        GcOp::Stop,
+        GcOp::Restart,
+        GcOp::Collect,
+        GcOp::Count,
+        GcOp::Step,
+        GcOp::SetPause,
+        GcOp::SetStepMul,
+        GcOp::IsRunning,
+        GcOp::Gen,
+        GcOp::Inc,
     ];
     static OPTS_55: &[&[u8]] = &[
-        b"stop", b"restart", b"collect",
-        b"count", b"step", b"isrunning",
-        b"generational", b"incremental", b"param",
+        b"stop",
+        b"restart",
+        b"collect",
+        b"count",
+        b"step",
+        b"isrunning",
+        b"generational",
+        b"incremental",
+        b"param",
     ];
     static OPTS_NUM_55: &[GcOp] = &[
-        GcOp::Stop, GcOp::Restart, GcOp::Collect,
-        GcOp::Count, GcOp::Step, GcOp::IsRunning,
-        GcOp::Gen, GcOp::Inc, GcOp::Param,
+        GcOp::Stop,
+        GcOp::Restart,
+        GcOp::Collect,
+        GcOp::Count,
+        GcOp::Step,
+        GcOp::IsRunning,
+        GcOp::Gen,
+        GcOp::Inc,
+        GcOp::Param,
     ];
     let (opts, opts_num): (&[&[u8]], &[GcOp]) = if is_v55 {
         (OPTS_55, OPTS_NUM_55)
@@ -530,8 +575,8 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             return push_mode(state, oldmode);
         }
         GcOp::Inc => {
-            let pause    = state.opt_arg_integer(2, 0)? as i32;
-            let stepmul  = state.opt_arg_integer(3, 0)? as i32;
+            let pause = state.opt_arg_integer(2, 0)? as i32;
+            let stepmul = state.opt_arg_integer(3, 0)? as i32;
             let stepsize = state.opt_arg_integer(4, 0)? as i32;
             // TODO(port): gc_inc is a stub in Phase A.
             let oldmode = state.gc_inc(pause, stepmul, stepsize)?;
@@ -542,8 +587,12 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             // parameter, always returning the OLD integer value. arg2 selects
             // the param; arg3 (default -1 = read-only) is the new value.
             static PARAMS: &[&[u8]] = &[
-                b"minormul", b"majorminor", b"minormajor",
-                b"pause", b"stepmul", b"stepsize",
+                b"minormul",
+                b"majorminor",
+                b"minormajor",
+                b"pause",
+                b"stepmul",
+                b"stepsize",
             ];
             let pidx = state.check_arg_option(2, None, PARAMS)?;
             let value = state.opt_arg_integer(3, -1)?;
@@ -562,7 +611,10 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             }
         }
     };
-    debug_assert!(!valid, "valid arms return early; reaching here means checkvalres fired");
+    debug_assert!(
+        !valid,
+        "valid arms return early; reaching here means checkvalres fired"
+    );
     state.push(LuaValue::Nil);
     Ok(1)
 }
@@ -613,7 +665,11 @@ fn fenv_level(v: &LuaValue) -> i64 {
 /// - neither number nor function → `number expected, got <type>`
 fn fenv_getfunc(state: &mut LuaState, level: i64) -> Result<LuaValue, LuaError> {
     if level < 0 {
-        return Err(lua_vm::debug::arg_error_impl(state, 1, b"level must be non-negative"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            1,
+            b"level must be non-negative",
+        ));
     }
     let mut ar = lua_vm::debug::LuaDebug::default();
     if !lua_vm::debug::get_stack(state, level as i32, &mut ar) {
@@ -634,7 +690,9 @@ fn fenv_getfunc(state: &mut LuaState, level: i64) -> Result<LuaValue, LuaError> 
 /// captures locals places those first, with `_ENV` at a later index — so it must
 /// be located by name, not position. A closure that references no free names has
 /// no `_ENV` upvalue and returns `None`.
-fn fenv_env_upval_index(lcl: &lua_types::gc::GcRef<lua_types::closure::LuaLClosure>) -> Option<usize> {
+fn fenv_env_upval_index(
+    lcl: &lua_types::gc::GcRef<lua_types::closure::LuaLClosure>,
+) -> Option<usize> {
     lcl.proto
         .upvalues
         .iter()
@@ -702,8 +760,8 @@ pub(crate) fn setfenv_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     let new_env = state.value_at(2);
 
     let arg1 = state.value_at(1);
-    let is_level_zero = matches!(&arg1, LuaValue::Int(0))
-        || matches!(&arg1, LuaValue::Float(f) if *f == 0.0);
+    let is_level_zero =
+        matches!(&arg1, LuaValue::Int(0)) || matches!(&arg1, LuaValue::Float(f) if *f == 0.0);
     if is_level_zero {
         // Level 0: replace the running thread's global table and return the
         // running thread. Subsequently-loaded top-level chunks take this env.
@@ -748,7 +806,9 @@ pub(crate) fn setfenv_fn(state: &mut LuaState) -> Result<usize, LuaError> {
             // C/Rust functions cannot have their environment changed. 5.1
             // raises this exact message (via luaL_error, so it carries the
             // caller's source location) for any object whose env is fixed.
-            return Err(state.where_error(1, b"'setfenv' cannot change environment of given object"));
+            return Err(
+                state.where_error(1, b"'setfenv' cannot change environment of given object")
+            );
         }
     }
     state.push(func);
@@ -799,8 +859,12 @@ pub(crate) fn next_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Continuation for `pairs` when the `__pairs` metamethod yields.
 /// Re-invoked by `finishCcall` after the yielded `__pairs` resumes.
 ///
-fn pairs_cont(_state: &mut LuaState, _status: i32, _ctx: isize) -> Result<usize, LuaError> {
-    Ok(3)
+fn pairs_cont(state: &mut LuaState, _status: i32, _ctx: isize) -> Result<usize, LuaError> {
+    if state.global().lua_version == lua_types::LuaVersion::V55 {
+        Ok(4)
+    } else {
+        Ok(3)
+    }
 }
 
 // ── pairs ─────────────────────────────────────────────────────────────────────
@@ -811,18 +875,26 @@ fn pairs_cont(_state: &mut LuaState, _status: i32, _ctx: isize) -> Result<usize,
 pub(crate) fn pairs_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_any(1)?;
     // Lua 5.1 has no `__pairs` metamethod; `pairs(t)` always iterates the raw
-    // table even when a `__pairs` is set (it is silently ignored). `__pairs`
-    // was added in 5.2 and removed again in 5.4, so only consult it off V51.
+    // table even when a `__pairs` is set (it is silently ignored). Lua 5.5
+    // extends the result list with a fourth to-be-closed object.
     let consult_pairs_tm = !matches!(state.global().lua_version, lua_types::LuaVersion::V51);
+    let nresults = if state.global().lua_version == lua_types::LuaVersion::V55 {
+        4
+    } else {
+        3
+    };
     if !consult_pairs_tm || state.get_metafield(1, b"__pairs")? == LuaType::Nil {
         state.push_c_function(next_fn)?;
         state.push_copy(1)?;
         state.push(LuaValue::Nil);
+        if nresults == 4 {
+            state.push(LuaValue::Nil);
+        }
     } else {
         state.push_copy(1)?;
-        state.call_k(1, 3, 0, Some(pairs_cont))?;
+        state.call_k(1, nresults as i32, 0, Some(pairs_cont))?;
     }
-    Ok(3)
+    Ok(nresults)
 }
 
 // ── ipairs auxiliary ──────────────────────────────────────────────────────────
@@ -862,8 +934,16 @@ pub(crate) fn ipairs_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 pub(crate) fn loadfile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     let fname: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
-    let mode: Option<Vec<u8>> = state.opt_arg_lstring(2, None)?;
-    let env = if state.type_at(3) != LuaType::None { 3 } else { 0 };
+    let mode: Option<Vec<u8>> = if state.is_none_or_nil(2) {
+        None
+    } else {
+        Some(check_load_mode(state, 2, b"bt")?)
+    };
+    let env = if state.type_at(3) != LuaType::None {
+        3
+    } else {
+        0
+    };
     let status_ok = state.load_file_ex(fname.as_deref(), mode.as_deref())?;
     load_aux(state, status_ok, env)
 }
@@ -898,9 +978,7 @@ fn generic_reader(state: &mut LuaState) -> Result<Option<Vec<u8>>, LuaError> {
         )));
     }
     state.replace(RESERVED_SLOT)?;
-    let bytes = state
-        .to_lua_string_bytes(RESERVED_SLOT)
-        .map(|b| b.to_vec());
+    let bytes = state.to_lua_string_bytes(RESERVED_SLOT).map(|b| b.to_vec());
     Ok(bytes)
 }
 
@@ -919,8 +997,12 @@ pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // Determine whether argument 1 is a string (load from buffer) or a
     // function (load from reader).
     let is_string = matches!(state.type_at(1), LuaType::String | LuaType::Number);
-    let mode: Vec<u8> = state.opt_arg_string(3, b"bt")?;
-    let env = if state.type_at(4) != LuaType::None { 4 } else { 0 };
+    let mode: Vec<u8> = check_load_mode(state, 3, b"bt")?;
+    let env = if state.type_at(4) != LuaType::None {
+        4
+    } else {
+        0
+    };
     let status_ok = if is_string {
         let chunk: Vec<u8> = state.to_lua_string_bytes(1).unwrap_or_default();
         let chunkname: Vec<u8> = if state.is_none_or_nil(2) {
@@ -994,10 +1076,13 @@ pub(crate) fn newproxy_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     } else {
         // A proxy argument: share its metatable. Validate it is a userdata that
         // carries one (the C version checks a weak table of valid metatables).
-        let is_proxy =
-            matches!(state.type_at(1), LuaType::UserData) && state.get_metatable(1)?;
+        let is_proxy = matches!(state.type_at(1), LuaType::UserData) && state.get_metatable(1)?;
         if !is_proxy {
-            return Err(lua_vm::debug::arg_error_impl(state, 1, b"boolean or proxy expected"));
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                1,
+                b"boolean or proxy expected",
+            ));
         }
         // get_metatable pushed arg1's metatable on top; attach it to the proxy.
         state.set_metatable(2)?;
@@ -1064,7 +1149,11 @@ pub(crate) fn select_fn(state: &mut LuaState) -> Result<usize, LuaError> {
         i = n;
     }
     if i < 1 {
-        return Err(lua_vm::debug::arg_error_impl(state, 1, b"index out of range"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            1,
+            b"index out of range",
+        ));
     }
     // The values at stack positions [i+1 .. n] are already in place; the
     // runtime picks up the top (n - i) of them as results.
@@ -1170,29 +1259,29 @@ pub(crate) fn tostring_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `{LUA_GNAME, NULL}` and `{"_VERSION", NULL}` that `luaopen_base` fills in
 /// separately.  Those are omitted here; `open()` sets them explicitly.
 pub(crate) const BASE_FUNCS: &[(&[u8], LuaLibFn)] = &[
-    (b"assert",         assert_fn),
+    (b"assert", assert_fn),
     (b"collectgarbage", collectgarbage_fn),
-    (b"dofile",         dofile_fn),
-    (b"error",          error_fn),
-    (b"getmetatable",   getmetatable_fn),
-    (b"ipairs",         ipairs_fn),
-    (b"loadfile",       loadfile_fn),
-    (b"load",           load_fn),
-    (b"next",           next_fn),
-    (b"pairs",          pairs_fn),
-    (b"pcall",          pcall_fn),
-    (b"print",          print_fn),
-    (b"warn",           warn_fn),
-    (b"rawequal",       rawequal_fn),
-    (b"rawlen",         rawlen_fn),
-    (b"rawget",         rawget_fn),
-    (b"rawset",         rawset_fn),
-    (b"select",         select_fn),
-    (b"setmetatable",   setmetatable_fn),
-    (b"tonumber",       tonumber_fn),
-    (b"tostring",       tostring_fn),
-    (b"type",           type_fn),
-    (b"xpcall",         xpcall_fn),
+    (b"dofile", dofile_fn),
+    (b"error", error_fn),
+    (b"getmetatable", getmetatable_fn),
+    (b"ipairs", ipairs_fn),
+    (b"loadfile", loadfile_fn),
+    (b"load", load_fn),
+    (b"next", next_fn),
+    (b"pairs", pairs_fn),
+    (b"pcall", pcall_fn),
+    (b"print", print_fn),
+    (b"warn", warn_fn),
+    (b"rawequal", rawequal_fn),
+    (b"rawlen", rawlen_fn),
+    (b"rawget", rawget_fn),
+    (b"rawset", rawset_fn),
+    (b"select", select_fn),
+    (b"setmetatable", setmetatable_fn),
+    (b"tonumber", tonumber_fn),
+    (b"tostring", tostring_fn),
+    (b"type", type_fn),
+    (b"xpcall", xpcall_fn),
 ];
 
 // ── Module opener ─────────────────────────────────────────────────────────────

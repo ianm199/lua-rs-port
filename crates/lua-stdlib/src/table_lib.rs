@@ -5,8 +5,8 @@
 //!
 //! C source: `reference/lua-5.4.7/src/ltablib.c` (430 lines, 14 functions)
 
+use crate::state_stub::{CompareOp, LuaState, LuaStateStubExt as _};
 use lua_types::{GcRef, LuaError, LuaTable, LuaType, LuaValue};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, CompareOp};
 use lua_vm::state::LuaTableRefExt as _;
 
 // ─── Operation flags ──────────────────────────────────────────────────────────
@@ -165,7 +165,11 @@ pub fn insert(state: &mut LuaState) -> Result<usize, LuaError> {
             let pos = state.check_arg_integer(2)?;
             // Checks 1 <= pos <= e (wrapping subtraction catches pos <= 0)
             if !((pos as u64).wrapping_sub(1) < (e as u64)) {
-                return Err(lua_vm::debug::arg_error_impl(state, 2, b"position out of bounds"));
+                return Err(lua_vm::debug::arg_error_impl(
+                    state,
+                    2,
+                    b"position out of bounds",
+                ));
             }
             if let Some(tbl) = plain_table {
                 let value = state.value_at(3);
@@ -227,8 +231,16 @@ pub fn remove(state: &mut LuaState) -> Result<usize, LuaError> {
     let mut pos = state.opt_arg_integer(2, size)?;
     if pos != size {
         if !((pos as u64).wrapping_sub(1) <= (size as u64)) {
-            let argn = if state.global().lua_version == lua_types::LuaVersion::V53 { 1 } else { 2 };
-            return Err(lua_vm::debug::arg_error_impl(state, argn, b"position out of bounds"));
+            let argn = if state.global().lua_version == lua_types::LuaVersion::V53 {
+                1
+            } else {
+                2
+            };
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                argn,
+                b"position out of bounds",
+            ));
         }
     }
     // Cache the table once to avoid re-resolving stack slot 1 on every
@@ -247,14 +259,14 @@ pub fn remove(state: &mut LuaState) -> Result<usize, LuaError> {
         return Ok(1);
     }
     let tbl = state.value_at(1);
-    state.table_get_i_value(&tbl, pos)?;   // push element to be returned
+    state.table_get_i_value(&tbl, pos)?; // push element to be returned
     while pos < size {
         state.table_get_i_value(&tbl, pos + 1)?;
         state.table_set_i_value(&tbl, pos)?;
         pos += 1;
     }
     state.push(LuaValue::Nil);
-    state.table_set_i_value(&tbl, pos)?;   // remove last slot (table[pos] = nil)
+    state.table_set_i_value(&tbl, pos)?; // remove last slot (table[pos] = nil)
     Ok(1)
 }
 
@@ -301,17 +313,23 @@ pub fn tmove(state: &mut LuaState) -> Result<usize, LuaError> {
 
     if e >= f {
         if !(f > 0 || e < i64::MAX + f) {
-            return Err(lua_vm::debug::arg_error_impl(state, 3, b"too many elements to move"));
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                3,
+                b"too many elements to move",
+            ));
         }
         let n = e - f + 1;
         if !(t <= i64::MAX - n + 1) {
-            return Err(lua_vm::debug::arg_error_impl(state, 4, b"destination wrap around"));
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                4,
+                b"destination wrap around",
+            ));
         }
         // Copy forward (increasing) when safe to do so; backward when ranges overlap.
         // TODO(port): state.compare(a, b, CompareOp::Eq) → lua_compare LUA_OPEQ; verify method
-        let copy_forward = t > e
-            || t <= f
-            || (tt != 1 && !state.compare(1, tt, CompareOp::Eq)?);
+        let copy_forward = t > e || t <= f || (tt != 1 && !state.compare(1, tt, CompareOp::Eq)?);
         if copy_forward {
             for i in 0..n {
                 state.table_get_i(1, f + i)?;
@@ -357,7 +375,9 @@ fn add_field(state: &mut LuaState, buf: &mut Vec<u8>, idx: i64) -> Result<(), Lu
         return crate::auxlib::lua_error(state, msg.as_bytes()).map(|_| ());
     }
     // TODO(port): state.to_bytes_at(-1) converts via Lua's tostring coercion; verify method name
-    let bytes = state.to_bytes_at(-1).ok_or_else(|| LuaError::runtime(format_args!("invalid value at index {}", idx)))?;
+    let bytes = state
+        .to_bytes_at(-1)
+        .ok_or_else(|| LuaError::runtime(format_args!("invalid value at index {}", idx)))?;
     buf.extend_from_slice(&bytes);
     state.pop_n(1);
     Ok(())
@@ -470,11 +490,15 @@ pub fn unpack(state: &mut LuaState) -> Result<usize, LuaError> {
     // (e.g. i=minI, e=maxI yields n = 2^64-1 pre-inc, 0 post-inc) still trips
     // the error rather than silently entering a 2^64-iteration loop.
     if n >= i32::MAX as u64 {
-        return Err(LuaError::runtime(format_args!("too many results to unpack")));
+        return Err(LuaError::runtime(format_args!(
+            "too many results to unpack"
+        )));
     }
     let n = n + 1;
     if !state.check_stack_growth(n as i32) {
-        return Err(LuaError::runtime(format_args!("too many results to unpack")));
+        return Err(LuaError::runtime(format_args!(
+            "too many results to unpack"
+        )));
     }
     let n = n as i64;
     let mut k = i;
@@ -545,9 +569,9 @@ fn sort_comp(state: &mut LuaState, a: i32, b: i32) -> Result<bool, LuaError> {
         return state.compare(a, b, CompareOp::Lt);
     }
     // User comparator at stack position 2.
-    state.push_value_at(2)?;       // push function
-    state.push_value_at(a - 1)?;   // push copy of a (compensate for function push)
-    state.push_value_at(b - 2)?;   // push copy of b (compensate for function + a copy)
+    state.push_value_at(2)?; // push function
+    state.push_value_at(a - 1)?; // push copy of a (compensate for function push)
+    state.push_value_at(b - 2)?; // push copy of b (compensate for function + a copy)
     state.call(2, 1)?;
     // TODO(port): state.to_boolean(-1) → lua_toboolean (never fails); verify method name
     let res = state.to_boolean(-1);
@@ -688,7 +712,12 @@ fn choose_pivot(lo: IdxT, up: IdxT, rnd: u32) -> IdxT {
 ///   }
 /// }
 /// ```
-fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> Result<(), LuaError> {
+fn aux_sort(
+    state: &mut LuaState,
+    mut lo: IdxT,
+    mut up: IdxT,
+    mut rnd: u32,
+) -> Result<(), LuaError> {
     while lo < up {
         // Step 1: ensure a[lo] <= a[up] (cheap two-element sort)
         state.table_get_i(1, lo as i64)?; // push a[lo]
@@ -710,7 +739,7 @@ fn aux_sort(state: &mut LuaState, mut lo: IdxT, mut up: IdxT, mut rnd: u32) -> R
         };
 
         // Step 3: median-of-three: sort a[lo], a[p], a[up]
-        state.table_get_i(1, p as i64)?;  // push a[p]
+        state.table_get_i(1, p as i64)?; // push a[p]
         state.table_get_i(1, lo as i64)?; // push a[lo]
         if sort_comp(state, -2, -1)? {
             set2(state, p, lo)?; // swap a[p] ↔ a[lo]; stack clean

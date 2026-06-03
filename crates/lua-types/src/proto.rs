@@ -38,6 +38,9 @@ pub struct LuaProto {
     /// for ordinary `...` and all pre-5.5 functions. Mirrors upstream's
     /// `needvatab` proto flag + the vararg-table register.
     pub vararg_table_reg: Option<u8>,
+    /// Whether the named vararg parameter must be materialized as a real table.
+    /// If false, indexed reads can be served directly from hidden vararg slots.
+    pub vararg_table_needed: bool,
 }
 
 impl LuaProto {
@@ -58,6 +61,7 @@ impl LuaProto {
             source: None,
             cache: RefCell::new(None),
             vararg_table_reg: None,
+            vararg_table_needed: false,
         }
     }
 

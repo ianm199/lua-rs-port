@@ -32,11 +32,10 @@
 //   (b) a custom `GcCell<T>` wrapper with conditional interior mutability.
 // Both `close_upval` and `init_upvals` carry `TODO(port)` at the mutation sites.
 
-#[allow(unused_imports)] use crate::prelude::*;
+#[allow(unused_imports)]
+use crate::prelude::*;
 
-use crate::state::{
-    GcRef, LuaState, LuaValue, UpVal,
-};
+use crate::state::{GcRef, LuaState, LuaValue, UpVal};
 use lua_types::error::LuaError;
 pub use lua_types::{CallInfoIdx, StackIdx};
 
@@ -53,7 +52,10 @@ pub(crate) const CLOSE_K_TOP: i32 = -1;
 /// each holding `LuaValue::Nil`. Used when compiling closures that capture no
 /// live stack variables.
 ///
-pub(crate) fn init_upvals(state: &mut LuaState, cl: &GcRef<lua_types::LuaLClosure>) -> Result<(), LuaError> {
+pub(crate) fn init_upvals(
+    state: &mut LuaState,
+    cl: &GcRef<lua_types::LuaLClosure>,
+) -> Result<(), LuaError> {
     //      GCObject *o = luaC_newobj(L, LUA_VUPVAL, sizeof(UpVal));
     //      UpVal *uv = gco2upv(o);
     //      uv->v.p = &uv->u.value;  /* make it closed */
@@ -84,11 +86,7 @@ pub(crate) fn init_upvals(state: &mut LuaState, cl: &GcRef<lua_types::LuaLClosur
 /// `state.openupval` at `insert_pos`, and registers the thread in the
 /// global `twups` list if necessary.
 ///
-fn new_open_upval(
-    state: &mut LuaState,
-    level: StackIdx,
-    insert_pos: usize,
-) -> GcRef<UpVal> {
+fn new_open_upval(state: &mut LuaState, level: StackIdx, insert_pos: usize) -> GcRef<UpVal> {
     //    UpVal *uv = gco2upv(o);
     //    UpVal *next = *prev;
     //    uv->v.p = s2v(level);   /* current value lives in the stack */
@@ -146,7 +144,10 @@ pub(crate) fn find_upval(state: &mut LuaState, level: StackIdx) -> GcRef<UpVal> 
     for (i, uv_ref) in state.openupval.iter().enumerate() {
         // macros.tsv: uplevel → extract thread_stack_idx from UpVal::Open
         let uv_idx = match &*uv_ref.slot() {
-            lua_types::UpValState::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
+            lua_types::UpValState::Open {
+                thread_id: _,
+                idx: thread_stack_idx,
+            } => *thread_stack_idx,
             lua_types::UpValState::Closed(_) => {
                 debug_assert!(false, "closed upvalue found in openupval list");
                 continue;
@@ -176,7 +177,7 @@ pub(crate) fn find_upval(state: &mut LuaState, level: StackIdx) -> GcRef<UpVal> 
 fn call_close_method(
     state: &mut LuaState,
     obj: LuaValue,
-    err: LuaValue,
+    err: Option<LuaValue>,
     yy: bool,
 ) -> Result<(), LuaError> {
     //    const TValue *tm = luaT_gettmbyobj(L, obj, TM_CLOSE);
@@ -194,7 +195,9 @@ fn call_close_method(
     let top = state.top;
     state.push(tm);
     state.push(obj);
-    state.push(err);
+    if let Some(err) = err {
+        state.push(err);
+    }
     // TODO(port): state.call(top, 0) / state.call_noyield(top, 0) —
     // these methods live in do_.rs (ldo.c); cross-module call.
     if yy {
@@ -225,7 +228,9 @@ fn check_close_mth(state: &mut LuaState, level: StackIdx) -> Result<(), LuaError
         // CallInfo.func is the StackIdx of the function on the stack.
         let func_idx = state.current_ci().func;
         let idx = (level.0 as i32) - (func_idx.0 as i32);
-        let vname_owned: Vec<u8> = state.debug_find_local(state.ci, idx).unwrap_or_else(|| b"?".to_vec());
+        let vname_owned: Vec<u8> = state
+            .debug_find_local(state.ci, idx)
+            .unwrap_or_else(|| b"?".to_vec());
         // PORT NOTE: Lua variable names are ASCII identifiers; `escape_ascii`
         // produces a Display-compatible wrapper for the byte slice.
         return Err(LuaError::runtime(format_args!(
@@ -260,12 +265,19 @@ fn prep_call_close_mth(
     // macros.tsv: s2v(level) → state.stack_at(level), returning &LuaValue
     // Clone before any mutable operations to avoid borrow conflicts.
     let uv = state.get_stack_value(level).clone();
-    let err = if status == CLOSE_K_TOP {
-        LuaValue::Nil
+    let err = if state.global().lua_version == lua_types::LuaVersion::V55 {
+        if status == CLOSE_K_TOP || status == lua_types::LuaStatus::Ok as i32 {
+            None
+        } else {
+            state.set_error_obj(status, StackIdx(level.0 + 1))?;
+            Some(state.get_stack_value(StackIdx(level.0 + 1)).clone())
+        }
+    } else if status == CLOSE_K_TOP {
+        Some(LuaValue::Nil)
     } else {
         // TODO(port): state.set_error_obj(status, ...) lives in do_.rs (ldo.c).
         state.set_error_obj(status, StackIdx(level.0 + 1))?;
-        state.get_stack_value(StackIdx(level.0 + 1)).clone()
+        Some(state.get_stack_value(StackIdx(level.0 + 1)).clone())
     };
     call_close_method(state, uv, err, yy)
 }
@@ -325,7 +337,10 @@ pub(crate) fn close_upval(state: &mut LuaState, level: StackIdx) {
             None => break,
         };
         let uv_idx = match &*uv.slot() {
-            lua_types::UpValState::Open { thread_id: _, idx: thread_stack_idx } => *thread_stack_idx,
+            lua_types::UpValState::Open {
+                thread_id: _,
+                idx: thread_stack_idx,
+            } => *thread_stack_idx,
             lua_types::UpValState::Closed(_) => {
                 // Cross-thread close/reset paths can leave a stale closed
                 // upvalue in this Vec-backed open list. The C intrusive list
@@ -397,7 +412,12 @@ pub(crate) fn close(
     //      prepcallclosemth(L, tbc, status, yy);
     //      level = restorestack(L, levelrel);
     //    }
-    while state.tbclist.last().copied().map_or(false, |tbc| tbc.0 >= level.0) {
+    while state
+        .tbclist
+        .last()
+        .copied()
+        .map_or(false, |tbc| tbc.0 >= level.0)
+    {
         let tbc = state
             .tbclist
             .last()
@@ -526,21 +546,13 @@ impl LuaState {
 
     /// Calls a Lua or C function (non-yieldable).
     ///
-    pub(crate) fn lua_callnoyield(
-        &mut self,
-        top: StackIdx,
-        nresults: i32,
-    ) -> Result<(), LuaError> {
+    pub(crate) fn lua_callnoyield(&mut self, top: StackIdx, nresults: i32) -> Result<(), LuaError> {
         crate::do_::callnoyield(self, top, nresults)
     }
 
     /// Sets the error object at a given stack index for a given status code.
     ///
-    pub(crate) fn set_error_obj(
-        &mut self,
-        status: i32,
-        idx: StackIdx,
-    ) -> Result<(), LuaError> {
+    pub(crate) fn set_error_obj(&mut self, status: i32, idx: StackIdx) -> Result<(), LuaError> {
         let s = lua_types::status::LuaStatus::from_raw(status);
         crate::do_::set_error_obj(self, s, idx);
         Ok(())
@@ -548,11 +560,7 @@ impl LuaState {
 
     /// Returns the local-variable name at frame position `n` for CallInfo `ci`.
     ///
-    pub(crate) fn debug_find_local(
-        &self,
-        ci: CallInfoIdx,
-        n: i32,
-    ) -> Option<Vec<u8>> {
+    pub(crate) fn debug_find_local(&self, ci: CallInfoIdx, n: i32) -> Option<Vec<u8>> {
         crate::debug::find_local(self, ci, n, None)
     }
 }

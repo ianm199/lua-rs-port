@@ -23,9 +23,7 @@ use lua_rs_runtime::{AnyUserData, Lua, UserData, UserDataMethods};
 ///
 /// Panics if `body` does not raise an error.
 fn lua_error_message(lua: &Lua, body: &str) -> String {
-    let wrapper = format!(
-        "local ok, err = pcall(function() {body} end); return ok, tostring(err)"
-    );
+    let wrapper = format!("local ok, err = pcall(function() {body} end); return ok, tostring(err)");
     let (ok, msg): (bool, String) = lua
         .load(&wrapper)
         .eval()
@@ -168,11 +166,14 @@ fn delegate_subreference_mutates_through_parent() {
     lua.scope(|s| {
         let app_ud = s.create_userdata_ref_mut(&lua, &mut app)?;
         lua.globals().set("app", &app_ud)?;
-        lua.load(r#"
+        lua.load(
+            r#"
             local w = app:world()
             w:spawn("alpha")
             w:spawn("beta")
-        "#).exec()
+        "#,
+        )
+        .exec()
     })
     .expect("scope body should succeed");
 
@@ -194,13 +195,16 @@ fn delegate_does_not_block_parent_between_calls() {
         .scope(|s| {
             let app_ud = s.create_userdata_ref_mut(&lua, &mut app)?;
             lua.globals().set("app", &app_ud)?;
-            lua.load(r#"
+            lua.load(
+                r#"
                 local w = app:world()
                 w:spawn("a")
                 local n = app:name()  -- parent call between delegate calls
                 w:spawn("b")
                 return n
-            "#).eval()
+            "#,
+            )
+            .eval()
         })
         .expect("scope body should succeed");
 
@@ -222,11 +226,14 @@ fn delegate_invalidates_with_parent_at_scope_end() {
     lua.scope(|s| {
         let app_ud = s.create_userdata_ref_mut(&lua, &mut app)?;
         lua.globals().set("app", &app_ud)?;
-        lua.load(r#"
+        lua.load(
+            r#"
             stashed_world = app:world()
             stashed_app = app
             stashed_world:spawn("in_scope")
-        "#).exec()
+        "#,
+        )
+        .exec()
     })
     .expect("scope body should succeed");
     assert_eq!(app.world.entities, vec!["in_scope"]);
@@ -267,10 +274,7 @@ fn delegate_method_holding_parent_borrow_rejects_reentrant_parent_call() {
         fn add_methods<M: UserDataMethods<Self>>(m: &mut M) {
             m.add_method("name", |_lua, _this, ()| Ok("the-app".to_string()));
             m.add_function("world", |lua, this: AnyUserData| {
-                this.delegate::<AppWithReentryWorld, WorldWithReentry, _>(
-                    lua,
-                    |a| &mut a.world,
-                )
+                this.delegate::<AppWithReentryWorld, WorldWithReentry, _>(lua, |a| &mut a.world)
             });
         }
     }
@@ -341,12 +345,15 @@ fn delegate_chains_multiple_levels() {
         .scope(|s| {
             let ud = s.create_userdata_ref_mut(&lua, &mut outer)?;
             lua.globals().set("o", &ud)?;
-            lua.load(r#"
+            lua.load(
+                r#"
                 local m = o:middle()
                 local i = m:inner()
                 i:bump(); i:bump(); i:bump()
                 return i:bump()
-            "#).eval()
+            "#,
+            )
+            .eval()
         })
         .expect("3-level chain should work");
     assert_eq!(result, 4);
@@ -366,10 +373,13 @@ fn delegate_cloned_handles_invalidate_together() {
     lua.scope(|s| {
         let app_ud = s.create_userdata_ref_mut(&lua, &mut app)?;
         lua.globals().set("app", &app_ud)?;
-        lua.load(r#"
+        lua.load(
+            r#"
             stashed_a = app:world()
             stashed_b = stashed_a       -- Lua reference; same cell
-        "#).exec()
+        "#,
+        )
+        .exec()
     })
     .expect("scope body should succeed");
 

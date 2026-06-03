@@ -39,10 +39,7 @@ fn v53_runs_a_trivial_script() {
 #[test]
 fn const_attribute_parses_under_54_but_errors_under_53() {
     let lua54 = Lua::new_versioned(LuaVersion::V54);
-    let v: i64 = lua54
-        .load("local x <const> = 42; return x")
-        .eval()
-        .unwrap();
+    let v: i64 = lua54.load("local x <const> = 42; return x").eval().unwrap();
     assert_eq!(v, 42);
 
     let lua53 = Lua::new_versioned(LuaVersion::V53);
@@ -73,10 +70,7 @@ fn coroutine_close_present_under_54_absent_under_53() {
     );
 
     let lua53 = Lua::new_versioned(LuaVersion::V53);
-    let is_nil: bool = lua53
-        .load("return coroutine.close == nil")
-        .eval()
-        .unwrap();
+    let is_nil: bool = lua53.load("return coroutine.close == nil").eval().unwrap();
     assert!(is_nil, "coroutine.close must be nil under 5.3");
 }
 

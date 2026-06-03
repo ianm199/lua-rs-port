@@ -9,6 +9,12 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LuaExit(pub i32);
 
+/// Internal control-flow payload for Lua 5.5 `coroutine.close()` self-close.
+/// It is caught at the coroutine resume boundary; panic hooks should suppress it
+/// like [`LuaExit`] because it is not a Rust runtime panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LuaThreadClose(pub LuaStatus);
+
 /// The Lua error type. Carries a `LuaValue` payload because Lua errors can
 /// be any value (typically a string).
 #[derive(Debug, Clone)]
@@ -37,7 +43,7 @@ impl LuaError {
     pub fn syntax_at(args: fmt::Arguments<'_>, source: &[u8], line: i32) -> Self {
         LuaError::Syntax(LuaValue::Str(crate::gc::GcRef::new(
             crate::string::LuaString::from_bytes(
-                format!("{}:{}: {}", String::from_utf8_lossy(source), line, args).into_bytes()
+                format!("{}:{}: {}", String::from_utf8_lossy(source), line, args).into_bytes(),
             ),
         )))
     }
@@ -55,27 +61,54 @@ impl LuaError {
         Self::type_error(v, "call")
     }
     pub fn concat_error(p1: &LuaValue, p2: &LuaValue) -> Self {
-        let bad = if matches!(p1, LuaValue::Str(_) | LuaValue::Int(_) | LuaValue::Float(_)) { p2 } else { p1 };
-        LuaError::runtime(format_args!("attempt to concatenate a {} value", bad.type_name()))
+        let bad = if matches!(p1, LuaValue::Str(_) | LuaValue::Int(_) | LuaValue::Float(_)) {
+            p2
+        } else {
+            p1
+        };
+        LuaError::runtime(format_args!(
+            "attempt to concatenate a {} value",
+            bad.type_name()
+        ))
     }
     pub fn arith_error(p1: &LuaValue, p2: &LuaValue, _msg: &str) -> Self {
-        let bad = if matches!(p1, LuaValue::Int(_) | LuaValue::Float(_)) { p2 } else { p1 };
-        LuaError::runtime(format_args!("attempt to perform arithmetic on a {} value", bad.type_name()))
+        let bad = if matches!(p1, LuaValue::Int(_) | LuaValue::Float(_)) {
+            p2
+        } else {
+            p1
+        };
+        LuaError::runtime(format_args!(
+            "attempt to perform arithmetic on a {} value",
+            bad.type_name()
+        ))
     }
     pub fn int_overflow(_p1: &LuaValue, _p2: &LuaValue) -> Self {
         LuaError::runtime(format_args!("number has no integer representation"))
     }
     pub fn order_error(p1: &LuaValue, p2: &LuaValue) -> Self {
-        LuaError::runtime(format_args!("attempt to compare {} with {}", p1.type_name(), p2.type_name()))
+        LuaError::runtime(format_args!(
+            "attempt to compare {} with {}",
+            p1.type_name(),
+            p2.type_name()
+        ))
     }
     pub fn for_error(v: &LuaValue, what: &str) -> Self {
-        LuaError::runtime(format_args!("bad 'for' {} (number expected, got {})", what, v.type_name()))
+        LuaError::runtime(format_args!(
+            "bad 'for' {} (number expected, got {})",
+            what,
+            v.type_name()
+        ))
     }
     pub fn arg_error(narg: i32, msg: &str) -> Self {
         LuaError::runtime(format_args!("bad argument #{} ({})", narg, msg))
     }
     pub fn type_arg_error(narg: i32, expected: &str, got: &LuaValue) -> Self {
-        LuaError::runtime(format_args!("bad argument #{} ({} expected, got {})", narg, expected, got.type_name()))
+        LuaError::runtime(format_args!(
+            "bad argument #{} ({} expected, got {})",
+            narg,
+            expected,
+            got.type_name()
+        ))
     }
 
     // ── Pass-through constructors ────────────────────────────────────────
@@ -86,26 +119,26 @@ impl LuaError {
     }
     pub fn with_status(status: LuaStatus) -> Self {
         match status {
-            LuaStatus::Ok        => LuaError::Error,
-            LuaStatus::Yield     => LuaError::Yield,
-            LuaStatus::ErrRun    => LuaError::Runtime(LuaValue::Nil),
+            LuaStatus::Ok => LuaError::Error,
+            LuaStatus::Yield => LuaError::Yield,
+            LuaStatus::ErrRun => LuaError::Runtime(LuaValue::Nil),
             LuaStatus::ErrSyntax => LuaError::Syntax(LuaValue::Nil),
-            LuaStatus::ErrMem    => LuaError::Memory,
-            LuaStatus::ErrErr    => LuaError::Error,
-            LuaStatus::ErrFile   => LuaError::File,
-            LuaStatus::ErrGc     => LuaError::Gc,
+            LuaStatus::ErrMem => LuaError::Memory,
+            LuaStatus::ErrErr => LuaError::Error,
+            LuaStatus::ErrFile => LuaError::File,
+            LuaStatus::ErrGc => LuaError::Gc,
         }
     }
 
     pub fn to_status(&self) -> LuaStatus {
         match self {
             LuaError::Runtime(_) => LuaStatus::ErrRun,
-            LuaError::Syntax(_)  => LuaStatus::ErrSyntax,
-            LuaError::Memory     => LuaStatus::ErrMem,
-            LuaError::Error      => LuaStatus::ErrErr,
-            LuaError::Yield      => LuaStatus::Yield,
-            LuaError::File       => LuaStatus::ErrFile,
-            LuaError::Gc         => LuaStatus::ErrGc,
+            LuaError::Syntax(_) => LuaStatus::ErrSyntax,
+            LuaError::Memory => LuaStatus::ErrMem,
+            LuaError::Error => LuaStatus::ErrErr,
+            LuaError::Yield => LuaStatus::Yield,
+            LuaError::File => LuaStatus::ErrFile,
+            LuaError::Gc => LuaStatus::ErrGc,
         }
     }
 

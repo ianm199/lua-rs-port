@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::rc::Rc;
 
-use lua_types::{GcRef, LuaError, LuaString, LuaType, LuaValue};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, LuaDebug as DebugInfo};
+use crate::state_stub::{LuaDebug as DebugInfo, LuaState, LuaStateStubExt as _};
+use lua_types::{GcRef, LuaError, LuaString, LuaType, LuaValue, LuaVersion};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -44,7 +44,10 @@ pub(crate) type LibFn = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// PORT NOTE: The Rust hook receives the event code and current line directly
 /// rather than a lua_Debug pointer, since the lua-stdlib `DebugInfo` and the
 /// canonical `lua_vm::debug::LuaDebug` are distinct types during Phase B.
-#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
+#[expect(
+    dead_code,
+    reason = "ported stdlib helper; not yet wired into the runtime"
+)]
 pub(crate) type HookFn = fn(&mut LuaState, i32, i32) -> Result<(), LuaError>;
 
 /// Opaque identity handle for an upvalue.
@@ -133,7 +136,9 @@ fn settabss(state: &mut LuaState, k: &[u8], v: Option<&[u8]>) -> Result<(), LuaE
             let ls = state.intern_str(s)?;
             state.push(LuaValue::Str(ls));
         }
-        None => { state.push(LuaValue::Nil); }
+        None => {
+            state.push(LuaValue::Nil);
+        }
     }
     state.set_field(-2, k)
 }
@@ -267,7 +272,11 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
     check_cross_thread_stack(state, target_is_self, 3)?;
 
     if raw_opts.first() == Some(&b'>') {
-        return Err(lua_vm::debug::arg_error_impl(state, arg + 2, b"invalid option '>'"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            arg + 2,
+            b"invalid option '>'",
+        ));
     }
 
     // Build the effective options string, prepending '>' when the subject is a function.
@@ -293,7 +302,11 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
 
         // With '>' prefix, get_debug_info consumes the function from the top of stack.
         if state.get_debug_info(&options, &mut ar).is_err() {
-            return Err(lua_vm::debug::arg_error_impl(state, arg + 2, b"invalid option"));
+            return Err(lua_vm::debug::arg_error_impl(
+                state,
+                arg + 2,
+                b"invalid option",
+            ));
         }
     } else {
         options = raw_opts;
@@ -308,7 +321,11 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
                 }
 
                 if state.get_debug_info(&options, &mut ar).is_err() {
-                    return Err(lua_vm::debug::arg_error_impl(state, arg + 2, b"invalid option"));
+                    return Err(lua_vm::debug::arg_error_impl(
+                        state,
+                        arg + 2,
+                        b"invalid option",
+                    ));
                 }
             }
             DebugThreadTarget::Other(target_state) => {
@@ -322,7 +339,11 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
                     return Ok(1);
                 }
                 if target.get_debug_info(&options, &mut ar).is_err() {
-                    return Err(lua_vm::debug::arg_error_impl(state, arg + 2, b"invalid option"));
+                    return Err(lua_vm::debug::arg_error_impl(
+                        state,
+                        arg + 2,
+                        b"invalid option",
+                    ));
                 }
                 info_target = Some(target);
             }
@@ -361,6 +382,9 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
     }
     if options.contains(&b't') {
         settabsb(state, b"istailcall", ar.istailcall)?;
+        if matches!(state.global().lua_version, LuaVersion::V55) {
+            settabsi(state, b"extraargs", ar.extraargs as i32)?;
+        }
     }
     // 'L' and 'f' options: lua_getinfo pushed line-table then function onto L1's stack.
     // treat_stack_option moves each into the result table.
@@ -413,7 +437,9 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
                 let ls = state.intern_str(&n)?;
                 state.push(LuaValue::Str(ls));
             }
-            None => { state.push(LuaValue::Nil); }
+            None => {
+                state.push(LuaValue::Nil);
+            }
         }
         // The pushed function below name is discarded by the VM when it collects
         // exactly 1 return value from the top of the stack.
@@ -427,7 +453,11 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
     let name = match target_state {
         DebugThreadTarget::Current | DebugThreadTarget::Unavailable => {
             if !state.get_stack_level(level, &mut ar) {
-                return Err(lua_vm::debug::arg_error_impl(state, arg + 1, b"level out of range"));
+                return Err(lua_vm::debug::arg_error_impl(
+                    state,
+                    arg + 1,
+                    b"level out of range",
+                ));
             }
             check_cross_thread_stack(state, true, 1)?;
             // Pushes the local's value onto L1's stack and returns its name.
@@ -436,7 +466,11 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
         DebugThreadTarget::Other(target_state) => {
             let mut target = target_state.borrow_mut();
             if !target.get_stack_level(level, &mut ar) {
-                return Err(lua_vm::debug::arg_error_impl(state, arg + 1, b"level out of range"));
+                return Err(lua_vm::debug::arg_error_impl(
+                    state,
+                    arg + 1,
+                    b"level out of range",
+                ));
             }
             check_cross_thread_stack(state, false, 1)?;
             let name = target.get_local_at(&ar, nvar)?;
@@ -479,7 +513,11 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
     let name = match target_state {
         DebugThreadTarget::Current | DebugThreadTarget::Unavailable => {
             if !state.get_stack_level(level, &mut ar) {
-                return Err(lua_vm::debug::arg_error_impl(state, arg + 1, b"level out of range"));
+                return Err(lua_vm::debug::arg_error_impl(
+                    state,
+                    arg + 1,
+                    b"level out of range",
+                ));
             }
             check_cross_thread_stack(state, true, 1)?;
             let name = state.set_local_at(&ar, nvar)?;
@@ -492,7 +530,11 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
             let new_val = state.get_at(state.top_idx() - 1);
             let mut target = target_state.borrow_mut();
             if !target.get_stack_level(level, &mut ar) {
-                return Err(lua_vm::debug::arg_error_impl(state, arg + 1, b"level out of range"));
+                return Err(lua_vm::debug::arg_error_impl(
+                    state,
+                    arg + 1,
+                    b"level out of range",
+                ));
             }
             check_cross_thread_stack(state, false, 1)?;
             target.push(new_val);
@@ -510,7 +552,9 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
             let ls = state.intern_str(&n)?;
             state.push(LuaValue::Str(ls));
         }
-        None => { state.push(LuaValue::Nil); }
+        None => {
+            state.push(LuaValue::Nil);
+        }
     }
     Ok(1)
 }
@@ -590,7 +634,11 @@ fn check_upval(
         Err(_) => None,
     };
     if require_valid && id.is_none() {
-        return Err(lua_vm::debug::arg_error_impl(state, argnup, b"invalid upvalue index"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            argnup,
+            b"invalid upvalue index",
+        ));
     }
     Ok((id, nup))
 }
@@ -618,10 +666,18 @@ pub(crate) fn upvalue_join(state: &mut LuaState) -> Result<usize, LuaError> {
     let (_id1, n1) = check_upval(state, 1, 2, true)?;
     let (_id2, n2) = check_upval(state, 3, 4, true)?;
     if state.is_c_function_at(1) {
-        return Err(lua_vm::debug::arg_error_impl(state, 1, b"Lua function expected"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            1,
+            b"Lua function expected",
+        ));
     }
     if state.is_c_function_at(3) {
-        return Err(lua_vm::debug::arg_error_impl(state, 3, b"Lua function expected"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            3,
+            b"Lua function expected",
+        ));
     }
     state.join_upvalues(1, n1, 3, n2)?;
     Ok(0)
@@ -743,7 +799,9 @@ pub(crate) fn set_hook(state: &mut LuaState) -> Result<usize, LuaError> {
         // already a global reference so we can push it directly on the parent
         // stack as a Thread value. Without this push, raw_set below operates
         // on a stack that's missing its key slot and panics in get_table_value.
-        let thr = other_thread.clone().expect("other_thread is Some when target_is_self is false");
+        let thr = other_thread
+            .clone()
+            .expect("other_thread is Some when target_is_self is false");
         state.push(lua_types::value::LuaValue::Thread(thr));
     }
     state.push_value_at(arg + 1)?;
@@ -783,14 +841,12 @@ pub(crate) fn get_hook(state: &mut LuaState) -> Result<usize, LuaError> {
     let target_state = resolve_debug_thread_target(state, &other_thread);
 
     let (mask, hook_is_set, hook_is_internal, hook_count) = match target_state {
-        DebugThreadTarget::Current => {
-            (
-                state.get_hook_mask(),
-                state.hook_is_set(),
-                state.hook_is_internal_lua_hook(),
-                state.get_hook_count(),
-            )
-        }
+        DebugThreadTarget::Current => (
+            state.get_hook_mask(),
+            state.hook_is_set(),
+            state.hook_is_internal_lua_hook(),
+            state.get_hook_count(),
+        ),
         DebugThreadTarget::Other(target_state) => {
             let mut target_state = target_state.borrow_mut();
             (
@@ -952,22 +1008,22 @@ pub(crate) fn set_c_stack_limit(state: &mut LuaState) -> Result<usize, LuaError>
 /// Function registration table for the `debug` library.
 ///
 pub(crate) const DBLIB: &[(&[u8], LibFn)] = &[
-    (b"debug",          debug_interactive as LibFn),
-    (b"getuservalue",   get_uservalue     as LibFn),
-    (b"gethook",        get_hook          as LibFn),
-    (b"getinfo",        get_info          as LibFn),
-    (b"getlocal",       get_local         as LibFn),
-    (b"getregistry",    get_registry      as LibFn),
-    (b"getmetatable",   get_metatable     as LibFn),
-    (b"getupvalue",     get_upvalue       as LibFn),
-    (b"upvaluejoin",    upvalue_join      as LibFn),
-    (b"upvalueid",      upvalue_id        as LibFn),
-    (b"setuservalue",   set_uservalue     as LibFn),
-    (b"sethook",        set_hook          as LibFn),
-    (b"setlocal",       set_local         as LibFn),
-    (b"setmetatable",   set_metatable     as LibFn),
-    (b"setupvalue",     set_upvalue       as LibFn),
-    (b"traceback",      traceback         as LibFn),
+    (b"debug", debug_interactive as LibFn),
+    (b"getuservalue", get_uservalue as LibFn),
+    (b"gethook", get_hook as LibFn),
+    (b"getinfo", get_info as LibFn),
+    (b"getlocal", get_local as LibFn),
+    (b"getregistry", get_registry as LibFn),
+    (b"getmetatable", get_metatable as LibFn),
+    (b"getupvalue", get_upvalue as LibFn),
+    (b"upvaluejoin", upvalue_join as LibFn),
+    (b"upvalueid", upvalue_id as LibFn),
+    (b"setuservalue", set_uservalue as LibFn),
+    (b"sethook", set_hook as LibFn),
+    (b"setlocal", set_local as LibFn),
+    (b"setmetatable", set_metatable as LibFn),
+    (b"setupvalue", set_upvalue as LibFn),
+    (b"traceback", traceback as LibFn),
     (b"setcstacklimit", set_c_stack_limit as LibFn),
 ];
 

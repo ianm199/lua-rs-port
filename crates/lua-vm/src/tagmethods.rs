@@ -7,8 +7,9 @@
 
 use std::borrow::Cow;
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::state::LuaState;
-#[allow(unused_imports)] use crate::prelude::*;
 use lua_types::{CallInfoIdx, GcRef, LuaError, LuaType, LuaValue, StackIdx};
 
 // ── TagMethod enum (from ltm.h `TMS`) ────────────────────────────────────────
@@ -57,16 +58,16 @@ impl TagMethod {
     /// PORT NOTE: reshaped for borrowck — C casts freely; Rust requires an explicit map.
     pub(crate) fn from_u8(v: u8) -> Self {
         match v {
-            0  => TagMethod::Index,
-            1  => TagMethod::NewIndex,
-            2  => TagMethod::Gc,
-            3  => TagMethod::Mode,
-            4  => TagMethod::Len,
-            5  => TagMethod::Eq,
-            6  => TagMethod::Add,
-            7  => TagMethod::Sub,
-            8  => TagMethod::Mul,
-            9  => TagMethod::Mod,
+            0 => TagMethod::Index,
+            1 => TagMethod::NewIndex,
+            2 => TagMethod::Gc,
+            3 => TagMethod::Mode,
+            4 => TagMethod::Len,
+            5 => TagMethod::Eq,
+            6 => TagMethod::Add,
+            7 => TagMethod::Sub,
+            8 => TagMethod::Mul,
+            9 => TagMethod::Mod,
             10 => TagMethod::Pow,
             11 => TagMethod::Div,
             12 => TagMethod::IDiv,
@@ -82,7 +83,7 @@ impl TagMethod {
             22 => TagMethod::Concat,
             23 => TagMethod::Call,
             24 => TagMethod::Close,
-            _  => TagMethod::N,
+            _ => TagMethod::N,
         }
     }
 }
@@ -204,11 +205,7 @@ pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
 /// the per-type metatables on `GlobalState`.  Returns `LuaValue::Nil` when
 /// neither the object nor its type has a metatable, or when the metatable
 /// does not contain the requested metamethod.
-pub(crate) fn get_tm_by_obj(
-    state: &mut LuaState,
-    o: &LuaValue,
-    event: TagMethod,
-) -> LuaValue {
+pub(crate) fn get_tm_by_obj(state: &mut LuaState, o: &LuaValue, event: TagMethod) -> LuaValue {
     //   case LUA_TTABLE:    mt = hvalue(o)->metatable; break;
     //   case LUA_TUSERDATA: mt = uvalue(o)->metatable; break;
     //   default:            mt = G(L)->mt[ttype(o)];
@@ -549,7 +546,10 @@ pub(crate) fn try_bin_tm(
                     (p2, p2_idx.unwrap_or(StackIdx(0)))
                 };
                 return Err(crate::debug::type_error(
-                    state, bad, bad_idx, b"perform arithmetic on",
+                    state,
+                    bad,
+                    bad_idx,
+                    b"perform arithmetic on",
                 ));
             }
         }
@@ -615,7 +615,12 @@ pub(crate) fn try_bin_tm(
                     let p1_idx = p1_idx.unwrap_or(StackIdx(0));
                     let p2_idx = p2_idx.unwrap_or(StackIdx(0));
                     return Err(crate::debug::op_int_error(
-                        state, p1, p1_idx, p2, p2_idx, b"perform bitwise operation on",
+                        state,
+                        p1,
+                        p1_idx,
+                        p2,
+                        p2_idx,
+                        b"perform bitwise operation on",
                     ));
                 }
             }
@@ -624,7 +629,12 @@ pub(crate) fn try_bin_tm(
                 let p1_idx = p1_idx.unwrap_or(StackIdx(0));
                 let p2_idx = p2_idx.unwrap_or(StackIdx(0));
                 return Err(crate::debug::op_int_error(
-                    state, p1, p1_idx, p2, p2_idx, b"perform arithmetic on",
+                    state,
+                    p1,
+                    p1_idx,
+                    p2,
+                    p2_idx,
+                    b"perform arithmetic on",
                 ));
             }
         }
@@ -648,8 +658,17 @@ pub(crate) fn try_concat_tm(state: &mut LuaState) -> Result<(), LuaError> {
     let p2 = state.get_at(top - 1).clone();
     if !call_bin_tm(state, &p1, &p2, top - 2, TagMethod::Concat)? {
         let p1_ok = matches!(p1, LuaValue::Str(_) | LuaValue::Int(_) | LuaValue::Float(_));
-        let (bad, bad_idx) = if p1_ok { (&p2, top - 1) } else { (&p1, top - 2) };
-        return Err(crate::debug::type_error(state, bad, bad_idx, b"concatenate"));
+        let (bad, bad_idx) = if p1_ok {
+            (&p2, top - 1)
+        } else {
+            (&p1, top - 2)
+        };
+        return Err(crate::debug::type_error(
+            state,
+            bad,
+            bad_idx,
+            b"concatenate",
+        ));
     }
     Ok(())
 }
@@ -835,7 +854,10 @@ pub(crate) fn adjust_varargs(
     let nextra = actual - nfixparams;
     // TODO(phase-b): nextraargs lives inside CallInfoFrame::Lua; needs proper
     // pattern-match write through state.call_info[..].u.
-    if let crate::state::CallInfoFrame::Lua { ref mut nextraargs, .. } = state.call_info[ci_idx.as_usize()].u {
+    if let crate::state::CallInfoFrame::Lua {
+        ref mut nextraargs, ..
+    } = state.call_info[ci_idx.as_usize()].u
+    {
         *nextraargs = nextra;
     }
 
@@ -869,6 +891,11 @@ pub(crate) fn adjust_varargs(
     state.call_info[ci_idx.as_usize()].func = state.call_info[ci_idx.as_usize()].func + offset;
     state.call_info[ci_idx.as_usize()].top = state.call_info[ci_idx.as_usize()].top + offset;
 
+    if state.global().lua_version == lua_types::LuaVersion::V55 {
+        let base = state.call_info[ci_idx.as_usize()].func + 1;
+        state.set_at(base + nfixparams, LuaValue::Nil);
+    }
+
     debug_assert!(state.top_idx().0 <= state.call_info[ci_idx.as_usize()].top.0);
     Ok(())
 }
@@ -899,9 +926,12 @@ pub(crate) fn get_varargs(
         if let LuaValue::Table(t) = state.get_at(base + reg as i32) {
             let n_key = state.intern_str(b"n")?;
             let nextra: i32 = match t.get(&LuaValue::Str(n_key)) {
-                LuaValue::Int(i) => i.max(0).min(i32::MAX as i64) as i32,
-                LuaValue::Float(f) if f >= 0.0 => f as i32,
-                _ => 0,
+                LuaValue::Int(i) if i >= 0 && i <= (i32::MAX / 2) as i64 => i as i32,
+                _ => {
+                    return Err(LuaError::runtime(format_args!(
+                        "vararg table has no proper 'n'"
+                    )));
+                }
             };
             let wanted: i32 = if wanted < 0 {
                 state.check_stack(nextra)?;
@@ -922,7 +952,13 @@ pub(crate) fn get_varargs(
             return Ok(());
         }
     }
-    let nextra: i32 = if let crate::state::CallInfoFrame::Lua { nextraargs, .. } = state.call_info[ci_idx.as_usize()].u { nextraargs } else { 0 };
+    let nextra: i32 = if let crate::state::CallInfoFrame::Lua { nextraargs, .. } =
+        state.call_info[ci_idx.as_usize()].u
+    {
+        nextraargs
+    } else {
+        0
+    };
 
     //      wanted = nextra;  /* get all extra arguments available */
     //      checkstackGCp(L, nextra, where);  /* ensure stack space */

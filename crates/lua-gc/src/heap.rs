@@ -417,9 +417,12 @@ impl<T: WeakEntry> WeakRegistry<T> {
     }
 
     pub fn retain_identities(&mut self, ids: &std::collections::HashSet<usize>) {
-        self.weak_values.retain(|entry| ids.contains(&entry.identity()));
-        self.ephemeron.retain(|entry| ids.contains(&entry.identity()));
-        self.all_weak.retain(|entry| ids.contains(&entry.identity()));
+        self.weak_values
+            .retain(|entry| ids.contains(&entry.identity()));
+        self.ephemeron
+            .retain(|entry| ids.contains(&entry.identity()));
+        self.all_weak
+            .retain(|entry| ids.contains(&entry.identity()));
         self.last_stats.retained = self.len();
         self.last_stats.tracked = self.len();
         self.update_cohort_stats();
@@ -512,17 +515,18 @@ impl<T: FinalizerEntry> FinalizerRegistry<T> {
 
     pub fn stats(&self) -> FinalizerRegistryStats {
         fn count_by_age<T: FinalizerEntry>(objects: &[T]) -> (usize, usize) {
-            objects.iter().fold((0usize, 0usize), |(young, old), object| {
-                if object.age().is_old() {
-                    (young, old + 1)
-                } else {
-                    (young + 1, old)
-                }
-            })
+            objects
+                .iter()
+                .fold((0usize, 0usize), |(young, old), object| {
+                    if object.age().is_old() {
+                        (young, old + 1)
+                    } else {
+                        (young + 1, old)
+                    }
+                })
         }
         let (pending_young, pending_old) = count_by_age(&self.pending);
-        let (to_be_finalized_young, to_be_finalized_old) =
-            count_by_age(&self.to_be_finalized);
+        let (to_be_finalized_young, to_be_finalized_old) = count_by_age(&self.to_be_finalized);
         FinalizerRegistryStats {
             pending_young,
             pending_old,
@@ -843,7 +847,9 @@ impl<T: ?Sized> Gc<T> {
             return;
         }
         if delta >= 0 {
-            header.size.set(header.size.get().saturating_add(delta as usize));
+            header
+                .size
+                .set(header.size.get().saturating_add(delta as usize));
         } else {
             header
                 .size
@@ -937,9 +943,8 @@ macro_rules! trace_noop {
     };
 }
 trace_noop!(
-    bool, u8, u16, u32, u64, u128, usize,
-    i8, i16, i32, i64, i128, isize,
-    f32, f64, char, String, str
+    bool, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, char, String,
+    str
 );
 
 impl<T> Trace for std::marker::PhantomData<T> {
@@ -1063,7 +1068,10 @@ impl Marker {
     fn new_with_capacity(mode: MarkerMode, capacity: usize) -> Self {
         Self {
             gray_queue: Vec::with_capacity(256),
-            visited: IdentityHashSet::with_capacity_and_hasher(capacity, IdentityBuildHasher::default()),
+            visited: IdentityHashSet::with_capacity_and_hasher(
+                capacity,
+                IdentityBuildHasher::default(),
+            ),
             stats: MarkerStats::default(),
             mode,
         }
@@ -1216,15 +1224,15 @@ impl GcState {
         matches!(self, GcState::Propagate)
     }
     pub fn is_invariant(self) -> bool {
-        matches!(self, GcState::Propagate | GcState::EnterAtomic | GcState::Atomic)
+        matches!(
+            self,
+            GcState::Propagate | GcState::EnterAtomic | GcState::Atomic
+        )
     }
     pub fn is_sweep(self) -> bool {
         matches!(
             self,
-            GcState::SweepAllGc
-                | GcState::SweepFinObj
-                | GcState::SweepToBeFnz
-                | GcState::SweepEnd
+            GcState::SweepAllGc | GcState::SweepFinObj | GcState::SweepToBeFnz | GcState::SweepEnd
         )
     }
 }
@@ -1258,7 +1266,10 @@ pub struct StepBudget {
 impl StepBudget {
     /// Build a budget from a number of allowed work units.
     pub fn from_work(work: isize) -> Self {
-        Self { remaining_work: work.max(1), max_credit: work.max(1) }
+        Self {
+            remaining_work: work.max(1),
+            max_credit: work.max(1),
+        }
     }
 }
 
@@ -1402,24 +1413,17 @@ impl Heap {
     pub fn allocate<T: Trace + 'static>(&self, value: T) -> Gc<T> {
         let size = std::mem::size_of::<GcBox<T>>();
         let boxed = Box::new(GcBox {
-            header: GcHeader::new_white(
-                size,
-                self.current_white.get(),
-                std::any::type_name::<T>(),
-            ),
+            header: GcHeader::new_white(size, self.current_white.get(), std::any::type_name::<T>()),
             value,
         });
         boxed.header.next.set(self.head.get());
         boxed.header.collected.set(true);
         let raw: *mut GcBox<T> = Box::into_raw(boxed);
-        let ptr: NonNull<GcBox<T>> =
-            NonNull::new(raw).expect("Box::into_raw is non-null");
+        let ptr: NonNull<GcBox<T>> = NonNull::new(raw).expect("Box::into_raw is non-null");
         let dyn_ptr: NonNull<GcBox<dyn Trace>> = ptr;
         let identity = ptr.as_ptr() as *const () as usize;
         let token = self.next_token();
-        self.allocation_tokens
-            .borrow_mut()
-            .insert(identity, token);
+        self.allocation_tokens.borrow_mut().insert(identity, token);
         self.head.set(Some(dyn_ptr));
         self.bytes.set(self.bytes.get() + size);
         self.objects.set(self.objects.get() + 1);
@@ -1440,7 +1444,8 @@ impl Heap {
     /// fire at honest memory pressure rather than only on header sizes.
     pub fn adjust_bytes(&self, delta: isize) {
         if delta >= 0 {
-            self.bytes.set(self.bytes.get().saturating_add(delta as usize));
+            self.bytes
+                .set(self.bytes.get().saturating_add(delta as usize));
         } else {
             self.bytes
                 .set(self.bytes.get().saturating_sub((-delta) as usize));
@@ -1900,11 +1905,7 @@ impl Heap {
     /// actually fires (threshold reached). Hook is a no-op on the
     /// short-circuit path. The runtime uses this to bridge weak-table
     /// pruning into implicit GC steps fired from inside the VM loop.
-    pub fn step_with_post_mark<F: FnMut(&mut Marker)>(
-        &self,
-        roots: &dyn Trace,
-        post_mark: F,
-    ) {
+    pub fn step_with_post_mark<F: FnMut(&mut Marker)>(&self, roots: &dyn Trace, post_mark: F) {
         if self.paused.get() {
             return;
         }
@@ -2019,7 +2020,10 @@ impl Heap {
             self.abort_cycle();
         }
         self.full_collections.set(self.full_collections.get() + 1);
-        let unlimited = StepBudget { remaining_work: isize::MAX, max_credit: isize::MAX };
+        let unlimited = StepBudget {
+            remaining_work: isize::MAX,
+            max_credit: isize::MAX,
+        };
         loop {
             let outcome = self.incremental_step_with_post_mark(roots, unlimited, &mut post_mark);
             if matches!(outcome, StepOutcome::Paused | StepOutcome::SkippedStopped) {
@@ -2480,7 +2484,10 @@ impl Heap {
 
         for ptr in old_revisit {
             let id = ptr.as_ptr() as *const () as usize;
-            if processed.as_ref().is_some_and(|processed| processed.was_processed(id)) {
+            if processed
+                .as_ref()
+                .is_some_and(|processed| processed.was_processed(id))
+            {
                 continue;
             }
             stats.revisit += 1;
@@ -2524,11 +2531,7 @@ impl Heap {
         self.last_mark_stats.set(stats);
         *self.marker.borrow_mut() = None;
         self.sweep_prev_next.set(None);
-        let next = self
-            .bytes
-            .get()
-            .saturating_mul(self.pause_multiplier.get())
-            / 100;
+        let next = self.bytes.get().saturating_mul(self.pause_multiplier.get()) / 100;
         self.threshold.set(next.max(GC_MIN_THRESHOLD));
         self.collections.set(self.collections.get() + 1);
     }
@@ -2932,7 +2935,10 @@ mod tests {
         assert_eq!(list_len(&heap, heap.tobefnz.get()), 1);
         assert_eq!(heap.allgc_count(), 3);
 
-        heap.full_collect(&TwoRoots { first: Some(finobj), second: Some(tobefnz) });
+        heap.full_collect(&TwoRoots {
+            first: Some(finobj),
+            second: Some(tobefnz),
+        });
         assert_eq!(list_len(&heap, heap.head.get()), 0);
         assert_eq!(list_len(&heap, heap.finobj.get()), 1);
         assert_eq!(list_len(&heap, heap.tobefnz.get()), 1);
@@ -2961,7 +2967,10 @@ mod tests {
             });
             assert!(heap.bytes_used() > baseline);
             a.account_buffer(&heap, 4096);
-            assert_eq!(a.header().size.get(), std::mem::size_of::<GcBox<Cell0>>() + 4096);
+            assert_eq!(
+                a.header().size.get(),
+                std::mem::size_of::<GcBox<Cell0>>() + 4096
+            );
         }
         // Drop the only root path (a is no longer Trace-visible). The +4096
         // must be refunded via header.size when the box is swept.
@@ -2983,7 +2992,11 @@ mod tests {
         });
         let before = heap.bytes_used();
         g.account_buffer(&heap, 8192);
-        assert_eq!(heap.bytes_used(), before, "uncollected box must not charge the pacer");
+        assert_eq!(
+            heap.bytes_used(),
+            before,
+            "uncollected box must not charge the pacer"
+        );
     }
 
     #[test]
@@ -3383,7 +3396,7 @@ mod tests {
             marker_calls: Cell::new(0),
         });
         a.next.set(Some(b)); // cycle
-        // With a as root, both should survive.
+                             // With a as root, both should survive.
         heap.full_collect(&OneRoot(Some(a)));
         assert_eq!(a.marker_calls.get(), 1);
         assert_eq!(b.marker_calls.get(), 1);
@@ -3396,7 +3409,10 @@ mod tests {
 
     #[test]
     fn heap_guard_stacks() {
-        assert!(with_current_heap(|heap| heap.is_none()), "no guard initially");
+        assert!(
+            with_current_heap(|heap| heap.is_none()),
+            "no guard initially"
+        );
         let h1 = Heap::new();
         h1.unpause();
         {
@@ -3517,15 +3533,17 @@ mod tests {
         let roots = OneRoot(Some(head));
         let atomic_calls = Cell::new(0);
 
-        let outcome = heap.incremental_run_until_state_with_post_mark(
-            &roots,
-            GcState::Atomic,
-            1024,
-            |_| atomic_calls.set(atomic_calls.get() + 1),
-        );
+        let outcome =
+            heap.incremental_run_until_state_with_post_mark(&roots, GcState::Atomic, 1024, |_| {
+                atomic_calls.set(atomic_calls.get() + 1)
+            });
         assert_eq!(outcome, StepOutcome::InProgress);
         assert_eq!(heap.gc_state(), GcState::Atomic);
-        assert_eq!(atomic_calls.get(), 0, "atomic hook must not run before inspection");
+        assert_eq!(
+            atomic_calls.get(),
+            0,
+            "atomic hook must not run before inspection"
+        );
 
         let outcome = heap.incremental_run_until_state_with_post_mark(
             &roots,
@@ -3535,7 +3553,11 @@ mod tests {
         );
         assert_eq!(outcome, StepOutcome::InProgress);
         assert_eq!(heap.gc_state(), GcState::SweepAllGc);
-        assert_eq!(atomic_calls.get(), 1, "entering sweep must run the atomic hook once");
+        assert_eq!(
+            atomic_calls.get(),
+            1,
+            "entering sweep must run the atomic hook once"
+        );
     }
 
     #[test]
@@ -3547,11 +3569,8 @@ mod tests {
         let mut small_calls = 0;
         loop {
             small_calls += 1;
-            let outcome = small_heap.incremental_step_with_post_mark(
-                &r1,
-                StepBudget::from_work(2),
-                |_| {},
-            );
+            let outcome =
+                small_heap.incremental_step_with_post_mark(&r1, StepBudget::from_work(2), |_| {});
             if outcome == StepOutcome::Paused {
                 break;
             }
@@ -3565,11 +3584,8 @@ mod tests {
         let mut big_calls = 0;
         loop {
             big_calls += 1;
-            let outcome = big_heap.incremental_step_with_post_mark(
-                &r2,
-                StepBudget::from_work(64),
-                |_| {},
-            );
+            let outcome =
+                big_heap.incremental_step_with_post_mark(&r2, StepBudget::from_work(64), |_| {});
             if outcome == StepOutcome::Paused {
                 break;
             }
@@ -3601,11 +3617,8 @@ mod tests {
         let mut saw_in_progress_during_sweep = false;
         loop {
             step_count += 1;
-            let outcome = heap.incremental_step_with_post_mark(
-                &roots,
-                StepBudget::from_work(2),
-                |_| {},
-            );
+            let outcome =
+                heap.incremental_step_with_post_mark(&roots, StepBudget::from_work(2), |_| {});
             if heap.gc_state().is_sweep() && outcome == StepOutcome::InProgress {
                 saw_in_progress_during_sweep = true;
             }
@@ -3633,19 +3646,20 @@ mod tests {
         let mut step_count = 0;
         loop {
             step_count += 1;
-            let outcome = heap.incremental_step_with_post_mark(
-                &roots,
-                StepBudget::from_work(2),
-                |_| {
+            let outcome =
+                heap.incremental_step_with_post_mark(&roots, StepBudget::from_work(2), |_| {
                     call_count.set(call_count.get() + 1);
-                },
-            );
+                });
             if outcome == StepOutcome::Paused {
                 break;
             }
             assert!(step_count < 10_000, "did not converge");
         }
-        assert_eq!(call_count.get(), 1, "post_mark must run exactly once per cycle");
+        assert_eq!(
+            call_count.get(),
+            1,
+            "post_mark must run exactly once per cycle"
+        );
     }
 
     #[test]
@@ -3684,11 +3698,8 @@ mod tests {
         });
         let roots2 = OneRoot(Some(head2));
         loop {
-            let outcome = h2.incremental_step_with_post_mark(
-                &roots2,
-                StepBudget::from_work(1),
-                |_| {},
-            );
+            let outcome =
+                h2.incremental_step_with_post_mark(&roots2, StepBudget::from_work(1), |_| {});
             if outcome == StepOutcome::Paused {
                 break;
             }

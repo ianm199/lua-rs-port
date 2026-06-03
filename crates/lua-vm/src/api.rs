@@ -7,20 +7,20 @@
 
 #![allow(dead_code)]
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::convert::Infallible;
-#[allow(unused_imports)] use crate::prelude::*;
 
-use crate::state::{FinalizerObject, LuaState, LuaCFunction, LuaCallable, StackIdx, WeakTableEntry,
-    LuaValueExt, LuaTypeExt, StackIdxExt,
-    LuaTableRefExt, LuaUserDataRefExt};
-use lua_types::{
-    LuaValue, LuaType, LuaError, LuaString, LuaUserData, LuaClosure,
-    GcRef, LuaStatus,
+use crate::state::{
+    FinalizerObject, LuaCFunction, LuaCallable, LuaState, LuaTableRefExt, LuaTypeExt,
+    LuaUserDataRefExt, LuaValueExt, StackIdx, StackIdxExt, WeakTableEntry,
 };
 use lua_types::value::LuaTable;
+use lua_types::{
+    GcRef, LuaClosure, LuaError, LuaStatus, LuaString, LuaType, LuaUserData, LuaValue,
+};
 
-pub const LUA_IDENT: &[u8] =
-    b"$LuaVersion: Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio $\
+pub const LUA_IDENT: &[u8] = b"$LuaVersion: Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio $\
       $LuaAuthors: R. Ierusalimschy, L. H. Figueiredo, W. Celes $";
 
 const LUA_REGISTRYINDEX: i32 = -(1_000_000) - 1000;
@@ -90,10 +90,7 @@ fn index_to_value(state: &LuaState, idx: i32) -> LuaValue {
         }
     } else if !is_pseudo(idx) {
         // negative index
-        debug_assert!(
-            idx != 0,
-            "invalid index"
-        );
+        debug_assert!(idx != 0, "invalid index");
         let top = state.top_idx();
         let slot = (top.0 as i32 + idx) as u32;
         state.get_at(slot)
@@ -273,7 +270,10 @@ fn reverse_segment(state: &mut LuaState, from: StackIdx, to: StackIdx) {
 pub fn rotate(state: &mut LuaState, idx: i32, n: i32) {
     let t = state.top_idx() - 1;
     let p = index_to_stack_idx(state, idx);
-    debug_assert!((n.unsigned_abs() as i32) <= ((t.0 as i32) - (p.0 as i32) + 1), "invalid 'n'");
+    debug_assert!(
+        (n.unsigned_abs() as i32) <= ((t.0 as i32) - (p.0 as i32) + 1),
+        "invalid 'n'"
+    );
     let m = if n >= 0 {
         t - n
     } else {
@@ -720,10 +720,7 @@ impl LuaState {
     ///   `luaL_checkversion(L), luaL_newlibtable(L,l), luaL_setfuncs(L,l,0)`.
     /// `luaL_checkversion` is a no-op here (no ABI-version mismatch is
     /// possible inside the Rust port).
-    pub fn new_lib(
-        &mut self,
-        funcs: &[(&[u8], LuaCFunction)],
-    ) -> Result<(), LuaError> {
+    pub fn new_lib(&mut self, funcs: &[(&[u8], LuaCFunction)]) -> Result<(), LuaError> {
         create_table(self, 0, funcs.len() as i32)?;
         for (name, f) in funcs {
             push_cclosure(self, *f, 0)?;
@@ -753,10 +750,7 @@ impl LuaState {
     ///   `lua_createtable(L, 0, sizeof(l)/sizeof((l)[0]) - 1)`. The C macro's
     /// `- 1` discounts the sentinel `{NULL, NULL}` entry; the Rust slice has
     /// no sentinel, so we use `funcs.len()` directly.
-    pub fn new_lib_table(
-        &mut self,
-        funcs: &[(&[u8], LuaCFunction)],
-    ) -> Result<(), LuaError> {
+    pub fn new_lib_table(&mut self, funcs: &[(&[u8], LuaCFunction)]) -> Result<(), LuaError> {
         create_table(self, 0, funcs.len() as i32)
     }
 
@@ -858,7 +852,10 @@ pub fn type_name(_state: &LuaState, t: LuaType) -> &'static [u8] {
 
 pub fn is_cfunction(state: &LuaState, idx: i32) -> bool {
     let o = index_to_value(state, idx);
-    matches!(o, LuaValue::Function(LuaClosure::LightC(_)) | LuaValue::Function(LuaClosure::C(_)))
+    matches!(
+        o,
+        LuaValue::Function(LuaClosure::LightC(_)) | LuaValue::Function(LuaClosure::C(_))
+    )
 }
 
 pub fn is_integer(state: &LuaState, idx: i32) -> bool {
@@ -956,10 +953,7 @@ pub fn to_boolean(state: &LuaState, idx: i32) -> bool {
 }
 
 // PORT NOTE: returns Option<GcRef<LuaString>> instead of raw C pointer+len.
-pub fn to_lua_string(
-    state: &mut LuaState,
-    idx: i32,
-) -> Result<Option<GcRef<LuaString>>, LuaError> {
+pub fn to_lua_string(state: &mut LuaState, idx: i32) -> Result<Option<GcRef<LuaString>>, LuaError> {
     let o = index_to_value(state, idx);
     if let LuaValue::Str(s) = &o {
         return Ok(Some(s.clone()));
@@ -1075,7 +1069,10 @@ pub fn push_lstring(state: &mut LuaState, s: &[u8]) -> Result<GcRef<LuaString>, 
     Ok(ts)
 }
 
-pub fn push_string(state: &mut LuaState, s: Option<&[u8]>) -> Result<Option<GcRef<LuaString>>, LuaError> {
+pub fn push_string(
+    state: &mut LuaState,
+    s: Option<&[u8]>,
+) -> Result<Option<GcRef<LuaString>>, LuaError> {
     match s {
         None => {
             state.push(LuaValue::Nil);
@@ -1148,7 +1145,10 @@ pub fn push_cclosure(
     if n == 0 {
         state.push(LuaValue::Function(LuaClosure::LightC(idx)));
     } else {
-        debug_assert!(n > 0 && (n as u32) <= MAX_UPVAL as u32, "upvalue index too large");
+        debug_assert!(
+            n > 0 && (n as u32) <= MAX_UPVAL as u32,
+            "upvalue index too large"
+        );
         let n_usize = n as usize;
         let top = state.top_idx();
         debug_assert!((top.0 as usize) >= n_usize, "not enough elements on stack");
@@ -1429,7 +1429,11 @@ pub fn raw_set(state: &mut LuaState, idx: i32) -> Result<(), LuaError> {
     aux_raw_set(state, idx, key, 2)
 }
 
-pub fn raw_set_p(state: &mut LuaState, idx: i32, p: *const core::ffi::c_void) -> Result<(), LuaError> {
+pub fn raw_set_p(
+    state: &mut LuaState,
+    idx: i32,
+    p: *const core::ffi::c_void,
+) -> Result<(), LuaError> {
     let key = LuaValue::LightUserData(p as *mut core::ffi::c_void);
     aux_raw_set(state, idx, key, 1)
 }
@@ -1492,10 +1496,7 @@ const GC_FIN_MAX: usize = 10;
 ///
 /// `propagate = false` (the close path) swallows the error on every version,
 /// matching `callallpendingfinalizers`'s `GCTM(L, 0)`.
-pub fn run_pending_finalizers_inner(
-    state: &mut LuaState,
-    propagate: bool,
-) -> Result<(), LuaError> {
+pub fn run_pending_finalizers_inner(state: &mut LuaState, propagate: bool) -> Result<(), LuaError> {
     run_pending_finalizers_limited(state, propagate, None).map(|_| ())
 }
 
@@ -1574,21 +1575,15 @@ fn run_pending_finalizers_limited(
         let caller_ci = state.ci;
         let caller_status = state.get_ci(caller_ci).callstatus;
         state.get_ci_mut(caller_ci).callstatus = caller_status | crate::state::CIST_FIN;
-        let status = crate::do_::pcall(
-            state,
-            |s| s.call_no_yield(func_idx, 0),
-            func_idx,
-            0,
-        );
+        let status = crate::do_::pcall(state, |s| s.call_no_yield(func_idx, 0), func_idx, 0);
         // On error, `pcall` left the error object on top of the stack. Capture
         // it before `set_top` truncates so the version-specific disposition
         // below (propagate on 5.2/5.3, warn on 5.4/5.5) can use it.
-        let finalizer_error: Option<LuaValue> =
-            if status != LuaStatus::Ok {
-                Some(state.get_at(state.top_idx() - 1).clone())
-            } else {
-                None
-            };
+        let finalizer_error: Option<LuaValue> = if status != LuaStatus::Ok {
+            Some(state.get_at(state.top_idx() - 1).clone())
+        } else {
+            None
+        };
         state.get_ci_mut(caller_ci).callstatus = caller_status;
         state.allowhook = old_allowhook;
         state.global_mut().set_gc_stop_flags(old_gcstp);
@@ -1963,15 +1958,31 @@ pub enum GcArgs {
     Collect,
     Count,
     CountB,
-    Step { data: i32 },
-    SetPause { value: i32 },
-    SetStepMul { value: i32 },
+    Step {
+        data: i32,
+    },
+    SetPause {
+        value: i32,
+    },
+    SetStepMul {
+        value: i32,
+    },
     IsRunning,
-    Gen { minormul: i32, majormul: i32 },
-    Inc { pause: i32, stepmul: i32, stepsize: i32 },
+    Gen {
+        minormul: i32,
+        majormul: i32,
+    },
+    Inc {
+        pause: i32,
+        stepmul: i32,
+        stepsize: i32,
+    },
     /// Lua 5.5 `collectgarbage("param", name [, value])`. `param` is the
     /// 0-based param index; `value < 0` means "read only".
-    Param { param: usize, value: i64 },
+    Param {
+        param: usize,
+        value: i64,
+    },
 }
 
 pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
@@ -2120,7 +2131,11 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             return state.global().gc_running() as i32;
         }
         GcArgs::Gen { minormul, majormul } => {
-            let old_mode = if state.global().is_gen_mode() { 10i32 } else { 11i32 };
+            let old_mode = if state.global().is_gen_mode() {
+                10i32
+            } else {
+                11i32
+            };
             if minormul != 0 {
                 state.global_mut().genminormul = minormul as u8;
             }
@@ -2130,8 +2145,16 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             state.gc().change_mode(crate::state::GcKind::Generational);
             return old_mode;
         }
-        GcArgs::Inc { pause, stepmul, stepsize } => {
-            let old_mode = if state.global().is_gen_mode() { 10i32 } else { 11i32 };
+        GcArgs::Inc {
+            pause,
+            stepmul,
+            stepsize,
+        } => {
+            let old_mode = if state.global().is_gen_mode() {
+                10i32
+            } else {
+                11i32
+            };
             if pause != 0 {
                 state.global_mut().set_gc_pause_param(pause);
             }
@@ -2243,10 +2266,7 @@ pub fn len(state: &mut LuaState, idx: i32) -> Result<(), LuaError> {
 // Rust's allocator handles all allocation.
 // These are intentionally omitted.
 
-pub fn set_warn_f(
-    state: &mut LuaState,
-    f: Option<Box<dyn FnMut(&[u8], bool)>>,
-) {
+pub fn set_warn_f(state: &mut LuaState, f: Option<Box<dyn FnMut(&[u8], bool)>>) {
     // PORT NOTE: ud_warn userdata is folded into the closure per types.tsv.
     state.global_mut().warnf = f;
 }
@@ -2272,11 +2292,7 @@ pub fn new_userdata_uv(
 // PORT NOTE: Returns (name, value) instead of mutating output pointers. The name
 // is returned as an owned Vec<u8> because Lua upvalue names live in the proto's
 // LuaString table (GC heap), not in static storage.
-fn aux_upvalue(
-    state: &LuaState,
-    fi: &LuaValue,
-    n: i32,
-) -> Option<(Vec<u8>, LuaValue)> {
+fn aux_upvalue(state: &LuaState, fi: &LuaValue, n: i32) -> Option<(Vec<u8>, LuaValue)> {
     match fi {
         LuaValue::Function(LuaClosure::C(ccl)) => {
             let upvalues = ccl.upvalues.borrow();
@@ -2346,7 +2362,10 @@ pub fn setup_value(state: &mut LuaState, funcindex: i32, n: i32) -> Option<Vec<u
 // Returns None if n is out of range.
 fn get_upval_ref_idx(state: &LuaState, fidx: i32, n: i32) -> Option<usize> {
     let fi = index_to_value(state, fidx);
-    debug_assert!(matches!(fi, LuaValue::Function(LuaClosure::Lua(_))), "Lua function expected");
+    debug_assert!(
+        matches!(fi, LuaValue::Function(LuaClosure::Lua(_))),
+        "Lua function expected"
+    );
     if let LuaValue::Function(LuaClosure::Lua(ref lcl)) = fi {
         let sizeupvalues = lcl.upvals.len() as i32;
         if n >= 1 && n <= sizeupvalues {
@@ -2398,10 +2417,8 @@ pub fn upvalue_join(state: &mut LuaState, fidx1: i32, n1: i32, fidx2: i32, n2: i
     };
     let f1 = index_to_value(state, fidx1);
     let f2 = index_to_value(state, fidx2);
-    if let (
-        LuaValue::Function(LuaClosure::Lua(lcl1)),
-        LuaValue::Function(LuaClosure::Lua(lcl2)),
-    ) = (&f1, &f2)
+    if let (LuaValue::Function(LuaClosure::Lua(lcl1)), LuaValue::Function(LuaClosure::Lua(lcl2))) =
+        (&f1, &f2)
     {
         let shared = lcl2.upval(idx2);
         lcl1.set_upval(idx1, shared);

@@ -20,7 +20,7 @@
 //!   written as qualified paths and will resolve in Phase B.
 //! * `LuaState` is from `lua-vm`; referenced here as an unresolved import.
 
-use lua_types::{AbsLineInfo, GcRef, LuaError, LuaString, LuaValue, LuaProto, UpvalDesc, LocalVar};
+use lua_types::{AbsLineInfo, GcRef, LocalVar, LuaError, LuaProto, LuaString, LuaValue, UpvalDesc};
 
 // TODO(port): these imports resolve in Phase B when inter-crate deps land.
 // use lua_vm::LuaState;
@@ -95,6 +95,7 @@ pub enum VarKind {
     Const = 1,
     ToBeClosed = 2,
     CompileTimeConst = 3,
+    VarArg = 4,
 }
 
 impl VarKind {
@@ -104,10 +105,13 @@ impl VarKind {
             1 => VarKind::Const,
             2 => VarKind::ToBeClosed,
             3 => VarKind::CompileTimeConst,
+            4 => VarKind::VarArg,
             _ => VarKind::Reg,
         }
     }
-    pub fn as_u8(self) -> u8 { self as u8 }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 // ── ExprKind ────────────────────────────────────────────────────────────────
@@ -115,26 +119,28 @@ impl VarKind {
 /// Variants correspond exactly to the C enum in lparser.h.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprKind {
-    Void,       // VVOID: empty expression list
-    Nil,        // VNIL: constant nil
-    True,       // VTRUE: constant true
-    False,      // VFALSE: constant false
-    K,          // VK: constant in k[]; info = index
-    KFlt,       // VKFLT: float constant; u.nval
-    KInt,       // VKINT: integer constant; u.ival
-    KStr,       // VKSTR: string constant; u.strval
-    NonReloc,   // VNONRELOC: value in fixed register; info = reg
-    Local,      // VLOCAL: local variable; u.var.ridx, u.var.vidx
-    UpVal,      // VUPVAL: upvalue; info = upvalue index
-    Const,      // VCONST: compile-time const; info = absolute actvar index
-    Indexed,    // VINDEXED: indexed by reg key; u.ind.t, u.ind.idx
-    IndexUp,    // VINDEXUP: indexed upvalue; u.ind.t, u.ind.idx
-    IndexI,     // VINDEXI: indexed by int; u.ind.t, u.ind.idx
-    IndexStr,   // VINDEXSTR: indexed by string; u.ind.t, u.ind.idx
-    Jmp,        // VJMP: test/comparison; info = jump instruction pc
-    Reloc,      // VRELOC: result in any register; info = instruction pc
-    Call,       // VCALL: function call; info = instruction pc
-    VarArg,     // VVARARG: vararg; info = instruction pc
+    Void,        // VVOID: empty expression list
+    Nil,         // VNIL: constant nil
+    True,        // VTRUE: constant true
+    False,       // VFALSE: constant false
+    K,           // VK: constant in k[]; info = index
+    KFlt,        // VKFLT: float constant; u.nval
+    KInt,        // VKINT: integer constant; u.ival
+    KStr,        // VKSTR: string constant; u.strval
+    NonReloc,    // VNONRELOC: value in fixed register; info = reg
+    Local,       // VLOCAL: local variable; u.var.ridx, u.var.vidx
+    UpVal,       // VUPVAL: upvalue; info = upvalue index
+    Const,       // VCONST: compile-time const; info = absolute actvar index
+    Indexed,     // VINDEXED: indexed by reg key; u.ind.t, u.ind.idx
+    IndexUp,     // VINDEXUP: indexed upvalue; u.ind.t, u.ind.idx
+    IndexI,      // VINDEXI: indexed by int; u.ind.t, u.ind.idx
+    IndexStr,    // VINDEXSTR: indexed by string; u.ind.t, u.ind.idx
+    VarArgVar,   // VVARGVAR: named vararg parameter; u.var.ridx, u.var.vidx
+    VarArgIndex, // VVARGIND: indexed named vararg parameter
+    Jmp,         // VJMP: test/comparison; info = jump instruction pc
+    Reloc,       // VRELOC: result in any register; info = instruction pc
+    Call,        // VCALL: function call; info = instruction pc
+    VarArg,      // VVARARG: vararg; info = instruction pc
 }
 
 impl ExprKind {
@@ -154,6 +160,8 @@ impl ExprKind {
                 | ExprKind::IndexUp
                 | ExprKind::IndexI
                 | ExprKind::IndexStr
+                | ExprKind::VarArgVar
+                | ExprKind::VarArgIndex
         )
     }
 
@@ -161,7 +169,11 @@ impl ExprKind {
     pub fn is_indexed(self) -> bool {
         matches!(
             self,
-            ExprKind::Indexed | ExprKind::IndexUp | ExprKind::IndexI | ExprKind::IndexStr
+            ExprKind::Indexed
+                | ExprKind::IndexUp
+                | ExprKind::IndexI
+                | ExprKind::IndexStr
+                | ExprKind::VarArgIndex
         )
     }
 }
@@ -200,7 +212,12 @@ pub struct ExprDesc {
 
 impl Default for ExprDesc {
     fn default() -> Self {
-        ExprDesc { k: ExprKind::Void, u: ExprPayload::default(), t: NO_JUMP, f: NO_JUMP }
+        ExprDesc {
+            k: ExprKind::Void,
+            u: ExprPayload::default(),
+            t: NO_JUMP,
+            f: NO_JUMP,
+        }
     }
 }
 
@@ -241,6 +258,12 @@ pub struct LabelDesc {
     pub close: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScopeBarrier {
+    pub level: u8,
+    pub name: GcRef<LuaString>,
+}
+
 // ── DynData ─────────────────────────────────────────────────────────────────
 
 /// C stored C-style dynamic arrays (arr/n/size); Rust uses Vec.
@@ -261,6 +284,7 @@ pub struct BlockCnt {
     pub firstlabel: i32,
     pub firstgoto: i32,
     pub nactvar: u8,
+    pub scope_level: u8,
     pub upval: bool,
     pub isloop: bool,
     pub insidetbc: bool,
@@ -273,6 +297,8 @@ pub struct BlockCnt {
     /// Lua 5.5: the `global *` wildcard flag saved on block entry and restored
     /// on exit, so a `global *` is scoped to its enclosing block.
     pub saved_global_wildcard: bool,
+    pub saved_global_wildcard_const: bool,
+    pub saved_scope_barriers: usize,
 }
 
 // ── FuncState ───────────────────────────────────────────────────────────────
@@ -297,6 +323,7 @@ pub struct FuncState {
     pub firstlabel: i32,
     pub ndebugvars: i16,
     pub nactvar: u8,
+    pub first_scope_barrier: usize,
     pub nups: u8,
     pub freereg: u8,
     pub iwthabs: u8,
@@ -337,51 +364,62 @@ pub struct LhsAssign {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOpr {
-    Minus,    // OPR_MINUS
-    BNot,     // OPR_BNOT
-    Not,      // OPR_NOT
-    Len,      // OPR_LEN
-    NoUnOpr,  // OPR_NOUNOPR
+    Minus,   // OPR_MINUS
+    BNot,    // OPR_BNOT
+    Not,     // OPR_NOT
+    Len,     // OPR_LEN
+    NoUnOpr, // OPR_NOUNOPR
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOpr {
-    Add,     // OPR_ADD
-    Sub,     // OPR_SUB
-    Mul,     // OPR_MUL
-    Mod,     // OPR_MOD
-    Pow,     // OPR_POW
-    Div,     // OPR_DIV
-    IDiv,    // OPR_IDIV
-    BAnd,    // OPR_BAND
-    BOr,     // OPR_BOR
-    BXor,    // OPR_BXOR
-    Shl,     // OPR_SHL
-    Shr,     // OPR_SHR
-    Concat,  // OPR_CONCAT
-    Eq,      // OPR_EQ
-    Lt,      // OPR_LT
-    Le,      // OPR_LE
-    Ne,      // OPR_NE
-    Gt,      // OPR_GT
-    Ge,      // OPR_GE
-    And,     // OPR_AND
-    Or,      // OPR_OR
+    Add,      // OPR_ADD
+    Sub,      // OPR_SUB
+    Mul,      // OPR_MUL
+    Mod,      // OPR_MOD
+    Pow,      // OPR_POW
+    Div,      // OPR_DIV
+    IDiv,     // OPR_IDIV
+    BAnd,     // OPR_BAND
+    BOr,      // OPR_BOR
+    BXor,     // OPR_BXOR
+    Shl,      // OPR_SHL
+    Shr,      // OPR_SHR
+    Concat,   // OPR_CONCAT
+    Eq,       // OPR_EQ
+    Lt,       // OPR_LT
+    Le,       // OPR_LE
+    Ne,       // OPR_NE
+    Gt,       // OPR_GT
+    Ge,       // OPR_GE
+    And,      // OPR_AND
+    Or,       // OPR_OR
     NoBinOpr, // OPR_NOBINOPR
 }
 
 /// Indexed by BinOpr discriminant (0 = Add, ... 20 = Or).
 const PRIORITY: [(u8, u8); 21] = [
-    (10, 10), (10, 10),       // Add, Sub
-    (11, 11), (11, 11),       // Mul, Mod
-    (14, 13),                 // Pow (right-associative)
-    (11, 11), (11, 11),       // Div, IDiv
-    (6, 6), (4, 4), (5, 5),  // BAnd, BOr, BXor
-    (7, 7), (7, 7),           // Shl, Shr
-    (9, 8),                   // Concat (right-associative)
-    (3, 3), (3, 3), (3, 3),  // Eq, Lt, Le
-    (3, 3), (3, 3), (3, 3),  // Ne, Gt, Ge
-    (2, 2), (1, 1),           // And, Or
+    (10, 10),
+    (10, 10), // Add, Sub
+    (11, 11),
+    (11, 11), // Mul, Mod
+    (14, 13), // Pow (right-associative)
+    (11, 11),
+    (11, 11), // Div, IDiv
+    (6, 6),
+    (4, 4),
+    (5, 5), // BAnd, BOr, BXor
+    (7, 7),
+    (7, 7), // Shl, Shr
+    (9, 8), // Concat (right-associative)
+    (3, 3),
+    (3, 3),
+    (3, 3), // Eq, Lt, Le
+    (3, 3),
+    (3, 3),
+    (3, 3), // Ne, Gt, Ge
+    (2, 2),
+    (1, 1), // And, Or
 ];
 
 // TODO_ARCH(phase-b-reconcile): re-exporting canonical OpCode from lua-code.
@@ -443,10 +481,19 @@ pub struct LexState {
     /// does NOT void an active `*`. Block-scoped (saved/restored like
     /// [`Self::declared_globals`]).
     pub global_wildcard: bool,
+    /// Whether the active explicit `global *` wildcard was declared `<const>`.
+    /// Named global declarations still win for their own names; this applies
+    /// only to otherwise free globals resolved through the wildcard.
+    pub global_wildcard_const: bool,
     /// Names declared via `global`, each paired with whether it was declared
     /// `<const>` (read-only). Consulted by name resolution under
     /// [`Self::global_strict`].
     pub declared_globals: Vec<(GcRef<LuaString>, bool)>,
+    /// Lua 5.5 `global` declarations participate in goto scope checks like
+    /// locals, but they do not occupy VM registers. Keep that bookkeeping
+    /// separate from `FuncState::nactvar` so codegen remains register-stable.
+    pub scope_barriers: Vec<ScopeBarrier>,
+    pub global_function_names: Vec<GcRef<LuaString>>,
 }
 
 const PARSER_MAX_C_CALLS: u32 = 200;
@@ -527,7 +574,8 @@ fn emit_inst(fs: &mut FuncState, line: i32, inst: lua_code::opcodes::Instruction
     const ABS_LINE_INFO: i8 = -0x80i8;
     let pc = fs.pc as usize;
     if fs.f.code.len() <= pc {
-        fs.f.code.resize(pc + 1, lua_types::opcode::Instruction::default());
+        fs.f.code
+            .resize(pc + 1, lua_types::opcode::Instruction::default());
     }
     fs.f.code[pc] = lua_types::opcode::Instruction::new(inst.0);
     if fs.f.lineinfo.len() <= pc {
@@ -536,11 +584,16 @@ fn emit_inst(fs: &mut FuncState, line: i32, inst: lua_code::opcodes::Instruction
     let linedif_raw = line - fs.previousline;
     let need_abs = linedif_raw.abs() >= LIM_LINE_DIFF || {
         let over = fs.iwthabs as i32 >= MAX_IWTH_ABS;
-        if !over { fs.iwthabs += 1; }
+        if !over {
+            fs.iwthabs += 1;
+        }
         over
     };
     if need_abs {
-        fs.f.abslineinfo.push(AbsLineInfo { pc: pc as i32, line });
+        fs.f.abslineinfo.push(AbsLineInfo {
+            pc: pc as i32,
+            line,
+        });
         fs.nabslineinfo += 1;
         fs.f.lineinfo[pc] = ABS_LINE_INFO;
         fs.iwthabs = 1;
@@ -631,8 +684,16 @@ fn cg_free_exp(fs: &mut FuncState, e: &ExprDesc) {
 ///
 /// Mirrors C's `freeexps` from `lcode.c`.
 fn cg_free_exps(fs: &mut FuncState, e1: &ExprDesc, e2: &ExprDesc) {
-    let r1 = if e1.k == ExprKind::NonReloc { e1.u.info } else { -1 };
-    let r2 = if e2.k == ExprKind::NonReloc { e2.u.info } else { -1 };
+    let r1 = if e1.k == ExprKind::NonReloc {
+        e1.u.info
+    } else {
+        -1
+    };
+    let r2 = if e2.k == ExprKind::NonReloc {
+        e2.u.info
+    } else {
+        -1
+    };
     if r1 > r2 {
         cg_free_reg(fs, r1);
         cg_free_reg(fs, r2);
@@ -674,47 +735,46 @@ fn cg_posfix_fold(
         }
     };
 
-    let foldable = e1.t == NO_JUMP && e1.f == NO_JUMP
-        && e2.t == NO_JUMP && e2.f == NO_JUMP;
+    let foldable = e1.t == NO_JUMP && e1.f == NO_JUMP && e2.t == NO_JUMP && e2.f == NO_JUMP;
 
     if foldable {
-    if let (ExprKind::KInt, ExprKind::KInt) = (e1.k, e2.k) {
-        let a = e1.u.ival;
-        let b = e2.u.ival;
-        let r: Option<i64> = match op {
-            BinOpr::Add => Some(a.wrapping_add(b)),
-            BinOpr::Sub => Some(a.wrapping_sub(b)),
-            BinOpr::Mul => Some(a.wrapping_mul(b)),
-            BinOpr::Mod if b != 0 => Some(a.rem_euclid(b)),
-            BinOpr::IDiv if b != 0 => Some(a.div_euclid(b)),
-            BinOpr::BAnd => Some(a & b),
-            BinOpr::BOr  => Some(a | b),
-            BinOpr::BXor => Some(a ^ b),
-            _ => None,
-        };
-        if let Some(v) = r {
-            e1.k = ExprKind::KInt;
-            e1.u.ival = v;
-            return Ok(());
-        }
-    }
-    if let (Some(a), Some(b)) = (promote(e1.k, &e1.u), promote(e2.k, &e2.u)) {
-        let r: Option<f64> = match op {
-            BinOpr::Add => Some(a + b),
-            BinOpr::Sub => Some(a - b),
-            BinOpr::Mul => Some(a * b),
-            BinOpr::Div => Some(a / b),
-            BinOpr::Pow => Some(a.powf(b)),
-            _ => None,
-        };
-        if let Some(v) = r {
-            if v.is_finite() {
-                e1.k = ExprKind::KFlt;
-                e1.u.nval = v;
+        if let (ExprKind::KInt, ExprKind::KInt) = (e1.k, e2.k) {
+            let a = e1.u.ival;
+            let b = e2.u.ival;
+            let r: Option<i64> = match op {
+                BinOpr::Add => Some(a.wrapping_add(b)),
+                BinOpr::Sub => Some(a.wrapping_sub(b)),
+                BinOpr::Mul => Some(a.wrapping_mul(b)),
+                BinOpr::Mod if b != 0 => Some(a.rem_euclid(b)),
+                BinOpr::IDiv if b != 0 => Some(a.div_euclid(b)),
+                BinOpr::BAnd => Some(a & b),
+                BinOpr::BOr => Some(a | b),
+                BinOpr::BXor => Some(a ^ b),
+                _ => None,
+            };
+            if let Some(v) = r {
+                e1.k = ExprKind::KInt;
+                e1.u.ival = v;
                 return Ok(());
             }
         }
-    }
+        if let (Some(a), Some(b)) = (promote(e1.k, &e1.u), promote(e2.k, &e2.u)) {
+            let r: Option<f64> = match op {
+                BinOpr::Add => Some(a + b),
+                BinOpr::Sub => Some(a - b),
+                BinOpr::Mul => Some(a * b),
+                BinOpr::Div => Some(a / b),
+                BinOpr::Pow => Some(a.powf(b)),
+                _ => None,
+            };
+            if let Some(v) = r {
+                if v.is_finite() {
+                    e1.k = ExprKind::KFlt;
+                    e1.u.nval = v;
+                    return Ok(());
+                }
+            }
+        }
     }
 
     if matches!(op, BinOpr::Lt | BinOpr::Le) {
@@ -722,7 +782,11 @@ fn cg_posfix_fold(
     }
 
     if matches!(op, BinOpr::Gt | BinOpr::Ge) {
-        let swap_op = if matches!(op, BinOpr::Gt) { BinOpr::Lt } else { BinOpr::Le };
+        let swap_op = if matches!(op, BinOpr::Gt) {
+            BinOpr::Lt
+        } else {
+            BinOpr::Le
+        };
         std::mem::swap(e1, e2);
         return cg_emit_order(fs, swap_op, e1, e2, line);
     }
@@ -750,21 +814,68 @@ fn cg_posfix_fold(
     }
 
     let (opcode, event) = match op {
-        BinOpr::Add  => (lua_code::opcodes::OpCode::Add,  lua_types::tagmethod::TagMethod::Add),
-        BinOpr::Sub  => (lua_code::opcodes::OpCode::Sub,  lua_types::tagmethod::TagMethod::Sub),
-        BinOpr::Mul  => (lua_code::opcodes::OpCode::Mul,  lua_types::tagmethod::TagMethod::Mul),
-        BinOpr::Mod  => (lua_code::opcodes::OpCode::Mod,  lua_types::tagmethod::TagMethod::Mod),
-        BinOpr::Pow  => (lua_code::opcodes::OpCode::Pow,  lua_types::tagmethod::TagMethod::Pow),
-        BinOpr::Div  => (lua_code::opcodes::OpCode::Div,  lua_types::tagmethod::TagMethod::Div),
-        BinOpr::IDiv => (lua_code::opcodes::OpCode::IDiv, lua_types::tagmethod::TagMethod::Idiv),
-        BinOpr::BAnd => (lua_code::opcodes::OpCode::BAnd, lua_types::tagmethod::TagMethod::Band),
-        BinOpr::BOr  => (lua_code::opcodes::OpCode::BOr,  lua_types::tagmethod::TagMethod::Bor),
-        BinOpr::BXor => (lua_code::opcodes::OpCode::BXOr, lua_types::tagmethod::TagMethod::Bxor),
-        BinOpr::Shl  => (lua_code::opcodes::OpCode::Shl,  lua_types::tagmethod::TagMethod::Shl),
-        BinOpr::Shr  => (lua_code::opcodes::OpCode::Shr,  lua_types::tagmethod::TagMethod::Shr),
-        BinOpr::Concat | BinOpr::Eq | BinOpr::Lt | BinOpr::Le | BinOpr::Ne
-        | BinOpr::Gt | BinOpr::Ge | BinOpr::And | BinOpr::Or | BinOpr::NoBinOpr => {
-            unreachable!("cg_posfix_fold reached opcode match with non-arith op {:?}", op)
+        BinOpr::Add => (
+            lua_code::opcodes::OpCode::Add,
+            lua_types::tagmethod::TagMethod::Add,
+        ),
+        BinOpr::Sub => (
+            lua_code::opcodes::OpCode::Sub,
+            lua_types::tagmethod::TagMethod::Sub,
+        ),
+        BinOpr::Mul => (
+            lua_code::opcodes::OpCode::Mul,
+            lua_types::tagmethod::TagMethod::Mul,
+        ),
+        BinOpr::Mod => (
+            lua_code::opcodes::OpCode::Mod,
+            lua_types::tagmethod::TagMethod::Mod,
+        ),
+        BinOpr::Pow => (
+            lua_code::opcodes::OpCode::Pow,
+            lua_types::tagmethod::TagMethod::Pow,
+        ),
+        BinOpr::Div => (
+            lua_code::opcodes::OpCode::Div,
+            lua_types::tagmethod::TagMethod::Div,
+        ),
+        BinOpr::IDiv => (
+            lua_code::opcodes::OpCode::IDiv,
+            lua_types::tagmethod::TagMethod::Idiv,
+        ),
+        BinOpr::BAnd => (
+            lua_code::opcodes::OpCode::BAnd,
+            lua_types::tagmethod::TagMethod::Band,
+        ),
+        BinOpr::BOr => (
+            lua_code::opcodes::OpCode::BOr,
+            lua_types::tagmethod::TagMethod::Bor,
+        ),
+        BinOpr::BXor => (
+            lua_code::opcodes::OpCode::BXOr,
+            lua_types::tagmethod::TagMethod::Bxor,
+        ),
+        BinOpr::Shl => (
+            lua_code::opcodes::OpCode::Shl,
+            lua_types::tagmethod::TagMethod::Shl,
+        ),
+        BinOpr::Shr => (
+            lua_code::opcodes::OpCode::Shr,
+            lua_types::tagmethod::TagMethod::Shr,
+        ),
+        BinOpr::Concat
+        | BinOpr::Eq
+        | BinOpr::Lt
+        | BinOpr::Le
+        | BinOpr::Ne
+        | BinOpr::Gt
+        | BinOpr::Ge
+        | BinOpr::And
+        | BinOpr::Or
+        | BinOpr::NoBinOpr => {
+            unreachable!(
+                "cg_posfix_fold reached opcode match with non-arith op {:?}",
+                op
+            )
         }
     };
 
@@ -832,20 +943,10 @@ fn cg_emit_order(
         (r1, r2, op_reg)
     };
     cg_free_exps(fs, e1, e2);
-    let cmp = lua_code::opcodes::Instruction::abck(
-        cmp_op,
-        r1 as u32,
-        r2 as u32,
-        0,
-        1,
-    );
+    let cmp = lua_code::opcodes::Instruction::abck(cmp_op, r1 as u32, r2 as u32, 0, 1);
     emit_inst(fs, line, cmp);
     let jmp_arg = (NO_JUMP + lua_code::opcodes::OFFSET_S_J) as u32;
-    let jmp = lua_code::opcodes::Instruction::sj(
-        lua_code::opcodes::OpCode::Jmp,
-        jmp_arg,
-        0,
-    );
+    let jmp = lua_code::opcodes::Instruction::sj(lua_code::opcodes::OpCode::Jmp, jmp_arg, 0);
     let jmp_pc = emit_inst(fs, line, jmp);
     e1.u.info = jmp_pc;
     e1.k = ExprKind::Jmp;
@@ -881,13 +982,7 @@ fn cg_emit_eq(
     };
     cg_free_exps(fs, e1, e2);
     let k_bit = if matches!(op, BinOpr::Eq) { 1 } else { 0 };
-    let cmp = lua_code::opcodes::Instruction::abck(
-        cmp_op,
-        r1 as u32,
-        r2 as u32,
-        0,
-        k_bit,
-    );
+    let cmp = lua_code::opcodes::Instruction::abck(cmp_op, r1 as u32, r2 as u32, 0, k_bit);
     emit_inst(fs, line, cmp);
     let jmp_pc = cg_jump(fs, line);
     e1.u.info = jmp_pc;
@@ -957,18 +1052,13 @@ fn cg_emit_concat(
 /// register form, matching C semantics (just less efficient). `Not`
 /// is routed through `cg_codenot`, which performs literal folding,
 /// JMP-condition flipping, or emits `OP_NOT` for register operands.
-fn cg_prefix(
-    fs: &mut FuncState,
-    op: UnOpr,
-    e: &mut ExprDesc,
-    line: i32,
-) -> Result<(), LuaError> {
+fn cg_prefix(fs: &mut FuncState, op: UnOpr, e: &mut ExprDesc, line: i32) -> Result<(), LuaError> {
     cg_discharge_vars(fs, line, e)?;
     let opcode = match op {
         UnOpr::Minus => lua_code::opcodes::OpCode::Unm,
-        UnOpr::BNot  => lua_code::opcodes::OpCode::BNot,
-        UnOpr::Len   => lua_code::opcodes::OpCode::Len,
-        UnOpr::Not   => return cg_codenot(fs, line, e),
+        UnOpr::BNot => lua_code::opcodes::OpCode::BNot,
+        UnOpr::Len => lua_code::opcodes::OpCode::Len,
+        UnOpr::Not => return cg_codenot(fs, line, e),
         UnOpr::NoUnOpr => return Ok(()),
     };
     let r = cg_exp_to_any_reg(fs, line, e)?;
@@ -1017,13 +1107,8 @@ fn cg_patch_test_reg(fs: &mut FuncState, node: i32, reg: u32) -> bool {
         inst.set_arg_a(reg);
         cg_set_inst_at(fs, ctrl_pc, inst);
     } else {
-        let test = lua_code::opcodes::Instruction::abck(
-            lua_code::opcodes::OpCode::Test,
-            b,
-            0,
-            0,
-            k,
-        );
+        let test =
+            lua_code::opcodes::Instruction::abck(lua_code::opcodes::OpCode::Test, b, 0, 0, k);
         cg_set_inst_at(fs, ctrl_pc, test);
     }
     true
@@ -1056,11 +1141,7 @@ fn cg_codenot(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), Lua
         ExprKind::Nil | ExprKind::False => {
             e.k = ExprKind::True;
         }
-        ExprKind::K
-        | ExprKind::KFlt
-        | ExprKind::KInt
-        | ExprKind::KStr
-        | ExprKind::True => {
+        ExprKind::K | ExprKind::KFlt | ExprKind::KInt | ExprKind::KStr | ExprKind::True => {
             e.k = ExprKind::False;
         }
         ExprKind::Jmp => {
@@ -1093,11 +1174,7 @@ fn cg_codenot(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), Lua
 /// Mirrors C's `luaK_jump`.
 fn cg_jump(fs: &mut FuncState, line: i32) -> i32 {
     let jmp_arg = (NO_JUMP + lua_code::opcodes::OFFSET_S_J) as u32;
-    let jmp = lua_code::opcodes::Instruction::sj(
-        lua_code::opcodes::OpCode::Jmp,
-        jmp_arg,
-        0,
-    );
+    let jmp = lua_code::opcodes::Instruction::sj(lua_code::opcodes::OpCode::Jmp, jmp_arg, 0);
     emit_inst(fs, line, jmp)
 }
 
@@ -1119,7 +1196,11 @@ fn cg_set_inst_at(fs: &mut FuncState, pc: i32, inst: lua_code::opcodes::Instruct
 /// Mirrors C's `getjump` from `lcode.c`.
 fn cg_get_jump(fs: &FuncState, pc: i32) -> i32 {
     let offset = cg_inst_at(fs, pc).arg_s_j();
-    if offset == NO_JUMP { NO_JUMP } else { (pc + 1) + offset }
+    if offset == NO_JUMP {
+        NO_JUMP
+    } else {
+        (pc + 1) + offset
+    }
 }
 
 /// Patch the jump at `pc` to land at absolute `dest`.
@@ -1151,12 +1232,19 @@ fn cg_get_label(fs: &mut FuncState) -> i32 {
 ///
 /// Mirrors C's `luaK_concat` from `lcode.c`.
 fn cg_concat(fs: &mut FuncState, l1: &mut i32, l2: i32) -> Result<(), LuaError> {
-    if l2 == NO_JUMP { return Ok(()); }
-    if *l1 == NO_JUMP { *l1 = l2; return Ok(()); }
+    if l2 == NO_JUMP {
+        return Ok(());
+    }
+    if *l1 == NO_JUMP {
+        *l1 = l2;
+        return Ok(());
+    }
     let mut list = *l1;
     loop {
         let next = cg_get_jump(fs, list);
-        if next == NO_JUMP { break; }
+        if next == NO_JUMP {
+            break;
+        }
         list = next;
     }
     cg_fix_jump(fs, list, l2)
@@ -1210,9 +1298,7 @@ fn cg_go_if_true(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), 
             cg_negate_condition(fs, e);
             e.u.info
         }
-        ExprKind::K | ExprKind::KFlt | ExprKind::KInt | ExprKind::KStr | ExprKind::True => {
-            NO_JUMP
-        }
+        ExprKind::K | ExprKind::KFlt | ExprKind::KInt | ExprKind::KStr | ExprKind::True => NO_JUMP,
         _ => cg_jump_on_cond(fs, line, e, 0)?,
     };
     cg_concat(fs, &mut e.f, pc)?;
@@ -1280,25 +1366,30 @@ fn cg_jump_on_cond(
 /// operators rely on `cg_posfix_fold` to discharge their operands after the
 /// right-hand side is known, so `cg_infix` only calls `cg_discharge_vars`
 /// for them.
-fn cg_infix(
-    fs: &mut FuncState,
-    op: BinOpr,
-    v: &mut ExprDesc,
-    line: i32,
-) -> Result<(), LuaError> {
+fn cg_infix(fs: &mut FuncState, op: BinOpr, v: &mut ExprDesc, line: i32) -> Result<(), LuaError> {
     match op {
         BinOpr::And => cg_go_if_true(fs, line, v),
         BinOpr::Or => cg_go_if_false(fs, line, v),
         BinOpr::Concat => cg_exp_to_next_reg(fs, line, v),
-        BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::IDiv
-        | BinOpr::Mod | BinOpr::Pow
-        | BinOpr::BAnd | BinOpr::BOr | BinOpr::BXor
-        | BinOpr::Shl | BinOpr::Shr
-        | BinOpr::Eq | BinOpr::Ne
-        | BinOpr::Lt | BinOpr::Le | BinOpr::Gt | BinOpr::Ge => {
-            if matches!(v.k, ExprKind::KInt | ExprKind::KFlt)
-                && v.t == NO_JUMP && v.f == NO_JUMP
-            {
+        BinOpr::Add
+        | BinOpr::Sub
+        | BinOpr::Mul
+        | BinOpr::Div
+        | BinOpr::IDiv
+        | BinOpr::Mod
+        | BinOpr::Pow
+        | BinOpr::BAnd
+        | BinOpr::BOr
+        | BinOpr::BXor
+        | BinOpr::Shl
+        | BinOpr::Shr
+        | BinOpr::Eq
+        | BinOpr::Ne
+        | BinOpr::Lt
+        | BinOpr::Le
+        | BinOpr::Gt
+        | BinOpr::Ge => {
+            if matches!(v.k, ExprKind::KInt | ExprKind::KFlt) && v.t == NO_JUMP && v.f == NO_JUMP {
                 cg_discharge_vars(fs, line, v)
             } else {
                 cg_exp_to_any_reg(fs, line, v).map(|_| ())
@@ -1328,14 +1419,22 @@ fn cg_sc_int(e: &ExprDesc) -> Option<u8> {
     }
 }
 
+fn mark_vararg_table_needed(fs: &mut FuncState) {
+    fs.f.vararg_table_needed = true;
+    for inst in fs.f.code.iter_mut() {
+        let mut op = lua_code::opcodes::Instruction(inst.raw());
+        if op.opcode() == Some(lua_code::opcodes::OpCode::VarArgPack) {
+            op.set_arg_k(1);
+            *inst = lua_types::opcode::Instruction::new(op.0);
+            break;
+        }
+    }
+}
+
 /// Minimal `luaK_exp2anyreg`: ensure `e` ends up in *some* register. If `e`
 /// is already `VNONRELOC` and its register is at or above `nactvar`, keep it
 /// there; otherwise discharge to the next free register.
-fn cg_exp_to_any_reg(
-    fs: &mut FuncState,
-    line: i32,
-    e: &mut ExprDesc,
-) -> Result<u8, LuaError> {
+fn cg_exp_to_any_reg(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<u8, LuaError> {
     cg_discharge_vars(fs, line, e)?;
     if e.k == ExprKind::NonReloc {
         if e.t == NO_JUMP && e.f == NO_JUMP {
@@ -1353,12 +1452,13 @@ fn cg_exp_to_any_reg(
 /// Minimal `luaK_dischargevars` covering the cases the parser bootstrap can
 /// produce: `VLOCAL`, `VUpVal`, `VIndexUp`, `VKStr`. Other variants are left
 /// untouched. Returns Ok(()) on success.
-fn cg_discharge_vars(
-    fs: &mut FuncState,
-    line: i32,
-    e: &mut ExprDesc,
-) -> Result<(), LuaError> {
+fn cg_discharge_vars(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
     match e.k {
+        ExprKind::VarArgVar => {
+            mark_vararg_table_needed(fs);
+            e.u.info = e.u.var_ridx as i32;
+            e.k = ExprKind::NonReloc;
+        }
         ExprKind::Local => {
             e.u.info = e.u.var_ridx as i32;
             e.k = ExprKind::NonReloc;
@@ -1434,6 +1534,27 @@ fn cg_discharge_vars(
             e.u.info = pc;
             e.k = ExprKind::Reloc;
         }
+        ExprKind::VarArgIndex => {
+            let t_reg = e.u.ind_t as i32;
+            let idx_reg = e.u.ind_idx as i32;
+            if idx_reg > t_reg {
+                cg_free_reg_if_temp(fs, idx_reg);
+                cg_free_reg_if_temp(fs, t_reg);
+            } else {
+                cg_free_reg_if_temp(fs, t_reg);
+                cg_free_reg_if_temp(fs, idx_reg);
+            }
+            let inst = lua_code::opcodes::Instruction::abck(
+                lua_code::opcodes::OpCode::GetVArg,
+                0,
+                e.u.ind_t as u32,
+                e.u.ind_idx as u32,
+                0,
+            );
+            let pc = emit_inst(fs, line, inst);
+            e.u.info = pc;
+            e.k = ExprKind::Reloc;
+        }
         ExprKind::VarArg | ExprKind::Call => {
             cg_set_one_ret(fs, e);
         }
@@ -1489,24 +1610,60 @@ fn cg_storevar(
             emit_inst(fs, line, inst);
         }
         ExprKind::IndexUp => {
-            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetTabUp,
-                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+            cg_store_abrk(
+                fs,
+                line,
+                lua_code::opcodes::OpCode::SetTabUp,
+                var.u.ind_t as u32,
+                var.u.ind_idx as u32,
+                ex,
+            )?;
         }
         ExprKind::IndexI => {
-            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetI,
-                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+            cg_store_abrk(
+                fs,
+                line,
+                lua_code::opcodes::OpCode::SetI,
+                var.u.ind_t as u32,
+                var.u.ind_idx as u32,
+                ex,
+            )?;
         }
         ExprKind::IndexStr => {
-            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetField,
-                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+            cg_store_abrk(
+                fs,
+                line,
+                lua_code::opcodes::OpCode::SetField,
+                var.u.ind_t as u32,
+                var.u.ind_idx as u32,
+                ex,
+            )?;
         }
         ExprKind::Indexed => {
-            cg_store_abrk(fs, line, lua_code::opcodes::OpCode::SetTable,
-                var.u.ind_t as u32, var.u.ind_idx as u32, ex)?;
+            cg_store_abrk(
+                fs,
+                line,
+                lua_code::opcodes::OpCode::SetTable,
+                var.u.ind_t as u32,
+                var.u.ind_idx as u32,
+                ex,
+            )?;
+        }
+        ExprKind::VarArgIndex => {
+            mark_vararg_table_needed(fs);
+            cg_store_abrk(
+                fs,
+                line,
+                lua_code::opcodes::OpCode::SetTable,
+                var.u.ind_t as u32,
+                var.u.ind_idx as u32,
+                ex,
+            )?;
         }
         _ => {
             return Err(LuaError::syntax(format_args!(
-                "internal: cg_storevar: invalid var kind {:?}", var.k
+                "internal: cg_storevar: invalid var kind {:?}",
+                var.k
             )));
         }
     }
@@ -1552,7 +1709,8 @@ fn cg_discharge_to_reg(
                     lua_code::opcodes::OpCode::Move,
                     reg as u32,
                     e.u.info as u32,
-                    0, 0,
+                    0,
+                    0,
                 );
                 emit_inst(fs, line, inst);
             }
@@ -1565,19 +1723,31 @@ fn cg_discharge_to_reg(
         }
         ExprKind::Nil => {
             let inst = lua_code::opcodes::Instruction::abck(
-                lua_code::opcodes::OpCode::LoadNil, reg as u32, 0, 0, 0,
+                lua_code::opcodes::OpCode::LoadNil,
+                reg as u32,
+                0,
+                0,
+                0,
             );
             emit_inst(fs, line, inst);
         }
         ExprKind::True => {
             let inst = lua_code::opcodes::Instruction::abck(
-                lua_code::opcodes::OpCode::LoadTrue, reg as u32, 0, 0, 0,
+                lua_code::opcodes::OpCode::LoadTrue,
+                reg as u32,
+                0,
+                0,
+                0,
             );
             emit_inst(fs, line, inst);
         }
         ExprKind::False => {
             let inst = lua_code::opcodes::Instruction::abck(
-                lua_code::opcodes::OpCode::LoadFalse, reg as u32, 0, 0, 0,
+                lua_code::opcodes::OpCode::LoadFalse,
+                reg as u32,
+                0,
+                0,
+                0,
             );
             emit_inst(fs, line, inst);
         }
@@ -1588,13 +1758,17 @@ fn cg_discharge_to_reg(
             if i >= min && i <= max {
                 let bx = (i as i32 + lua_code::opcodes::OFFSET_S_BX) as u32;
                 let inst = lua_code::opcodes::Instruction::abx(
-                    lua_code::opcodes::OpCode::LoadI, reg as u32, bx,
+                    lua_code::opcodes::OpCode::LoadI,
+                    reg as u32,
+                    bx,
                 );
                 emit_inst(fs, line, inst);
             } else {
                 let k_idx = add_k_value(fs, LuaValue::Int(i));
                 let inst = lua_code::opcodes::Instruction::abx(
-                    lua_code::opcodes::OpCode::LoadK, reg as u32, k_idx as u32,
+                    lua_code::opcodes::OpCode::LoadK,
+                    reg as u32,
+                    k_idx as u32,
                 );
                 emit_inst(fs, line, inst);
             }
@@ -1611,20 +1785,26 @@ fn cg_discharge_to_reg(
             if let Some(fi) = fi_opt.filter(|fi| *fi >= min && *fi <= max) {
                 let bx = (fi as i32 + lua_code::opcodes::OFFSET_S_BX) as u32;
                 let inst = lua_code::opcodes::Instruction::abx(
-                    lua_code::opcodes::OpCode::LoadF, reg as u32, bx,
+                    lua_code::opcodes::OpCode::LoadF,
+                    reg as u32,
+                    bx,
                 );
                 emit_inst(fs, line, inst);
             } else {
                 let k_idx = add_k_value(fs, LuaValue::Float(f));
                 let inst = lua_code::opcodes::Instruction::abx(
-                    lua_code::opcodes::OpCode::LoadK, reg as u32, k_idx as u32,
+                    lua_code::opcodes::OpCode::LoadK,
+                    reg as u32,
+                    k_idx as u32,
                 );
                 emit_inst(fs, line, inst);
             }
         }
         ExprKind::KStr => {
-            let s = e.u.strval.clone()
-                .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
+            let s =
+                e.u.strval.clone().ok_or_else(|| {
+                    LuaError::syntax(format_args!("internal: VKStr with no strval"))
+                })?;
             let k_idx = add_k_string(fs, s);
             let inst = lua_code::opcodes::Instruction::abx(
                 lua_code::opcodes::OpCode::LoadK,
@@ -1643,7 +1823,8 @@ fn cg_discharge_to_reg(
         }
         _ => {
             return Err(LuaError::syntax(format_args!(
-                "internal: cg_discharge_to_reg cannot discharge {:?}", e.k
+                "internal: cg_discharge_to_reg cannot discharge {:?}",
+                e.k
             )));
         }
     }
@@ -1707,12 +1888,7 @@ fn cg_patch_list_aux(
 /// pending `e.t` / `e.f` jump-lists. When the lists actually need a value
 /// (i.e. any controller isn't a `TESTSET`), emits the LFalseSkip / LoadTrue
 /// pair around which the jumps land.
-fn cg_exp_to_reg(
-    fs: &mut FuncState,
-    line: i32,
-    e: &mut ExprDesc,
-    reg: u8,
-) -> Result<(), LuaError> {
+fn cg_exp_to_reg(fs: &mut FuncState, line: i32, e: &mut ExprDesc, reg: u8) -> Result<(), LuaError> {
     cg_discharge_to_reg(fs, line, e, reg)?;
     if e.k == ExprKind::Jmp {
         let info = e.u.info;
@@ -1785,21 +1961,14 @@ fn cg_check_global(
     let mut probe = target.clone();
     cg_exp_to_next_reg(fs, line, &mut probe)?;
     let reg = probe.u.info;
-    let inst = lua_code::opcodes::Instruction::abx(
-        lua_code::opcodes::OpCode::ErrNNil,
-        reg as u32,
-        bx,
-    );
+    let inst =
+        lua_code::opcodes::Instruction::abx(lua_code::opcodes::OpCode::ErrNNil, reg as u32, bx);
     emit_inst(fs, line, inst);
     cg_free_reg(fs, reg);
     Ok(())
 }
 
-fn cg_exp_to_next_reg(
-    fs: &mut FuncState,
-    line: i32,
-    e: &mut ExprDesc,
-) -> Result<(), LuaError> {
+fn cg_exp_to_next_reg(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
     cg_discharge_vars(fs, line, e)?;
     cg_free_exp(fs, e);
     let reg = reserve_reg(fs)?;
@@ -1887,20 +2056,24 @@ fn cg_finish(fs: &mut FuncState) {
 
 /// based on `nret`. `first` is the first result register; `nret` is the
 /// number of values to return (`LUA_MULTRET` for "all values on top").
-fn cg_emit_return(fs: &mut FuncState, line: i32, first: i32, nret: i32) {
+fn cg_emit_return(
+    fs: &mut FuncState,
+    line: i32,
+    first: i32,
+    nret: i32,
+    version: lua_types::LuaVersion,
+) -> Result<(), LuaError> {
     let op = match nret {
         0 => lua_code::opcodes::OpCode::Return0,
         1 => lua_code::opcodes::OpCode::Return1,
         _ => lua_code::opcodes::OpCode::Return,
     };
-    let inst = lua_code::opcodes::Instruction::abck(
-        op,
-        first as u32,
-        (nret + 1) as u32,
-        0,
-        0,
-    );
+    if matches!(version, lua_types::LuaVersion::V55) {
+        check_limit(fs, nret + 1, lua_code::opcodes::MAXARG_B as i32, "returns")?;
+    }
+    let inst = lua_code::opcodes::Instruction::abck(op, first as u32, (nret + 1) as u32, 0, 0);
     emit_inst(fs, line, inst);
+    Ok(())
 }
 
 // ── Free functions ──────────────────────────────────────────────────────────
@@ -1925,11 +2098,13 @@ fn error_limit(fs: &FuncState, limit: i32, what: &str) -> LuaError {
     let line = fs.f.linedefined;
     if line == 0 {
         LuaError::syntax(format_args!(
-            "too many {} (limit is {}) in main function", what, limit
+            "too many {} (limit is {}) in main function",
+            what, limit
         ))
     } else {
         LuaError::syntax(format_args!(
-            "too many {} (limit is {}) in function at line {}", what, limit, line
+            "too many {} (limit is {}) in function at line {}",
+            what, limit, line
         ))
     }
 }
@@ -1969,8 +2144,11 @@ fn check_next(ls: &mut LexState, state: &mut LuaState, c: TokenKind) -> Result<(
 /// Expects TK_NAME, returns the name string, advances.
 fn str_check_name(ls: &mut LexState, state: &mut LuaState) -> Result<GcRef<LuaString>, LuaError> {
     check(ls, TK_NAME)?;
-    let ts = ls.t.seminfo.ts.clone()
-        .ok_or_else(|| LuaError::syntax(format_args!("name expected")))?;
+    let ts =
+        ls.t.seminfo
+            .ts
+            .clone()
+            .ok_or_else(|| LuaError::syntax(format_args!("name expected")))?;
     lex_next(ls, state)?;
     Ok(ts)
 }
@@ -2092,10 +2270,8 @@ fn check_readonly(ls: &mut LexState, state: &mut LuaState, e: &ExprDesc) -> Resu
     let varname: Option<GcRef<LuaString>> = {
         let fs = ls.fs.as_ref().unwrap();
         match e.k {
-            ExprKind::Const => {
-                ls.dyd.actvar[e.u.info as usize].name.clone()
-            }
-            ExprKind::Local => {
+            ExprKind::Const => ls.dyd.actvar[e.u.info as usize].name.clone(),
+            ExprKind::Local | ExprKind::VarArgVar => {
                 let vd = get_local_var_desc(ls, fs, e.u.var_vidx as i32);
                 if vd.kind != VarKind::Reg {
                     vd.name.clone()
@@ -2173,14 +2349,18 @@ fn remove_vars(ls: &mut LexState, fs: &mut FuncState, tolevel: i32) {
         let nactvar = fs.nactvar as i32;
         let vd_kind = {
             let first_local = fs.firstlocal;
-            ls.dyd.actvar.get((first_local + nactvar) as usize)
+            ls.dyd
+                .actvar
+                .get((first_local + nactvar) as usize)
                 .map(|v| v.kind)
                 .unwrap_or(VarKind::Reg)
         };
         if vd_kind != VarKind::CompileTimeConst {
             let vd_pidx = {
                 let first_local = fs.firstlocal;
-                ls.dyd.actvar.get((first_local + nactvar) as usize)
+                ls.dyd
+                    .actvar
+                    .get((first_local + nactvar) as usize)
                     .map(|v| v.pidx)
                     .unwrap_or(0)
             };
@@ -2214,7 +2394,12 @@ fn alloc_upvalue(fs: &mut FuncState) -> Result<usize, LuaError> {
     }
     let idx = fs.nups as usize;
     while fs.f.upvalues.len() <= idx {
-        fs.f.upvalues.push(UpvalDesc { name: None, instack: false, idx: 0, kind: 0 });
+        fs.f.upvalues.push(UpvalDesc {
+            name: None,
+            instack: false,
+            idx: 0,
+            kind: 0,
+        });
     }
     fs.nups += 1;
     Ok(idx)
@@ -2229,10 +2414,18 @@ fn new_upvalue(
 ) -> Result<i32, LuaError> {
     let idx = alloc_upvalue(fs)?;
     let kind: u8 = if v.k == ExprKind::Local {
-        let prev = fs.prev.as_deref().expect("upvalue capture requires enclosing FuncState");
-        get_local_var_desc(ls, prev, v.u.var_vidx as i32).kind.as_u8()
+        let prev = fs
+            .prev
+            .as_deref()
+            .expect("upvalue capture requires enclosing FuncState");
+        get_local_var_desc(ls, prev, v.u.var_vidx as i32)
+            .kind
+            .as_u8()
     } else {
-        let prev = fs.prev.as_deref().expect("upvalue chain requires enclosing FuncState");
+        let prev = fs
+            .prev
+            .as_deref()
+            .expect("upvalue chain requires enclosing FuncState");
         prev.f.upvalues[v.u.info as usize].kind
     };
     let up = &mut fs.f.upvalues[idx];
@@ -2249,12 +2442,7 @@ fn new_upvalue(
 }
 
 /// Searches for a local variable named `n`. Returns ExprKind as i32 or -1.
-fn searchvar(
-    ls: &LexState,
-    fs: &FuncState,
-    n: &GcRef<LuaString>,
-    var: &mut ExprDesc,
-) -> i32 {
+fn searchvar(ls: &LexState, fs: &FuncState, n: &GcRef<LuaString>, var: &mut ExprDesc) -> i32 {
     let mut i = fs.nactvar as i32 - 1;
     while i >= 0 {
         let vd = get_local_var_desc(ls, fs, i);
@@ -2263,6 +2451,9 @@ fn searchvar(
                 init_exp(var, ExprKind::Const, fs.firstlocal + i);
             } else {
                 init_var(ls, fs, var, i);
+                if vd.kind == VarKind::VarArg {
+                    var.k = ExprKind::VarArgVar;
+                }
             }
             return var.k as i32; // PORT NOTE: encoding ExprKind as i32 for C compat
         }
@@ -2310,14 +2501,26 @@ fn singlevaraux(
         Some(fs) => {
             let v = searchvar(ls, fs, n, var);
             if v >= 0 {
-                if v == ExprKind::Local as i32 && !base {
-                    markupval(fs, var.u.var_vidx as i32);
+                if !base {
+                    if var.k == ExprKind::VarArgVar {
+                        mark_vararg_table_needed(fs);
+                        var.k = ExprKind::Local;
+                    }
+                    if var.k == ExprKind::Local {
+                        markupval(fs, var.u.var_vidx as i32);
+                    }
                 }
             } else {
                 let idx = search_upvalue(fs, n);
                 let final_idx = if idx < 0 {
                     singlevaraux(ls, fs.prev.as_deref_mut(), n, var, false)?;
-                    if var.k == ExprKind::Local || var.k == ExprKind::UpVal {
+                    if var.k == ExprKind::Local
+                        || var.k == ExprKind::VarArgVar
+                        || var.k == ExprKind::UpVal
+                    {
+                        if var.k == ExprKind::VarArgVar {
+                            var.k = ExprKind::Local;
+                        }
                         new_upvalue(ls, fs, n.clone(), var)?
                     } else {
                         return Ok(());
@@ -2334,46 +2537,71 @@ fn singlevaraux(
 
 /// Finds the variable named by the next TK_NAME token.
 fn singlevar(ls: &mut LexState, state: &mut LuaState, var: &mut ExprDesc) -> Result<(), LuaError> {
+    let name_line = ls.linenumber;
     let varname = str_check_name(ls, state)?;
     let mut fs_box = ls.fs.take();
     let recurse_result = singlevaraux(ls, fs_box.as_deref_mut(), &varname, var, true);
     ls.fs = fs_box;
     recurse_result?;
+    if state.global().lua_version == lua_types::LuaVersion::V55 {
+        match var.k {
+            ExprKind::Local | ExprKind::Const => {
+                if let Some(global_level) = latest_matching_global_barrier_current(ls, &varname) {
+                    let local_level = scope_level_for_local_level(ls, var.u.var_vidx as u8);
+                    if global_level > local_level {
+                        init_exp(var, ExprKind::Void, 0);
+                    }
+                }
+            }
+            ExprKind::UpVal => {
+                if is_active_global_function_name(ls, &varname) {
+                    init_exp(var, ExprKind::Void, 0);
+                }
+            }
+            _ => {}
+        }
+    }
     if var.k == ExprKind::Void {
         // Lua 5.5: once a scope is in strict mode (an explicit `global`
         // declaration was seen), a free name must be a declared global —
         // otherwise it is a compile-time error (manual §2.2). `global_strict`
         // is only ever set on the 5.5 path, so pre-5.5 resolution is unchanged.
-        let is_const_global = if ls.global_strict {
-            let mut declared_const: Option<bool> = None;
-            for (n, c) in &ls.declared_globals {
-                if GcRef::ptr_eq(n, &varname) {
-                    declared_const = Some(*c);
-                    break;
-                }
+        let mut declared_const: Option<bool> = None;
+        for (n, c) in ls.declared_globals.iter().rev() {
+            if GcRef::ptr_eq(n, &varname) {
+                declared_const = Some(*c);
+                break;
             }
-            match declared_const {
-                None => {
-                    // An active `global *` (wildcard) in scope makes every free
-                    // name a valid global, so the "not declared" error only
-                    // fires in strict scopes without a wildcard.
-                    if ls.global_wildcard {
-                        false
-                    } else {
-                        let msg = format!(
-                            "variable '{}' not declared",
-                            String::from_utf8_lossy(varname.as_bytes())
-                        );
-                        // Semantic error (C's luaK_semerror): no "near <token>" suffix.
-                        return Err(lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0));
-                    }
-                }
-                Some(c) => c,
+        }
+        let is_const_global = match declared_const {
+            Some(c) => c,
+            None if ls.global_wildcard => ls.global_wildcard_const,
+            None if ls.global_strict => {
+                let msg = format!(
+                    "variable '{}' not declared",
+                    String::from_utf8_lossy(varname.as_bytes())
+                );
+                // Semantic error (C's luaK_semerror): no "near <token>" suffix.
+                let saved_line = ls.lex.linenumber;
+                ls.lex.linenumber = name_line;
+                let err = lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0);
+                ls.lex.linenumber = saved_line;
+                return Err(err);
             }
-        } else {
-            false
+            None => false,
         };
-        let envn = ls.envn.clone().expect("envn must be set when resolving globals");
+        let envn = ls
+            .envn
+            .clone()
+            .expect("envn must be set when resolving globals");
+        if has_active_global_barrier(ls, &envn) {
+            let msg = format!(
+                "{} is global when accessing variable '{}'",
+                lua_lex::LUA_ENV.escape_ascii(),
+                String::from_utf8_lossy(varname.as_bytes())
+            );
+            return Err(lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0));
+        }
         let mut env_var = ExprDesc::default();
         let mut fs_box = ls.fs.take();
         let r = singlevaraux(ls, fs_box.as_deref_mut(), &envn, &mut env_var, true);
@@ -2384,7 +2612,11 @@ fn singlevar(ls: &mut LexState, state: &mut LuaState, var: &mut ExprDesc) -> Res
         let fs = ls.fs.as_mut().unwrap();
         cg_exp_to_any_reg_up(fs, line, &mut env_var)?;
         let mut key = ExprDesc::default();
-        let const_name = if is_const_global { Some(varname.clone()) } else { None };
+        let const_name = if is_const_global {
+            Some(varname.clone())
+        } else {
+            None
+        };
         codestring(&mut key, varname);
         cg_indexed(fs, line, &mut env_var, &mut key)?;
         *var = env_var;
@@ -2429,13 +2661,10 @@ fn adjust_assign(
 /// instructions are written as placeholders; `cg_settablesize` later patches
 /// them with the final array/hash sizes. Returns the pc of `OP_NEWTABLE`.
 fn cg_emit_newtable(fs: &mut FuncState, line: i32) -> i32 {
-    let newtable = lua_code::opcodes::Instruction::abck(
-        lua_code::opcodes::OpCode::NewTable, 0, 0, 0, 0,
-    );
+    let newtable =
+        lua_code::opcodes::Instruction::abck(lua_code::opcodes::OpCode::NewTable, 0, 0, 0, 0);
     let pc = emit_inst(fs, line, newtable);
-    let extra = lua_code::opcodes::Instruction::ax(
-        lua_code::opcodes::OpCode::ExtraArg, 0,
-    );
+    let extra = lua_code::opcodes::Instruction::ax(lua_code::opcodes::OpCode::ExtraArg, 0);
     emit_inst(fs, line, extra);
     pc
 }
@@ -2455,12 +2684,14 @@ fn cg_settablesize(fs: &mut FuncState, pc: i32, ra: i32, asize: i32, hsize: i32)
     let k = if extra > 0 { 1u32 } else { 0u32 };
     let newtable = lua_code::opcodes::Instruction::abck(
         lua_code::opcodes::OpCode::NewTable,
-        ra as u32, rb as u32, rc as u32, k,
+        ra as u32,
+        rb as u32,
+        rc as u32,
+        k,
     );
     fs.f.code[pc as usize] = lua_types::opcode::Instruction::new(newtable.0);
-    let extra_inst = lua_code::opcodes::Instruction::ax(
-        lua_code::opcodes::OpCode::ExtraArg, extra as u32,
-    );
+    let extra_inst =
+        lua_code::opcodes::Instruction::ax(lua_code::opcodes::OpCode::ExtraArg, extra as u32);
     fs.f.code[pc as usize + 1] = lua_types::opcode::Instruction::new(extra_inst.0);
 }
 
@@ -2474,7 +2705,10 @@ fn cg_setlist(fs: &mut FuncState, line: i32, base: i32, nelems: i32, tostore: i3
     if nelems <= maxc {
         let inst = lua_code::opcodes::Instruction::abck(
             lua_code::opcodes::OpCode::SetList,
-            base as u32, tostore_arg as u32, nelems as u32, 0,
+            base as u32,
+            tostore_arg as u32,
+            nelems as u32,
+            0,
         );
         emit_inst(fs, line, inst);
     } else {
@@ -2482,12 +2716,14 @@ fn cg_setlist(fs: &mut FuncState, line: i32, base: i32, nelems: i32, tostore: i3
         let nelems_lo = nelems % (maxc + 1);
         let inst = lua_code::opcodes::Instruction::abck(
             lua_code::opcodes::OpCode::SetList,
-            base as u32, tostore_arg as u32, nelems_lo as u32, 1,
+            base as u32,
+            tostore_arg as u32,
+            nelems_lo as u32,
+            1,
         );
         emit_inst(fs, line, inst);
-        let extra_inst = lua_code::opcodes::Instruction::ax(
-            lua_code::opcodes::OpCode::ExtraArg, extra as u32,
-        );
+        let extra_inst =
+            lua_code::opcodes::Instruction::ax(lua_code::opcodes::OpCode::ExtraArg, extra as u32);
         emit_inst(fs, line, extra_inst);
     }
     fs.freereg = (base + 1) as u8;
@@ -2497,17 +2733,31 @@ fn cg_setlist(fs: &mut FuncState, line: i32, base: i32, nelems: i32, tostore: i3
 /// variant. Mirrors `luaK_indexed` from `lcode.c`. Assumes `t` is already a
 /// value-producing form (`VLOCAL`, `VNONRELOC`, or `VUPVAL`) and that any
 /// short-string key has already been promoted to a `VKSTR` constant index.
-fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc) -> Result<(), LuaError> {
+fn cg_indexed(
+    fs: &mut FuncState,
+    line: i32,
+    t: &mut ExprDesc,
+    k: &mut ExprDesc,
+) -> Result<(), LuaError> {
+    t.u.global_const_name = None;
     if k.k == ExprKind::KStr {
-        let s = k.u.strval.clone()
-            .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
+        let s =
+            k.u.strval
+                .clone()
+                .ok_or_else(|| LuaError::syntax(format_args!("internal: VKStr with no strval")))?;
         let k_idx = add_k_string(fs, s);
         k.u.info = k_idx;
         k.k = ExprKind::K;
     }
-    let k_is_kstr = k.k == ExprKind::K
-        && k.u.info >= 0
-        && (k.u.info as u32) <= lua_code::opcodes::MAXARG_B;
+    let k_is_kstr =
+        k.k == ExprKind::K && k.u.info >= 0 && (k.u.info as u32) <= lua_code::opcodes::MAXARG_B;
+    if t.k == ExprKind::VarArgVar {
+        cg_exp_to_any_reg(fs, line, k)?;
+        t.u.ind_t = t.u.var_ridx;
+        t.u.ind_idx = k.u.info as i16;
+        t.k = ExprKind::VarArgIndex;
+        return Ok(());
+    }
     if t.k == ExprKind::UpVal && !k_is_kstr {
         cg_exp_to_any_reg(fs, line, t)?;
     }
@@ -2521,9 +2771,12 @@ fn cg_indexed(fs: &mut FuncState, line: i32, t: &mut ExprDesc, k: &mut ExprDesc)
     let t_reg = match t.k {
         ExprKind::Local => t.u.var_ridx,
         ExprKind::NonReloc => t.u.info as u8,
-        _ => return Err(LuaError::syntax(format_args!(
-            "internal: cg_indexed on non-register table kind {:?}", t.k
-        ))),
+        _ => {
+            return Err(LuaError::syntax(format_args!(
+                "internal: cg_indexed on non-register table kind {:?}",
+                t.k
+            )))
+        }
     };
     t.u.ind_t = t_reg;
     if k.k == ExprKind::K && k_is_kstr {
@@ -2560,27 +2813,43 @@ fn cg_self(
     e.u.info = base;
     e.k = ExprKind::NonReloc;
     reserve_regs(fs, 2)?;
-    let key_str = key.u.strval.clone()
-        .ok_or_else(|| LuaError::syntax(format_args!(
-            "internal: cg_self expected VKStr key, got {:?}", key.k
-        )))?;
+    let key_str = key.u.strval.clone().ok_or_else(|| {
+        LuaError::syntax(format_args!(
+            "internal: cg_self expected VKStr key, got {:?}",
+            key.k
+        ))
+    })?;
     let k_idx = add_k_string(fs, key_str);
-    let (c_arg, k_flag) = if (k_idx as u32) <= lua_code::opcodes::MAXINDEXRK {
-        (k_idx as u32, 1u32)
+    if (k_idx as u32) <= lua_code::opcodes::MAXINDEXRK {
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Self_,
+            base as u32,
+            ereg as u32,
+            k_idx as u32,
+            1,
+        );
+        emit_inst(fs, line, inst);
     } else {
         key.k = ExprKind::K;
         key.u.info = k_idx;
         cg_exp_to_any_reg(fs, line, key)?;
-        (key.u.info as u32, 0u32)
-    };
-    let inst = lua_code::opcodes::Instruction::abck(
-        lua_code::opcodes::OpCode::Self_,
-        base as u32,
-        ereg as u32,
-        c_arg,
-        k_flag,
-    );
-    emit_inst(fs, line, inst);
+        let move_inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Move,
+            (base + 1) as u32,
+            ereg as u32,
+            0,
+            0,
+        );
+        emit_inst(fs, line, move_inst);
+        let get_inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::GetTable,
+            base as u32,
+            ereg as u32,
+            key.u.info as u32,
+            0,
+        );
+        emit_inst(fs, line, get_inst);
+    }
     cg_free_exp(fs, key);
     Ok(())
 }
@@ -2588,7 +2857,7 @@ fn cg_self(
 /// Minimal `luaK_exp2anyregup`: if `e` is an upvalue or constant, leave it as
 /// is; otherwise discharge it into some register.
 fn cg_exp_to_any_reg_up(fs: &mut FuncState, line: i32, e: &mut ExprDesc) -> Result<(), LuaError> {
-    if matches!(e.k, ExprKind::UpVal | ExprKind::K) {
+    if matches!(e.k, ExprKind::UpVal | ExprKind::K | ExprKind::VarArgVar) {
         return Ok(());
     }
     cg_exp_to_any_reg(fs, line, e)?;
@@ -2611,25 +2880,118 @@ fn cg_emit_nil(fs: &mut FuncState, line: i32, from: i32, n: i32) {
 
 // ── §6 Label / goto management ───────────────────────────────────────────────
 
-fn jumpscopeerror(ls: &LexState, gt_idx: usize) -> LuaError {
+fn current_scope_level(ls: &LexState) -> u8 {
+    let (local_count, first_barrier) = ls.fs.as_ref().map_or((0usize, 0usize), |fs| {
+        (fs.nactvar as usize, fs.first_scope_barrier)
+    });
+    let barrier_count = ls.scope_barriers.len().saturating_sub(first_barrier);
+    let level = local_count + barrier_count;
+    level.min(u8::MAX as usize) as u8
+}
+
+fn local_level_for_scope_level(ls: &LexState, scope_level: u8) -> i32 {
+    let first_barrier = ls.fs.as_ref().map_or(0usize, |fs| fs.first_scope_barrier);
+    let barriers_before = ls.scope_barriers[first_barrier..]
+        .iter()
+        .filter(|b| b.level < scope_level)
+        .count();
+    let locals = scope_level as i32 - barriers_before as i32;
+    let max_locals = ls.fs.as_ref().map_or(0i32, |fs| fs.nactvar as i32);
+    locals.clamp(0, max_locals)
+}
+
+fn scope_level_for_local_level(ls: &LexState, local_level: u8) -> u8 {
+    let first_barrier = ls.fs.as_ref().map_or(0usize, |fs| fs.first_scope_barrier);
+    let target = local_level as usize;
+    let mut locals_seen = 0usize;
+    for level in 0..=current_scope_level(ls) {
+        if ls.scope_barriers[first_barrier..]
+            .iter()
+            .any(|b| b.level == level)
+        {
+            continue;
+        }
+        if locals_seen == target {
+            return level;
+        }
+        locals_seen += 1;
+    }
+    local_level
+}
+
+fn add_scope_barrier(ls: &mut LexState, name: GcRef<LuaString>) {
+    let level = current_scope_level(ls);
+    ls.scope_barriers.push(ScopeBarrier { level, name });
+}
+
+fn latest_matching_global_barrier_current(ls: &LexState, name: &GcRef<LuaString>) -> Option<u8> {
+    let first_barrier = ls.fs.as_ref().map_or(0usize, |fs| fs.first_scope_barrier);
+    ls.scope_barriers[first_barrier..]
+        .iter()
+        .rev()
+        .find(|b| GcRef::ptr_eq(&b.name, name))
+        .map(|b| b.level)
+}
+
+fn has_active_global_barrier(ls: &LexState, name: &GcRef<LuaString>) -> bool {
+    ls.scope_barriers
+        .iter()
+        .rev()
+        .any(|b| GcRef::ptr_eq(&b.name, name))
+}
+
+fn is_active_global_function_name(ls: &LexState, name: &GcRef<LuaString>) -> bool {
+    ls.global_function_names
+        .iter()
+        .rev()
+        .any(|n| GcRef::ptr_eq(n, name))
+}
+
+fn scope_name_at(ls: &LexState, level: u8, label_nactvar: u8) -> Vec<u8> {
+    let first_barrier = ls.fs.as_ref().map_or(0usize, |fs| fs.first_scope_barrier);
+    for scope_level in level..label_nactvar {
+        if let Some(barrier) = ls.scope_barriers[first_barrier..]
+            .iter()
+            .find(|b| b.level == scope_level)
+        {
+            return barrier.name.as_bytes().to_vec();
+        }
+
+        let barriers_before = ls.scope_barriers[first_barrier..]
+            .iter()
+            .filter(|b| b.level < scope_level)
+            .count();
+        let vidx = scope_level as i32 - barriers_before as i32;
+        if vidx < 0 {
+            continue;
+        }
+        if let Some(name) = ls.fs.as_ref().and_then(|fs| {
+            if (fs.firstlocal + vidx) >= 0
+                && ((fs.firstlocal + vidx) as usize) < ls.dyd.actvar.len()
+            {
+                let vd = get_local_var_desc(ls, fs, vidx);
+                vd.name.as_ref().map(|n| n.as_bytes().to_vec())
+            } else {
+                None
+            }
+        }) {
+            return name;
+        }
+    }
+
+    b"*".to_vec()
+}
+
+fn jumpscopeerror(ls: &LexState, gt_idx: usize, label_nactvar: u8) -> LuaError {
     let gt = &ls.dyd.gt[gt_idx];
     let line = gt.line;
     let gt_name_bytes: &[u8] = gt.name.as_ref().map(|n| n.as_bytes()).unwrap_or(b"");
     let gt_name = String::from_utf8_lossy(gt_name_bytes);
-    let varname_bytes: &[u8] = ls.fs.as_ref()
-        .and_then(|fs| {
-            let vidx = gt.nactvar as i32;
-            if (fs.firstlocal + vidx) >= 0 && ((fs.firstlocal + vidx) as usize) < ls.dyd.actvar.len() {
-                let vd = get_local_var_desc(ls, fs, vidx);
-                vd.name.as_ref().map(|n| n.as_bytes())
-            } else {
-                None
-            }
-        })
-        .unwrap_or(b"");
-    let varname = String::from_utf8_lossy(varname_bytes);
+    let varname_bytes = scope_name_at(ls, gt.nactvar, label_nactvar);
+    let varname = String::from_utf8_lossy(&varname_bytes);
     LuaError::syntax(format_args!(
-        "<goto {}> at line {} jumps into the scope of local '{}'", gt_name, line, varname
+        "<goto {}> at line {} jumps into the scope of '{}'",
+        gt_name, line, varname
     ))
 }
 
@@ -2642,7 +3004,7 @@ fn solvegoto(
     label_nactvar: u8,
 ) -> Result<(), LuaError> {
     if ls.dyd.gt[g].nactvar < label_nactvar {
-        return Err(jumpscopeerror(ls, g));
+        return Err(jumpscopeerror(ls, g, label_nactvar));
     }
     let gt_pc = ls.dyd.gt[g].pc;
     cg_patch_list(ls.fs.as_mut().unwrap(), gt_pc, label_pc)?;
@@ -2672,11 +3034,7 @@ fn findlabel_from(ls: &LexState, name: &GcRef<LuaString>, first: usize) -> Optio
 /// Resolves a goto against labels visible per the active version's rules.
 ///
 /// 5.2/5.3 scan only the current block; 5.4/5.5 scan the whole function.
-fn findlabel_for_goto(
-    ls: &LexState,
-    state: &LuaState,
-    name: &GcRef<LuaString>,
-) -> Option<usize> {
+fn findlabel_for_goto(ls: &LexState, state: &LuaState, name: &GcRef<LuaString>) -> Option<usize> {
     let block_scoped = matches!(
         state.global().lua_version,
         lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
@@ -2703,9 +3061,19 @@ fn new_label_entry(
     line: i32,
     pc: i32,
 ) -> Result<usize, LuaError> {
-    let nactvar = ls.fs.as_ref().unwrap().nactvar;
-    let entry = LabelDesc { name: Some(name), pc, line, nactvar, close: false };
-    let list = if is_goto { &mut ls.dyd.gt } else { &mut ls.dyd.label };
+    let nactvar = current_scope_level(ls);
+    let entry = LabelDesc {
+        name: Some(name),
+        pc,
+        line,
+        nactvar,
+        close: false,
+    };
+    let list = if is_goto {
+        &mut ls.dyd.gt
+    } else {
+        &mut ls.dyd.label
+    };
     let n = list.len();
     list.push(entry);
     Ok(n)
@@ -2727,13 +3095,22 @@ fn solvegotos(ls: &mut LexState, state: &mut LuaState, lb_idx: usize) -> Result<
     let lb_name = ls.dyd.label[lb_idx].name.clone();
     let lb_pc = ls.dyd.label[lb_idx].pc;
     let lb_nactvar = ls.dyd.label[lb_idx].nactvar;
-    let first_goto = ls.fs.as_ref().unwrap().bl.as_ref().map_or(0, |b| b.firstgoto) as usize;
+    let first_goto = ls
+        .fs
+        .as_ref()
+        .unwrap()
+        .bl
+        .as_ref()
+        .map_or(0, |b| b.firstgoto) as usize;
 
     let mut i = first_goto;
     let mut needs_close = false;
     while i < ls.dyd.gt.len() {
         let gt_name = ls.dyd.gt[i].name.clone();
-        let names_match = lb_name.as_ref().and_then(|ln| gt_name.as_ref().map(|gn| GcRef::ptr_eq(ln, gn))).unwrap_or(false);
+        let names_match = lb_name
+            .as_ref()
+            .and_then(|ln| gt_name.as_ref().map(|gn| GcRef::ptr_eq(ln, gn)))
+            .unwrap_or(false);
         if names_match {
             needs_close |= ls.dyd.gt[i].close;
             // solvegoto removes element i, so don't increment i
@@ -2756,19 +3133,20 @@ fn createlabel(
     let label_pc = cg_get_label(ls.fs.as_mut().unwrap());
     let l = new_label_entry(ls, state, false, name, line, label_pc)?;
     if last {
-        let bl_nactvar = ls.fs.as_ref().unwrap().bl.as_ref().map_or(0, |b| b.nactvar);
-        ls.dyd.label[l].nactvar = bl_nactvar;
+        let bl_scope_level = ls
+            .fs
+            .as_ref()
+            .unwrap()
+            .bl
+            .as_ref()
+            .map_or(0, |b| b.scope_level);
+        ls.dyd.label[l].nactvar = bl_scope_level;
     }
     let needs_close = solvegotos(ls, state, l)?;
     if needs_close {
         let nstack = nvarstack(ls, ls.fs.as_ref().unwrap()) as u32;
-        let inst = lua_code::opcodes::Instruction::abck(
-            lua_code::opcodes::OpCode::Close,
-            nstack,
-            0,
-            0,
-            0,
-        );
+        let inst =
+            lua_code::opcodes::Instruction::abck(lua_code::opcodes::OpCode::Close, nstack, 0, 0, 0);
         emit_inst(ls.fs.as_mut().unwrap(), line, inst);
         return Ok(true);
     }
@@ -2789,7 +3167,7 @@ fn movegotosout(
     ls: &mut LexState,
     state: &mut LuaState,
     bl_firstgoto: usize,
-    bl_nactvar: u8,
+    bl_scope_level: u8,
     bl_upval: bool,
 ) -> Result<(), LuaError> {
     let reresolve = matches!(
@@ -2799,17 +3177,17 @@ fn movegotosout(
     let mut i = bl_firstgoto;
     while i < ls.dyd.gt.len() {
         if reresolve {
-            if ls.dyd.gt[i].nactvar > bl_nactvar {
+            if ls.dyd.gt[i].nactvar > bl_scope_level {
                 if bl_upval {
                     ls.dyd.gt[i].close = true;
                 }
-                ls.dyd.gt[i].nactvar = bl_nactvar;
+                ls.dyd.gt[i].nactvar = bl_scope_level;
             }
         } else {
             if bl_upval {
                 ls.dyd.gt[i].close = true;
             }
-            ls.dyd.gt[i].nactvar = bl_nactvar;
+            ls.dyd.gt[i].nactvar = bl_scope_level;
         }
         if reresolve {
             let gt_name = ls.dyd.gt[i].name.clone();
@@ -2835,7 +3213,12 @@ fn enter_block(ls: &mut LexState, isloop: bool) {
     let saved_global_strict = ls.global_strict;
     let saved_declared_globals = ls.declared_globals.len();
     let saved_global_wildcard = ls.global_wildcard;
-    let insidetbc = ls.fs.as_ref()
+    let saved_global_wildcard_const = ls.global_wildcard_const;
+    let saved_scope_barriers = ls.scope_barriers.len();
+    let scope_level = current_scope_level(ls);
+    let insidetbc = ls
+        .fs
+        .as_ref()
         .and_then(|f| f.bl.as_ref())
         .map_or(false, |b| b.insidetbc);
     let fs = ls.fs.as_mut().unwrap();
@@ -2845,18 +3228,23 @@ fn enter_block(ls: &mut LexState, isloop: bool) {
         firstlabel,
         firstgoto,
         nactvar,
+        scope_level,
         upval: false,
         isloop,
         insidetbc,
         saved_global_strict,
         saved_declared_globals,
         saved_global_wildcard,
+        saved_global_wildcard_const,
+        saved_scope_barriers,
     });
     fs.bl = Some(new_bl);
-    debug_assert!(fs.freereg as i32 == {
-        // TODO(port): nvarstack(ls, fs) -- circular borrow
-        fs.freereg as i32 // placeholder assertion
-    });
+    debug_assert!(
+        fs.freereg as i32 == {
+            // TODO(port): nvarstack(ls, fs) -- circular borrow
+            fs.freereg as i32 // placeholder assertion
+        }
+    );
 }
 
 fn undef_goto(ls: &mut LexState, version: lua_types::LuaVersion, gt_idx: usize) -> LuaError {
@@ -2864,20 +3252,29 @@ fn undef_goto(ls: &mut LexState, version: lua_types::LuaVersion, gt_idx: usize) 
         let gt = &ls.dyd.gt[gt_idx];
         (
             gt.line,
-            gt.name.as_ref().map(|n| n.as_bytes().to_vec()).unwrap_or_default(),
+            gt.name
+                .as_ref()
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_default(),
         )
     };
     let msg = if name_bytes == b"break" {
         // 5.2/5.3 word the deferred break-outside-loop error differently from
         // 5.4. (5.1/5.5 raise eagerly in `breakstat` and never reach here.)
-        if matches!(version, lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53) {
+        if matches!(
+            version,
+            lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
+        ) {
             format!("<break> at line {} not inside a loop", line)
         } else {
             format!("break outside loop at line {}", line)
         }
     } else {
         let name_str = String::from_utf8_lossy(&name_bytes);
-        format!("no visible label '{}' for <goto> at line {}", name_str, line)
+        format!(
+            "no visible label '{}' for <goto> at line {}",
+            name_str, line
+        )
     };
     lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0)
 }
@@ -2887,7 +3284,7 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
     // Snapshot block fields without popping; createlabel below relies on
     // fs->bl still pointing at this (loop) block so solvegotos can read
     // fs->bl->firstgoto.
-    let (bl_nactvar, bl_isloop, bl_upval, bl_firstgoto, bl_firstlabel) = {
+    let (bl_nactvar, bl_scope_level, bl_isloop, bl_upval, bl_firstgoto, bl_firstlabel) = {
         let bl = ls
             .fs
             .as_ref()
@@ -2895,20 +3292,35 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
             .bl
             .as_ref()
             .expect("leave_block: no current block");
-        (bl.nactvar, bl.isloop, bl.upval, bl.firstgoto, bl.firstlabel)
+        (
+            bl.nactvar,
+            bl.scope_level,
+            bl.isloop,
+            bl.upval,
+            bl.firstgoto,
+            bl.firstlabel,
+        )
     };
 
     // Lua 5.5: restore the `global`-declaration scope to what it was on block
     // entry, so an explicit `global` decl (and the strict mode it triggers) is
     // confined to its enclosing block.
     {
-        let (sgs, sdg, sgw) = {
+        let (sgs, sdg, sgw, sgwc, ssb) = {
             let bl = ls.fs.as_ref().unwrap().bl.as_ref().unwrap();
-            (bl.saved_global_strict, bl.saved_declared_globals, bl.saved_global_wildcard)
+            (
+                bl.saved_global_strict,
+                bl.saved_declared_globals,
+                bl.saved_global_wildcard,
+                bl.saved_global_wildcard_const,
+                bl.saved_scope_barriers,
+            )
         };
         ls.global_strict = sgs;
         ls.declared_globals.truncate(sdg);
         ls.global_wildcard = sgw;
+        ls.global_wildcard_const = sgwc;
+        ls.scope_barriers.truncate(ssb);
     }
 
     let stklevel = reg_level(ls, ls.fs.as_ref().unwrap(), bl_nactvar as i32);
@@ -2949,7 +3361,7 @@ fn leave_block(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> 
     ls.dyd.label.truncate(bl_firstlabel as usize);
 
     if has_prev_block {
-        movegotosout(ls, state, bl_firstgoto as usize, bl_nactvar, bl_upval)?;
+        movegotosout(ls, state, bl_firstgoto as usize, bl_scope_level, bl_upval)?;
     } else {
         if (bl_firstgoto as usize) < ls.dyd.gt.len() {
             let version = state.global().lua_version;
@@ -2984,15 +3396,12 @@ fn codeclosure(ls: &mut LexState, _state: &mut LuaState, v: &mut ExprDesc) -> Re
     let line = ls.lastline;
     let mut child = ls.fs.take().expect("codeclosure: no current FuncState");
     let result = (|| -> Result<(), LuaError> {
-        let parent = child.prev.as_mut().expect(
-            "codeclosure: child FuncState has no parent (called outside body()?)",
-        );
+        let parent = child
+            .prev
+            .as_mut()
+            .expect("codeclosure: child FuncState has no parent (called outside body()?)");
         let bx = (parent.np - 1) as u32;
-        let inst = lua_code::opcodes::Instruction::abx(
-            lua_code::opcodes::OpCode::Closure,
-            0,
-            bx,
-        );
+        let inst = lua_code::opcodes::Instruction::abx(lua_code::opcodes::OpCode::Closure, 0, bx);
         let pc = emit_inst(parent, line, inst);
         init_exp(v, ExprKind::Reloc, pc);
         cg_exp_to_next_reg(parent, line, v)
@@ -3002,7 +3411,11 @@ fn codeclosure(ls: &mut LexState, _state: &mut LuaState, v: &mut ExprDesc) -> Re
 }
 
 /// Installs `new_fs` as the current FuncState, pushing old one as `prev`.
-fn open_func(ls: &mut LexState, _state: &mut LuaState, mut new_fs: FuncState) -> Result<(), LuaError> {
+fn open_func(
+    ls: &mut LexState,
+    _state: &mut LuaState,
+    mut new_fs: FuncState,
+) -> Result<(), LuaError> {
     new_fs.prev = ls.fs.take();
 
     let f = &mut new_fs.f;
@@ -3025,7 +3438,6 @@ fn open_func(ls: &mut LexState, _state: &mut LuaState, mut new_fs: FuncState) ->
 
     new_fs.f.source = ls.source.clone();
     new_fs.f.maxstacksize = 2;
-
 
     ls.fs = Some(Box::new(new_fs));
 
@@ -3147,8 +3559,7 @@ fn yindex(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Result<(
     lex_next(ls, state)?;
     expr(ls, state, v)?;
     let line = ls.linenumber;
-    let materialize_jmp =
-        state.global().lua_version != lua_types::LuaVersion::V54;
+    let materialize_jmp = state.global().lua_version != lua_types::LuaVersion::V54;
     exp_to_val(ls.fs.as_mut().unwrap(), line, v, materialize_jmp)?;
     check_next(ls, state, b']' as TokenKind)?;
     Ok(())
@@ -3178,7 +3589,11 @@ fn recfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Re
     Ok(())
 }
 
-fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
+fn closelistfield(
+    ls: &mut LexState,
+    state: &mut LuaState,
+    cc: &mut ConsControl,
+) -> Result<(), LuaError> {
     let _ = state;
     if cc.v.k == ExprKind::Void {
         return Ok(());
@@ -3195,7 +3610,11 @@ fn closelistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl)
     Ok(())
 }
 
-fn lastlistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
+fn lastlistfield(
+    ls: &mut LexState,
+    state: &mut LuaState,
+    cc: &mut ConsControl,
+) -> Result<(), LuaError> {
     let _ = state;
     if cc.tostore == 0 {
         return Ok(());
@@ -3216,7 +3635,11 @@ fn lastlistfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) 
     Ok(())
 }
 
-fn listfield(ls: &mut LexState, state: &mut LuaState, cc: &mut ConsControl) -> Result<(), LuaError> {
+fn listfield(
+    ls: &mut LexState,
+    state: &mut LuaState,
+    cc: &mut ConsControl,
+) -> Result<(), LuaError> {
     expr(ls, state, &mut cc.v)?;
     cc.tostore += 1;
     Ok(())
@@ -3266,9 +3689,7 @@ fn constructor(ls: &mut LexState, state: &mut LuaState, t: &mut ExprDesc) -> Res
         }
         closelistfield(ls, state, &mut cc)?;
         field(ls, state, &mut cc)?;
-        if !test_next(ls, state, b',' as TokenKind)?
-            && !test_next(ls, state, b';' as TokenKind)?
-        {
+        if !test_next(ls, state, b',' as TokenKind)? && !test_next(ls, state, b';' as TokenKind)? {
             break;
         }
     }
@@ -3287,7 +3708,9 @@ fn setvararg(fs: &mut FuncState, _state: &mut LuaState, nparams: i32) -> Result<
     let inst = lua_code::opcodes::Instruction::abck(
         lua_code::opcodes::OpCode::VarArgPrep,
         nparams as u32,
-        0, 0, 0,
+        0,
+        0,
+        0,
     );
     let line = fs.previousline;
     emit_inst(fs, line, inst);
@@ -3297,14 +3720,15 @@ fn setvararg(fs: &mut FuncState, _state: &mut LuaState, nparams: i32) -> Result<
 fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let mut nparams: i32 = 0;
     let mut isvararg = false;
-    // Lua 5.5 named-varargs: `function f(...t)` binds the trailing varargs
-    // into a fresh packed table `t` (table.pack semantics). `vararg_name`
-    // holds that name once seen; it is declared as an ordinary local after the
-    // fixed parameters so the body can index it. Only valid on 5.5; on
-    // 5.4/5.3 a name after `...` stays a parse error (the `TK_NAME` branch is
-    // never reached because the loop breaks on `...`).
+    // Lua 5.5 adds a vararg-parameter local after the fixed parameters. In the
+    // named form (`function f(...t)`) it is the packed table `t`; in the plain
+    // form (`function f(...)`) it is a hidden "(vararg table)" debug local.
+    // Pre-5.5 versions do not reserve that local, and a name after `...` stays
+    // a parse error because the loop breaks as soon as it sees `...`.
     let is_v55 = state.global().lua_version == lua_types::LuaVersion::V55;
+    let mut has_vararg_local = false;
     let mut has_vararg_name = false;
+    let mut vararg_name_vidx: Option<i32> = None;
     if ls.t.token != b')' as TokenKind {
         loop {
             match ls.t.token {
@@ -3323,8 +3747,13 @@ fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
                     // function entry by VARARGPACK.
                     if is_v55 && ls.t.token == TK_NAME {
                         let name = str_check_name(ls, state)?;
-                        new_local_var(ls, state, name)?;
+                        vararg_name_vidx = Some(new_local_var(ls, state, name)?);
+                        has_vararg_local = true;
                         has_vararg_name = true;
+                    } else if is_v55 {
+                        let name = state.intern_str(b"(vararg table)")?;
+                        new_local_var(ls, state, name)?;
+                        has_vararg_local = true;
                     }
                 }
                 _ => {
@@ -3342,8 +3771,12 @@ fn parlist(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     if isvararg {
         setvararg(ls.fs.as_mut().unwrap(), state, numparams as i32)?;
     }
-    if has_vararg_name {
+    if has_vararg_local {
         adjust_local_vars(ls, state, 1)?;
+        if let Some(vidx) = vararg_name_vidx {
+            let firstlocal = ls.fs.as_ref().unwrap().firstlocal;
+            get_local_var_desc_mut(ls, firstlocal, vidx).kind = VarKind::VarArg;
+        }
     }
     // Reserve registers for parameters (plus the vararg-table parameter, if
     // present), in one call as upstream does (`luaK_reserveregs(fs, nactvar)`).
@@ -3417,6 +3850,7 @@ fn body(
         firstlabel: 0,
         ndebugvars: 0,
         nactvar: 0,
+        first_scope_barrier: ls.scope_barriers.len(),
         nups: 0,
         freereg: 0,
         iwthabs: 0,
@@ -3439,10 +3873,16 @@ fn body(
     check_match(ls, state, TK_END, TK_FUNCTION, line)?;
     codeclosure(ls, state, e)?;
     let inner_proto = close_func(ls, state)?;
-    let parent = ls.fs.as_mut().expect("body: close_func left no parent FuncState");
+    let parent = ls
+        .fs
+        .as_mut()
+        .expect("body: close_func left no parent FuncState");
     let slot = (parent.np - 1) as usize;
     if parent.f.p.len() <= slot {
-        parent.f.p.resize_with(slot + 1, || GcRef::new(LuaProto::placeholder()));
+        parent
+            .f
+            .p
+            .resize_with(slot + 1, || GcRef::new(LuaProto::placeholder()));
     }
     let inner_ref = GcRef::new(*inner_proto);
     inner_ref.account_buffer(inner_ref.buffer_bytes() as isize);
@@ -3488,13 +3928,18 @@ fn funcargs(ls: &mut LexState, state: &mut LuaState, f: &mut ExprDesc) -> Result
             constructor(ls, state, &mut args)?;
         }
         TK_STRING => {
-            let s = ls.t.seminfo.ts.clone()
-                .ok_or_else(|| LuaError::syntax(format_args!("string expected")))?;
+            let s =
+                ls.t.seminfo
+                    .ts
+                    .clone()
+                    .ok_or_else(|| LuaError::syntax(format_args!("string expected")))?;
             codestring(&mut args, s);
             lex_next(ls, state)?;
         }
         _ => {
-            return Err(LuaError::syntax(format_args!("function arguments expected")));
+            return Err(LuaError::syntax(format_args!(
+                "function arguments expected"
+            )));
         }
     }
     debug_assert!(f.k == ExprKind::NonReloc);
@@ -3586,8 +4031,11 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
             v.u.ival = ls.t.seminfo.i;
         }
         TK_STRING => {
-            let s = ls.t.seminfo.ts.clone()
-                .ok_or_else(|| LuaError::syntax(format_args!("string value missing")))?;
+            let s =
+                ls.t.seminfo
+                    .ts
+                    .clone()
+                    .ok_or_else(|| LuaError::syntax(format_args!("string value missing")))?;
             codestring(v, s);
         }
         TK_NIL => {
@@ -3607,13 +4055,8 @@ fn simpleexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Resul
                 )));
             }
             let line = ls.lastline;
-            let inst = lua_code::opcodes::Instruction::abck(
-                lua_code::opcodes::OpCode::VarArg,
-                0,
-                0,
-                1,
-                0,
-            );
+            let inst =
+                lua_code::opcodes::Instruction::abck(lua_code::opcodes::OpCode::VarArg, 0, 0, 1, 0);
             let pc = emit_inst(ls.fs.as_mut().unwrap(), line, inst);
             init_exp(v, ExprKind::VarArg, pc);
         }
@@ -3787,12 +4230,18 @@ fn check_conflict(
         let inst = if v.k == ExprKind::Local {
             lua_code::opcodes::Instruction::abck(
                 lua_code::opcodes::OpCode::Move,
-                extra as u32, v.u.var_ridx as u32, 0, 0,
+                extra as u32,
+                v.u.var_ridx as u32,
+                0,
+                0,
             )
         } else {
             lua_code::opcodes::Instruction::abck(
                 lua_code::opcodes::OpCode::GetUpVal,
-                extra as u32, v.u.info as u32, 0, 0,
+                extra as u32,
+                v.u.info as u32,
+                0,
+                0,
             )
         };
         emit_inst(fs, line, inst);
@@ -3897,7 +4346,8 @@ fn gotostat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         let lb_idx = lb.unwrap();
         let lb_pc = ls.dyd.label[lb_idx].pc;
         let lb_nactvar = ls.dyd.label[lb_idx].nactvar;
-        let lblevel = reg_level(ls, ls.fs.as_ref().unwrap(), lb_nactvar as i32);
+        let lb_local_level = local_level_for_scope_level(ls, lb_nactvar);
+        let lblevel = reg_level(ls, ls.fs.as_ref().unwrap(), lb_local_level);
         let cur_nvarstack = {
             let fs = ls.fs.as_ref().unwrap();
             nvarstack(ls, fs)
@@ -3992,7 +4442,11 @@ fn checkrepeated(
     if let Some(line) = dup_line {
         let name_str = String::from_utf8_lossy(name.as_bytes());
         let msg = format!("label '{}' already defined on line {}", name_str, line);
-        return Err(lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0));
+        let saved_line = ls.lex.linenumber;
+        ls.lex.linenumber = ls.lastline;
+        let err = lua_lex::lex_error(&mut ls.lex, msg.as_bytes(), 0);
+        ls.lex.linenumber = saved_line;
+        return Err(err);
     }
     Ok(())
 }
@@ -4100,12 +4554,20 @@ fn forbody(
     isgen: bool,
 ) -> Result<(), LuaError> {
     check_next(ls, state, TK_DO)?;
-    let prep_op = if isgen { OpCode::TForPrep } else { OpCode::ForPrep };
+    let prep_op = if isgen {
+        OpCode::TForPrep
+    } else {
+        OpCode::ForPrep
+    };
     let prep = {
         let fs = ls.fs.as_mut().unwrap();
         let inst = lua_code::opcodes::Instruction::abx(prep_op, base as u32, 0);
         emit_inst(fs, line, inst)
     };
+    if isgen && state.global().lua_version == lua_types::LuaVersion::V55 {
+        let fs = ls.fs.as_mut().unwrap();
+        fs.freereg = fs.freereg.saturating_sub(1);
+    }
 
     enter_block(ls, false);
     adjust_local_vars(ls, state, nvars)?;
@@ -4118,12 +4580,15 @@ fn forbody(
 
     if isgen {
         let fs = ls.fs.as_mut().unwrap();
-        let inst = lua_code::opcodes::Instruction::abck(
-            OpCode::TForCall, base as u32, 0, nvars as u32, 0,
-        );
+        let inst =
+            lua_code::opcodes::Instruction::abck(OpCode::TForCall, base as u32, 0, nvars as u32, 0);
         emit_inst(fs, line, inst);
     }
-    let loop_op = if isgen { OpCode::TForLoop } else { OpCode::ForLoop };
+    let loop_op = if isgen {
+        OpCode::TForLoop
+    } else {
+        OpCode::ForLoop
+    };
     let endfor = {
         let fs = ls.fs.as_mut().unwrap();
         let inst = lua_code::opcodes::Instruction::abx(loop_op, base as u32, 0);
@@ -4162,9 +4627,7 @@ fn fornum(
         let fs = ls.fs.as_mut().unwrap();
         let reg = fs.freereg as u32;
         let bx = (1i32 + lua_code::opcodes::OFFSET_S_BX) as u32;
-        let inst = lua_code::opcodes::Instruction::abx(
-            lua_code::opcodes::OpCode::LoadI, reg, bx,
-        );
+        let inst = lua_code::opcodes::Instruction::abx(lua_code::opcodes::OpCode::LoadI, reg, bx);
         emit_inst(fs, line, inst);
         reserve_regs(fs, 1)?;
     }
@@ -4178,13 +4641,16 @@ fn forlist(
     state: &mut LuaState,
     indexname: GcRef<LuaString>,
 ) -> Result<(), LuaError> {
-    let mut nvars: i32 = 5; // gen, state, control, toclose, 'indexname'
+    let is_v55 = state.global().lua_version == lua_types::LuaVersion::V55;
+    let mut nvars: i32 = if is_v55 { 4 } else { 5 };
     let base = ls.fs.as_ref().unwrap().freereg as i32;
     let for_state_str = state.intern_str(b"(for state)")?;
     new_local_var(ls, state, for_state_str.clone())?;
     new_local_var(ls, state, for_state_str.clone())?;
     new_local_var(ls, state, for_state_str.clone())?;
-    new_local_var(ls, state, for_state_str)?;
+    if !is_v55 {
+        new_local_var(ls, state, for_state_str)?;
+    }
     let idx_vidx = new_local_var(ls, state, indexname)?;
     // Lua 5.5: the first control variable of a generic for is read-only (the
     // remaining loop variables stay assignable).
@@ -4205,10 +4671,11 @@ fn forlist(
     let mut e = ExprDesc::default();
     let nexps = explist(ls, state, &mut e)?;
     adjust_assign(ls, state, 4, nexps, &mut e)?;
-    adjust_local_vars(ls, state, 4)?;
-    marktobeclosed(ls.fs.as_mut().unwrap()); // last control var must be closed
-    // TODO(port): lua_code::check_stack(ls.fs.as_mut().unwrap(), 3)?;
-    forbody(ls, state, base, line, nvars - 4, true)?;
+    adjust_local_vars(ls, state, if is_v55 { 3 } else { 4 })?;
+    marktobeclosed(ls.fs.as_mut().unwrap()); // last active internal var must be closed
+                                             // TODO(port): lua_code::check_stack(ls.fs.as_mut().unwrap(), 3)?;
+    let internal_vars = if is_v55 { 3 } else { 4 };
+    forbody(ls, state, base, line, nvars - internal_vars, true)?;
     Ok(())
 }
 
@@ -4249,7 +4716,7 @@ fn test_then_block(
 
     let jf: i32;
     if ls.t.token == TK_BREAK {
-        let line = if fold_onto_cond { cond_line } else { ls.lastline };
+        let line = ls.linenumber;
         cg_go_if_false(ls.fs.as_mut().unwrap(), line, &mut v)?;
         lex_next(ls, state)?; // skip 'break'
         enter_block(ls, false);
@@ -4263,7 +4730,11 @@ fn test_then_block(
             jf = cg_jump(ls.fs.as_mut().unwrap(), ls.linenumber);
         }
     } else {
-        let line = if fold_onto_cond { cond_line } else { ls.lastline };
+        let line = if fold_onto_cond {
+            cond_line
+        } else {
+            ls.lastline
+        };
         cg_go_if_true(ls.fs.as_mut().unwrap(), line, &mut v)?;
         enter_block(ls, false);
         jf = v.f;
@@ -4343,10 +4814,7 @@ fn getlocalattribute(
         } else if bytes == b"close" {
             return Ok(VarKind::ToBeClosed);
         } else {
-            let msg = format!(
-                "unknown attribute '{}'",
-                String::from_utf8_lossy(bytes)
-            );
+            let msg = format!("unknown attribute '{}'", String::from_utf8_lossy(bytes));
             return Err(lua_lex::sem_error(&mut ls.lex, msg.as_bytes()));
         }
     }
@@ -4438,10 +4906,7 @@ fn get_global_attribute(
             b"global variables cannot be to-be-closed",
         )),
         other => {
-            let msg = format!(
-                "unknown attribute '{}'",
-                String::from_utf8_lossy(other)
-            );
+            let msg = format!("unknown attribute '{}'", String::from_utf8_lossy(other));
             Err(lua_lex::sem_error(&mut ls.lex, msg.as_bytes()))
         }
     }
@@ -4459,8 +4924,12 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         lex_next(ls, state)?; // skip 'function'
         let name = str_check_name(ls, state)?;
         ls.declared_globals.push((name.clone(), false));
+        add_scope_barrier(ls, name.clone());
         // Build the `_ENV[name]` lvalue (IndexUp; no register cost).
-        let envn = ls.envn.clone().expect("envn must be set when resolving globals");
+        let envn = ls
+            .envn
+            .clone()
+            .expect("envn must be set when resolving globals");
         let mut target = ExprDesc::default();
         let mut fs_box = ls.fs.take();
         let r = singlevaraux(ls, fs_box.as_deref_mut(), &envn, &mut target, true);
@@ -4475,7 +4944,10 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             cg_indexed(fs, lline, &mut target, &mut key)?;
         }
         let mut b = ExprDesc::default();
-        body(ls, state, &mut b, false, line)?;
+        ls.global_function_names.push(name.clone());
+        let body_result = body(ls, state, &mut b, false, line);
+        ls.global_function_names.pop();
+        body_result?;
         {
             let fs = ls.fs.as_mut().unwrap();
             cg_check_global(fs, line, &target, name)?;
@@ -4503,8 +4975,11 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     // it), so a wildcard flag (not merely clearing strict) models it: with the
     // wildcard active, every free name resolves as a global.
     if test_next(ls, state, b'*' as TokenKind)? {
+        let star = state.intern_str(b"*")?;
+        add_scope_barrier(ls, star);
         ls.global_strict = false;
         ls.global_wildcard = true;
+        ls.global_wildcard_const = defkind;
         return Ok(());
     }
 
@@ -4512,11 +4987,12 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     // declared name (with its `<const>`-ness) and switch the scope into strict
     // mode so subsequent free names must be declared (manual §2.2).
     let mut names: Vec<GcRef<LuaString>> = Vec::new();
+    let mut declarations: Vec<(GcRef<LuaString>, bool)> = Vec::new();
     loop {
         let name = str_check_name(ls, state)?;
         let is_const = get_global_attribute(ls, state, defkind)?;
-        ls.declared_globals.push((name.clone(), is_const));
-        names.push(name);
+        names.push(name.clone());
+        declarations.push((name, is_const));
         if !test_next(ls, state, b',' as TokenKind)? {
             break;
         }
@@ -4533,7 +5009,10 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         let init_line = ls.linenumber;
         let mut targets: Vec<ExprDesc> = Vec::with_capacity(names.len());
         for name in &names {
-            let envn = ls.envn.clone().expect("envn must be set when resolving globals");
+            let envn = ls
+                .envn
+                .clone()
+                .expect("envn must be set when resolving globals");
             let mut env_var = ExprDesc::default();
             let mut fs_box = ls.fs.take();
             let r = singlevaraux(ls, fs_box.as_deref_mut(), &envn, &mut env_var, true);
@@ -4570,11 +5049,16 @@ fn globalstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
             cg_storevar(fs, line, target, &mut v)?;
         }
     }
+    for (name, is_const) in declarations {
+        ls.declared_globals.push((name.clone(), is_const));
+        add_scope_barrier(ls, name);
+    }
     ls.global_strict = true;
     Ok(())
 }
 
 fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
+    let local_line = ls.lastline;
     let mut toclose: i32 = -1;
     let mut nvars: i32 = 0;
     let mut vidx: i32;
@@ -4596,9 +5080,15 @@ fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         get_local_var_desc_mut(ls, ls.fs.as_ref().unwrap().firstlocal, vidx).kind = kind;
         if kind == VarKind::ToBeClosed {
             if toclose != -1 {
-                return Err(LuaError::syntax(format_args!(
-                    "multiple to-be-closed variables in local list"
-                )));
+                let saved_line = ls.lex.linenumber;
+                ls.lex.linenumber = local_line;
+                let err = lua_lex::lex_error(
+                    &mut ls.lex,
+                    b"multiple to-be-closed variables in local list",
+                    0,
+                );
+                ls.lex.linenumber = saved_line;
+                return Err(err);
             }
             toclose = ls.fs.as_ref().unwrap().nactvar as i32 + nvars;
         }
@@ -4617,9 +5107,7 @@ fn localstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     }
     let first_local = ls.fs.as_ref().unwrap().firstlocal;
     let last_vd_kind = ls.dyd.actvar[(first_local + vidx) as usize].kind;
-    if nvars == nexps
-        && last_vd_kind == VarKind::Const
-    {
+    if nvars == nexps && last_vd_kind == VarKind::Const {
         // TODO(port): let is_const = lua_code::exp_to_const(ls.fs.as_mut().unwrap(), &mut e, &mut var_k)?;
         let is_const = false; // placeholder
         if is_const {
@@ -4657,6 +5145,7 @@ fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), Lu
     let mut v = ExprDesc::default();
     let mut b = ExprDesc::default();
     let ismethod = funcname(ls, state, &mut v)?;
+    check_readonly(ls, state, &v.clone())?;
     body(ls, state, &mut b, ismethod, line)?;
     check_readonly(ls, state, &v.clone())?;
     let fs = ls.fs.as_mut().unwrap();
@@ -4666,7 +5155,10 @@ fn funcstat(ls: &mut LexState, state: &mut LuaState, line: i32) -> Result<(), Lu
 }
 
 fn exprstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
-    let mut v_assign = LhsAssign { prev: None, v: ExprDesc::default() };
+    let mut v_assign = LhsAssign {
+        prev: None,
+        v: ExprDesc::default(),
+    };
     suffixedexp(ls, state, &mut v_assign.v)?;
     if ls.t.token == b'=' as TokenKind || ls.t.token == b',' as TokenKind {
         restassign(ls, state, &mut v_assign, 1)?;
@@ -4706,7 +5198,13 @@ fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         if e.k.has_mult_ret() {
             cg_set_returns(ls.fs.as_mut().unwrap(), &mut e, LUA_MULTRET);
             if e.k == ExprKind::Call && nret == 1 {
-                let insidetbc = ls.fs.as_ref().unwrap().bl.as_ref().map_or(false, |b| b.insidetbc);
+                let insidetbc = ls
+                    .fs
+                    .as_ref()
+                    .unwrap()
+                    .bl
+                    .as_ref()
+                    .map_or(false, |b| b.insidetbc);
                 if !insidetbc {
                     let fs = ls.fs.as_mut().unwrap();
                     let info = e.u.info as usize;
@@ -4726,7 +5224,8 @@ fn retstat(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
         }
     }
     let line = ls.lastline;
-    cg_emit_return(ls.fs.as_mut().unwrap(), line, first, nret);
+    let version = state.global().lua_version;
+    cg_emit_return(ls.fs.as_mut().unwrap(), line, first, nret, version)?;
     test_next(ls, state, b';' as TokenKind)?;
     Ok(())
 }
@@ -4817,8 +5316,7 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     }
     debug_assert!(
         ls.fs.as_ref().unwrap().f.maxstacksize >= ls.fs.as_ref().unwrap().freereg
-            && ls.fs.as_ref().unwrap().freereg as i32
-                >= nvarstack(ls, ls.fs.as_ref().unwrap())
+            && ls.fs.as_ref().unwrap().freereg as i32 >= nvarstack(ls, ls.fs.as_ref().unwrap())
     );
     let nv = nvarstack(ls, ls.fs.as_ref().unwrap());
     ls.fs.as_mut().unwrap().freereg = nv as u8;
@@ -4829,7 +5327,11 @@ fn statement(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
 // ── §14 Main function and entry point ────────────────────────────────────────
 
 /// Compiles the main chunk (always a vararg function with _ENV upvalue).
-fn mainfunc(ls: &mut LexState, state: &mut LuaState, main_fs: FuncState) -> Result<Box<LuaProto>, LuaError> {
+fn mainfunc(
+    ls: &mut LexState,
+    state: &mut LuaState,
+    main_fs: FuncState,
+) -> Result<Box<LuaProto>, LuaError> {
     open_func(ls, state, main_fs)?;
 
     setvararg(ls.fs.as_mut().unwrap(), state, 0)?;
@@ -4903,7 +5405,10 @@ pub fn parse(
         recursion_depth: 0,
         global_strict: false,
         global_wildcard: false,
+        global_wildcard_const: false,
         declared_globals: Vec::new(),
+        scope_barriers: Vec::new(),
+        global_function_names: Vec::new(),
     };
     //   `mainfunc`; it does NOT pre-read the first token. `mainfunc` itself
     //   issues the initial `luaX_next` once its prelude (open_func, vararg
@@ -4926,6 +5431,7 @@ pub fn parse(
         firstlabel: 0,
         ndebugvars: 0,
         nactvar: 0,
+        first_scope_barrier: 0,
         nups: 0,
         freereg: 0,
         iwthabs: 0,
@@ -4943,9 +5449,21 @@ pub fn parse(
 fn local_token_value(v: &lua_lex::TokenValue) -> TokenValue {
     match v {
         lua_lex::TokenValue::None => TokenValue::default(),
-        lua_lex::TokenValue::Float(r) => TokenValue { r: *r, i: 0, ts: None },
-        lua_lex::TokenValue::Int(i) => TokenValue { r: 0.0, i: *i, ts: None },
-        lua_lex::TokenValue::Str(s) => TokenValue { r: 0.0, i: 0, ts: Some(s.clone()) },
+        lua_lex::TokenValue::Float(r) => TokenValue {
+            r: *r,
+            i: 0,
+            ts: None,
+        },
+        lua_lex::TokenValue::Int(i) => TokenValue {
+            r: 0.0,
+            i: *i,
+            ts: None,
+        },
+        lua_lex::TokenValue::Str(s) => TokenValue {
+            r: 0.0,
+            i: 0,
+            ts: Some(s.clone()),
+        },
     }
 }
 

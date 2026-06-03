@@ -13,8 +13,8 @@
 //! (`gmtime_r`, `localtime_r`, `mktime`, `strftime`).  Those call sites are
 //! flagged with `TODO(port)` and the stubs use a zero-initialised `TmFields`.
 
-use lua_types::{LuaError, LuaExit, LuaType, LuaValue};
 use crate::state_stub::{LuaState, LuaStateStubExt as _};
+use lua_types::{LuaError, LuaExit, LuaType, LuaValue};
 use lua_vm::state::OsExecuteReason;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -98,14 +98,14 @@ fn set_bool_field(state: &mut LuaState, key: &[u8], value: i32) -> Result<(), Lu
 /// offsets that convert from C-library conventions to Lua conventions:
 /// year+1900, month+1, wday+1, yday+1.
 fn set_all_fields(state: &mut LuaState, stm: &TmFields) -> Result<(), LuaError> {
-    set_field(state, b"year",  stm.tm_year, 1900)?;
-    set_field(state, b"month", stm.tm_mon,  1)?;
-    set_field(state, b"day",   stm.tm_mday, 0)?;
-    set_field(state, b"hour",  stm.tm_hour, 0)?;
-    set_field(state, b"min",   stm.tm_min,  0)?;
-    set_field(state, b"sec",   stm.tm_sec,  0)?;
-    set_field(state, b"yday",  stm.tm_yday, 1)?;
-    set_field(state, b"wday",  stm.tm_wday, 1)?;
+    set_field(state, b"year", stm.tm_year, 1900)?;
+    set_field(state, b"month", stm.tm_mon, 1)?;
+    set_field(state, b"day", stm.tm_mday, 0)?;
+    set_field(state, b"hour", stm.tm_hour, 0)?;
+    set_field(state, b"min", stm.tm_min, 0)?;
+    set_field(state, b"sec", stm.tm_sec, 0)?;
+    set_field(state, b"yday", stm.tm_yday, 1)?;
+    set_field(state, b"wday", stm.tm_wday, 1)?;
     set_bool_field(state, b"isdst", stm.tm_isdst)?;
     Ok(())
 }
@@ -134,12 +134,7 @@ fn get_bool_field(state: &mut LuaState, key: &[u8]) -> Result<i32, LuaError> {
 ///
 /// PORT NOTE: Stack cleanup on error paths (pop before returning Err) is added
 /// vs. the C version where `luaL_error` never returns (longjmp).
-fn get_field(
-    state: &mut LuaState,
-    key: &[u8],
-    d: i32,
-    delta: i32,
-) -> Result<i32, LuaError> {
+fn get_field(state: &mut LuaState, key: &[u8], d: i32, delta: i32) -> Result<i32, LuaError> {
     let ty = state.get_field(-1, key)?;
     let maybe_int = state.to_integer_x(-1);
     let res: i32 = match maybe_int {
@@ -213,7 +208,10 @@ fn check_strftime_option<'a>(
             i += oplen;
         } else if i + oplen <= options.len() && conv[..oplen] == options[i..i + oplen] {
             // cc[0] = b'%' is pre-filled; write specifier bytes into cc[1..=oplen].
-            debug_assert!(oplen <= 2, "STRFTIME_OPTIONS only has 1- and 2-char specifiers");
+            debug_assert!(
+                oplen <= 2,
+                "STRFTIME_OPTIONS only has 1- and 2-char specifiers"
+            );
             cc[1..=oplen].copy_from_slice(&conv[..oplen]);
             cc[oplen + 1] = 0;
             return Ok(&conv[oplen..]);
@@ -221,10 +219,7 @@ fn check_strftime_option<'a>(
             i += oplen;
         }
     }
-    Err(LuaError::arg_error(
-        1,
-        "invalid conversion specifier",
-    ))
+    Err(LuaError::arg_error(1, "invalid conversion specifier"))
 }
 
 ///
@@ -353,14 +348,17 @@ fn decompose_utc(t: i64) -> TmFields {
     let doy_mar = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy_mar + 2) / 153;
     let day = (doy_mar - (153 * mp + 2) / 5 + 1) as i32;
-    let month: i32 = if mp < 10 { (mp + 3) as i32 } else { (mp - 9) as i32 };
+    let month: i32 = if mp < 10 {
+        (mp + 3) as i32
+    } else {
+        (mp - 9) as i32
+    };
     let year = y + if month <= 2 { 1 } else { 0 };
 
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     const DAYS_BEFORE_MONTH: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let tm_yday = DAYS_BEFORE_MONTH[(month - 1) as usize]
-        + (day - 1)
-        + if leap && month > 2 { 1 } else { 0 };
+    let tm_yday =
+        DAYS_BEFORE_MONTH[(month - 1) as usize] + (day - 1) + if leap && month > 2 { 1 } else { 0 };
 
     let tm_wday = (days + 4).rem_euclid(7) as i32;
 
@@ -416,41 +414,89 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
     let year_full = (tm.tm_year as i64) + 1900;
     let hour12 = {
         let h = tm.tm_hour.rem_euclid(12);
-        if h == 0 { 12 } else { h }
+        if h == 0 {
+            12
+        } else {
+            h
+        }
     };
     const DAY_SHORT: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
     const DAY_LONG: [&[u8]; 7] = [
-        b"Sunday", b"Monday", b"Tuesday", b"Wednesday", b"Thursday", b"Friday", b"Saturday",
+        b"Sunday",
+        b"Monday",
+        b"Tuesday",
+        b"Wednesday",
+        b"Thursday",
+        b"Friday",
+        b"Saturday",
     ];
     const MON_SHORT: [&[u8]; 12] = [
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
         b"Dec",
     ];
     const MON_LONG: [&[u8]; 12] = [
-        b"January", b"February", b"March", b"April", b"May", b"June", b"July", b"August",
-        b"September", b"October", b"November", b"December",
+        b"January",
+        b"February",
+        b"March",
+        b"April",
+        b"May",
+        b"June",
+        b"July",
+        b"August",
+        b"September",
+        b"October",
+        b"November",
+        b"December",
     ];
     let wday_idx = tm.tm_wday.rem_euclid(7) as usize;
     let mon_idx = tm.tm_mon.rem_euclid(12) as usize;
     match spec {
-        b'Y' => { let _ = write!(buf, "{}", year_full); }
-        b'y' => { let _ = write!(buf, "{:02}", year_full.rem_euclid(100)); }
-        b'C' => { let _ = write!(buf, "{:02}", year_full.div_euclid(100)); }
-        b'm' => { let _ = write!(buf, "{:02}", tm.tm_mon + 1); }
-        b'd' => { let _ = write!(buf, "{:02}", tm.tm_mday); }
-        b'e' => { let _ = write!(buf, "{:2}", tm.tm_mday); }
-        b'H' => { let _ = write!(buf, "{:02}", tm.tm_hour); }
-        b'I' => { let _ = write!(buf, "{:02}", hour12); }
-        b'k' => { let _ = write!(buf, "{:2}", tm.tm_hour); }
-        b'l' => { let _ = write!(buf, "{:2}", hour12); }
-        b'M' => { let _ = write!(buf, "{:02}", tm.tm_min); }
-        b'S' => { let _ = write!(buf, "{:02}", tm.tm_sec); }
-        b'w' => { let _ = write!(buf, "{}", tm.tm_wday); }
+        b'Y' => {
+            let _ = write!(buf, "{}", year_full);
+        }
+        b'y' => {
+            let _ = write!(buf, "{:02}", year_full.rem_euclid(100));
+        }
+        b'C' => {
+            let _ = write!(buf, "{:02}", year_full.div_euclid(100));
+        }
+        b'm' => {
+            let _ = write!(buf, "{:02}", tm.tm_mon + 1);
+        }
+        b'd' => {
+            let _ = write!(buf, "{:02}", tm.tm_mday);
+        }
+        b'e' => {
+            let _ = write!(buf, "{:2}", tm.tm_mday);
+        }
+        b'H' => {
+            let _ = write!(buf, "{:02}", tm.tm_hour);
+        }
+        b'I' => {
+            let _ = write!(buf, "{:02}", hour12);
+        }
+        b'k' => {
+            let _ = write!(buf, "{:2}", tm.tm_hour);
+        }
+        b'l' => {
+            let _ = write!(buf, "{:2}", hour12);
+        }
+        b'M' => {
+            let _ = write!(buf, "{:02}", tm.tm_min);
+        }
+        b'S' => {
+            let _ = write!(buf, "{:02}", tm.tm_sec);
+        }
+        b'w' => {
+            let _ = write!(buf, "{}", tm.tm_wday);
+        }
         b'u' => {
             let u = if tm.tm_wday == 0 { 7 } else { tm.tm_wday };
             let _ = write!(buf, "{}", u);
         }
-        b'j' => { let _ = write!(buf, "{:03}", tm.tm_yday + 1); }
+        b'j' => {
+            let _ = write!(buf, "{:03}", tm.tm_yday + 1);
+        }
         b'a' => buf.extend_from_slice(DAY_SHORT[wday_idx]),
         b'A' => buf.extend_from_slice(DAY_LONG[wday_idx]),
         b'b' | b'h' => buf.extend_from_slice(MON_SHORT[mon_idx]),
@@ -458,7 +504,13 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
         b'p' => buf.extend_from_slice(if tm.tm_hour < 12 { b"AM" } else { b"PM" }),
         b'P' => buf.extend_from_slice(if tm.tm_hour < 12 { b"am" } else { b"pm" }),
         b'D' | b'x' => {
-            let _ = write!(buf, "{:02}/{:02}/{:02}", tm.tm_mon + 1, tm.tm_mday, year_full.rem_euclid(100));
+            let _ = write!(
+                buf,
+                "{:02}/{:02}/{:02}",
+                tm.tm_mon + 1,
+                tm.tm_mday,
+                year_full.rem_euclid(100)
+            );
         }
         b'F' => {
             let _ = write!(buf, "{}-{:02}-{:02}", year_full, tm.tm_mon + 1, tm.tm_mday);
@@ -466,7 +518,9 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
         b'T' | b'X' => {
             let _ = write!(buf, "{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
         }
-        b'R' => { let _ = write!(buf, "{:02}:{:02}", tm.tm_hour, tm.tm_min); }
+        b'R' => {
+            let _ = write!(buf, "{:02}:{:02}", tm.tm_hour, tm.tm_min);
+        }
         b'r' => {
             let ampm: &[u8] = if tm.tm_hour < 12 { b"AM" } else { b"PM" };
             let _ = write!(buf, "{:02}:{:02}:{:02} ", hour12, tm.tm_min, tm.tm_sec);
@@ -490,7 +544,9 @@ fn strftime_one(buf: &mut Vec<u8>, cc: &[u8; 4], oplen: usize, tm: &TmFields) {
         b'%' => buf.push(b'%'),
         b'z' => buf.extend_from_slice(b"+0000"),
         b'Z' => buf.extend_from_slice(b"UTC"),
-        b's' => { let _ = write!(buf, "{}", compose_utc(tm)); }
+        b's' => {
+            let _ = write!(buf, "{}", compose_utc(tm));
+        }
         b'U' => {
             let week = (tm.tm_yday + 7 - tm.tm_wday) / 7;
             let _ = write!(buf, "{:02}", week);
@@ -824,12 +880,12 @@ pub(crate) fn os_time(state: &mut LuaState) -> Result<usize, LuaError> {
         // sets an absolute stack index and would truncate the entire stack.
         lua_vm::api::set_top(state, 1)?;
 
-        let tm_year  = get_field(state, b"year",  -1, 1900)?;
-        let tm_mon   = get_field(state, b"month", -1, 1)?;
-        let tm_mday  = get_field(state, b"day",   -1, 0)?;
-        let tm_hour  = get_field(state, b"hour",  12, 0)?;
-        let tm_min   = get_field(state, b"min",   0,  0)?;
-        let tm_sec   = get_field(state, b"sec",   0,  0)?;
+        let tm_year = get_field(state, b"year", -1, 1900)?;
+        let tm_mon = get_field(state, b"month", -1, 1)?;
+        let tm_mday = get_field(state, b"day", -1, 0)?;
+        let tm_hour = get_field(state, b"hour", 12, 0)?;
+        let tm_min = get_field(state, b"min", 0, 0)?;
+        let tm_sec = get_field(state, b"sec", 0, 0)?;
         let tm_isdst = get_bool_field(state, b"isdst")?;
 
         let raw = TmFields {
@@ -893,7 +949,12 @@ pub(crate) fn os_difftime(state: &mut LuaState) -> Result<usize, LuaError> {
 /// as a string, or `nil` on failure.
 pub(crate) fn os_setlocale(state: &mut LuaState) -> Result<usize, LuaError> {
     const CAT_NAMES: &[&[u8]] = &[
-        b"all", b"collate", b"ctype", b"monetary", b"numeric", b"time",
+        b"all",
+        b"collate",
+        b"ctype",
+        b"monetary",
+        b"numeric",
+        b"time",
     ];
 
     let locale: Option<Vec<u8>> = state.opt_arg_lstring(1, None)?;
@@ -905,12 +966,14 @@ pub(crate) fn os_setlocale(state: &mut LuaState) -> Result<usize, LuaError> {
     // "C" for the C locale (and nil for anything else) is faithful for this build:
     // "C" is the only locale guaranteed available on every POSIX system.
     let result_locale: Option<&[u8]> = match locale.as_deref() {
-        None => Some(b"C"),          // query: return current locale (always "C" here)
-        Some(b"C") | Some(b"POSIX") => Some(b"C"),  // setting to "C"/"POSIX" always succeeds
-        Some(_) => None,             // any other locale: unsupported in this build
+        None => Some(b"C"), // query: return current locale (always "C" here)
+        Some(b"C") | Some(b"POSIX") => Some(b"C"), // setting to "C"/"POSIX" always succeeds
+        Some(_) => None,    // any other locale: unsupported in this build
     };
     match result_locale {
-        Some(s) => { state.push_string(s)?; }
+        Some(s) => {
+            state.push_string(s)?;
+        }
         None => state.push(LuaValue::Nil),
     }
     Ok(1)
@@ -926,7 +989,11 @@ pub(crate) fn os_exit(state: &mut LuaState) -> Result<usize, LuaError> {
     //    else
     //      status = (int)luaL_optinteger(L, 1, EXIT_SUCCESS);
     let exit_code: i32 = if matches!(state.type_at(1), LuaType::Boolean) {
-        if state.to_boolean(1) { 0 } else { 1 } // EXIT_SUCCESS = 0, EXIT_FAILURE = 1
+        if state.to_boolean(1) {
+            0
+        } else {
+            1
+        } // EXIT_SUCCESS = 0, EXIT_FAILURE = 1
     } else {
         state.opt_arg_integer(1, 0)? as i32
     };
@@ -955,17 +1022,17 @@ pub type NativeFn = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// Mapping from Lua-visible names to the Rust implementations of each `os.*`
 /// function.
 pub const OS_LIB: &[(&[u8], NativeFn)] = &[
-    (b"clock",     os_clock),
-    (b"date",      os_date),
-    (b"difftime",  os_difftime),
-    (b"execute",   os_execute),
-    (b"exit",      os_exit),
-    (b"getenv",    os_getenv),
-    (b"remove",    os_remove),
-    (b"rename",    os_rename),
+    (b"clock", os_clock),
+    (b"date", os_date),
+    (b"difftime", os_difftime),
+    (b"execute", os_execute),
+    (b"exit", os_exit),
+    (b"getenv", os_getenv),
+    (b"remove", os_remove),
+    (b"rename", os_rename),
     (b"setlocale", os_setlocale),
-    (b"time",      os_time),
-    (b"tmpname",   os_tmpname),
+    (b"time", os_time),
+    (b"tmpname", os_tmpname),
 ];
 
 ///

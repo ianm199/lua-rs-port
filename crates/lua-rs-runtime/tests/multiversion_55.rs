@@ -45,10 +45,7 @@ fn v55_runs_a_trivial_script() {
 fn v55_global_decl_statement_parses() {
     let lua = Lua::new_versioned(LuaVersion::V55);
 
-    let ok: i64 = lua
-        .load("global x; x = 41; return x + 1")
-        .eval()
-        .unwrap();
+    let ok: i64 = lua.load("global x; x = 41; return x + 1").eval().unwrap();
     assert_eq!(ok, 42);
 
     // Multi-name list with a <const> attribute on one name, plus initializer.
@@ -57,7 +54,9 @@ fn v55_global_decl_statement_parses() {
         .expect("5.5 global name-list with attribute should parse");
 
     // The collective `global *` form (re-enables global-by-default).
-    lua.load("global *").exec().expect("5.5 `global *` should parse");
+    lua.load("global *")
+        .exec()
+        .expect("5.5 `global *` should parse");
 
     // `global <const> *` collective-with-attribute form.
     lua.load("global <const> *")
@@ -100,9 +99,6 @@ fn table_create_present_under_55_absent_under_54() {
     assert_eq!(len, 2);
 
     // The preallocated table is observably empty on creation.
-    let empty: i64 = lua55
-        .load("return #table.create(4, 2)")
-        .eval()
-        .unwrap();
+    let empty: i64 = lua55.load("return #table.create(4, 2)").eval().unwrap();
     assert_eq!(empty, 0);
 }

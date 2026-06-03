@@ -53,23 +53,17 @@ impl UserData for World {
             Ok(())
         });
 
-        methods.add_method_mut(
-            "set_pos",
-            |_lua, this, (name, x, y): (String, f64, f64)| {
-                let e = this.entities.entry(name).or_default();
-                e.pos = Pos { x, y };
-                Ok(())
-            },
-        );
+        methods.add_method_mut("set_pos", |_lua, this, (name, x, y): (String, f64, f64)| {
+            let e = this.entities.entry(name).or_default();
+            e.pos = Pos { x, y };
+            Ok(())
+        });
 
-        methods.add_method_mut(
-            "set_vel",
-            |_lua, this, (name, x, y): (String, f64, f64)| {
-                let e = this.entities.entry(name).or_default();
-                e.vel = Vel { x, y };
-                Ok(())
-            },
-        );
+        methods.add_method_mut("set_vel", |_lua, this, (name, x, y): (String, f64, f64)| {
+            let e = this.entities.entry(name).or_default();
+            e.vel = Vel { x, y };
+            Ok(())
+        });
 
         methods.add_method_mut("step", |_lua, this, dt: f64| {
             for e in this.entities.values_mut() {
@@ -80,9 +74,10 @@ impl UserData for World {
         });
 
         methods.add_method("pos", |_lua, this, name: String| {
-            let e = this.entities.get(&name).ok_or_else(|| {
-                LuaError::runtime(format_args!("no entity named {name}"))
-            })?;
+            let e = this
+                .entities
+                .get(&name)
+                .ok_or_else(|| LuaError::runtime(format_args!("no entity named {name}")))?;
             Ok((e.pos.x, e.pos.y))
         });
 

@@ -115,7 +115,12 @@ pub struct ZIO {
 impl ZIO {
     /// Construct a ZIO from a reader callback that yields successive chunks.
     pub fn new(reader: Box<dyn FnMut() -> Option<Vec<u8>>>) -> Self {
-        ZIO { reader, n: 0, p: 0, current_chunk: Vec::new() }
+        ZIO {
+            reader,
+            n: 0,
+            p: 0,
+            current_chunk: Vec::new(),
+        }
     }
 
     /// Construct a ZIO that yields the supplied bytes once and then EOZ.
@@ -272,14 +277,44 @@ pub const TK_STRING: i32 = 293;
 /// Display strings for tokens, indexed by `token - FIRST_RESERVED`.
 pub static LUAX_TOKENS: &[&[u8]] = &[
     // keywords (indices 0-21)
-    b"and", b"break", b"do", b"else", b"elseif",
-    b"end", b"false", b"for", b"function", b"goto", b"if",
-    b"in", b"local", b"nil", b"not", b"or", b"repeat",
-    b"return", b"then", b"true", b"until", b"while",
+    b"and",
+    b"break",
+    b"do",
+    b"else",
+    b"elseif",
+    b"end",
+    b"false",
+    b"for",
+    b"function",
+    b"goto",
+    b"if",
+    b"in",
+    b"local",
+    b"nil",
+    b"not",
+    b"or",
+    b"repeat",
+    b"return",
+    b"then",
+    b"true",
+    b"until",
+    b"while",
     // other terminal symbols (indices 22-35)
-    b"//", b"..", b"...", b"==", b">=", b"<=", b"~=",
-    b"<<", b">>", b"::", b"<eof>",
-    b"<number>", b"<integer>", b"<name>", b"<string>",
+    b"//",
+    b"..",
+    b"...",
+    b"==",
+    b">=",
+    b"<=",
+    b"~=",
+    b"<<",
+    b">>",
+    b"::",
+    b"<eof>",
+    b"<number>",
+    b"<integer>",
+    b"<name>",
+    b"<string>",
 ];
 
 // ── SemInfo / TokenValue ───────────────────────────────────────────────────────
@@ -330,7 +365,10 @@ pub struct Token {
 impl Token {
     /// Construct a token with no semantic value.
     pub fn new(kind: i32) -> Self {
-        Token { kind, value: TokenValue::None }
+        Token {
+            kind,
+            value: TokenValue::None,
+        }
     }
 
     /// The end-of-stream sentinel token.
@@ -605,7 +643,11 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
             let mut v: Vec<u8> = Vec::new();
             v.push(b'\'');
             let buff = ls.buff.as_slice();
-            let trimmed = if buff.last() == Some(&0) { &buff[..buff.len() - 1] } else { buff };
+            let trimmed = if buff.last() == Some(&0) {
+                &buff[..buff.len() - 1]
+            } else {
+                buff
+            };
             v.extend_from_slice(trimmed);
             v.push(b'\'');
             v
@@ -837,10 +879,7 @@ pub(crate) fn new_string(
 /// //     ls->t.token = llex(ls, &ls->t.seminfo);
 /// // }
 /// ```
-pub fn next(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<(), LuaError> {
+pub fn next(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
     ls.lastline = ls.linenumber;
 
     if ls.lookahead.kind != TK_EOS {
@@ -870,10 +909,7 @@ pub fn next(
 /// //   return ls->lookahead.token;
 /// // }
 /// ```
-pub fn lookahead(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<i32, LuaError> {
+pub fn lookahead(state: &mut LuaState, ls: &mut LexState) -> Result<i32, LuaError> {
     // macros.tsv: lua_assert → debug_assert!
     debug_assert!(
         ls.lookahead.kind == TK_EOS,
@@ -921,11 +957,7 @@ fn check_next1(ls: &mut LexState, c: i32) -> bool {
 /// //   else return 0;
 /// // }
 /// ```
-fn check_next2(
-    ls: &mut LexState,
-    state: &mut LuaState,
-    set: &[u8; 2],
-) -> Result<bool, LuaError> {
+fn check_next2(ls: &mut LexState, state: &mut LuaState, set: &[u8; 2]) -> Result<bool, LuaError> {
     if ls.current == set[0] as i32 || ls.current == set[1] as i32 {
         save_and_next(ls, state)?;
         Ok(true)
@@ -1041,7 +1073,11 @@ fn read_numeral(
     //        lexerror(ls, "malformed number", TK_FLT);
     // macros.tsv: luaZ_buffer → buf.as_mut_slice()
     let buf = ls.buff.as_slice();
-    let num_bytes = if buf.last() == Some(&0) { &buf[..buf.len() - 1] } else { buf };
+    let num_bytes = if buf.last() == Some(&0) {
+        &buf[..buf.len() - 1]
+    } else {
+        buf
+    };
     let mut obj = lua_types::LuaValue::Nil;
     if lua_vm::object::str2num(num_bytes, &mut obj) == 0 {
         return Err(lex_error(ls, b"malformed number", TK_FLT));
@@ -1092,13 +1128,13 @@ fn read_numeral(
 /// //          : 0;
 /// // }
 /// ```
-fn skip_sep(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<usize, LuaError> {
+fn skip_sep(state: &mut LuaState, ls: &mut LexState) -> Result<usize, LuaError> {
     let mut count: usize = 0;
     let s = ls.current;
-    debug_assert!(s == b'[' as i32 || s == b']' as i32, "skip_sep: not at bracket");
+    debug_assert!(
+        s == b'[' as i32 || s == b']' as i32,
+        "skip_sep: not at bracket"
+    );
 
     save_and_next(ls, state)?;
 
@@ -1271,12 +1307,14 @@ fn esc_check(
 /// //   return luaO_hexavalue(ls->current);
 /// // }
 /// ```
-fn get_hexa(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<u32, LuaError> {
+fn get_hexa(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     save_and_next(ls, state)?;
-    esc_check(state, ls, is_xdigit(ls.current), b"hexadecimal digit expected")?;
+    esc_check(
+        state,
+        ls,
+        is_xdigit(ls.current),
+        b"hexadecimal digit expected",
+    )?;
     // TODO(port): call lua_vm::object::hex_value in Phase B
     Ok(hex_value_stub(ls.current))
 }
@@ -1292,10 +1330,7 @@ fn get_hexa(
 /// //   return r;
 /// // }
 /// ```
-fn read_hex_esc(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<u32, LuaError> {
+fn read_hex_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let r = get_hexa(state, ls)?;
     let r = (r << 4) + get_hexa(state, ls)?;
     // macros.tsv: luaZ_buffremove → buf.truncate_by(i)
@@ -1324,10 +1359,7 @@ fn read_hex_esc(
 /// //   return r;
 /// // }
 /// ```
-fn read_utf8_esc(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<u32, LuaError> {
+fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let mut i: usize = 4;
 
     save_and_next(ls, state)?;
@@ -1359,7 +1391,12 @@ fn read_utf8_esc(
             r = (r << 4) + hex_value_stub(ls.current);
             esc_check(state, ls, r <= 0x10_FFFF, b"UTF-8 value too large")?;
         } else {
-            esc_check(state, ls, r <= (0x7FFF_FFFFu32 >> 4), b"UTF-8 value too large")?;
+            esc_check(
+                state,
+                ls,
+                r <= (0x7FFF_FFFFu32 >> 4),
+                b"UTF-8 value too large",
+            )?;
             // TODO(port): lua_vm::object::hex_value in Phase B
             r = (r << 4) + hex_value_stub(ls.current);
         }
@@ -1385,10 +1422,7 @@ fn read_utf8_esc(
 /// //     save(ls, buff[UTF8BUFFSZ - n]);
 /// // }
 /// ```
-fn utf8_esc(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<(), LuaError> {
+fn utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
     let codepoint = read_utf8_esc(state, ls)?;
 
     // macros.tsv: UTF8BUFFSZ → const UTF8_BUF_SZ: usize = 8
@@ -1418,10 +1452,7 @@ fn utf8_esc(
 /// //   return r;
 /// // }
 /// ```
-fn read_dec_esc(
-    state: &mut LuaState,
-    ls: &mut LexState,
-) -> Result<u32, LuaError> {
+fn read_dec_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let mut i: usize = 0;
     let mut r: u32 = 0;
 
@@ -1434,10 +1465,7 @@ fn read_dec_esc(
     // UCHAR_MAX = 255 = u8::MAX. Lua 5.1 spells this `escape sequence too
     // large` (the `decimal escape too large` wording is 5.2+). Verified against
     // lua5.1.5; see specs/followup/5.1-roster-syntax.md §2.
-    let too_large_msg: &[u8] = if matches!(
-        state.global().lua_version,
-        lua_types::LuaVersion::V51
-    ) {
+    let too_large_msg: &[u8] = if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
         b"escape sequence too large"
     } else {
         b"decimal escape too large"
@@ -1491,10 +1519,7 @@ fn read_string(
                 // `"\z"` → `z`, `"\q"` → `q`). Decimal escapes (`\ddd`) and the
                 // standard letter/quote/newline escapes still work. Verified
                 // against lua5.1.5; see specs/followup/5.1-roster-syntax.md §2.
-                let is_v51 = matches!(
-                    state.global().lua_version,
-                    lua_types::LuaVersion::V51
-                );
+                let is_v51 = matches!(state.global().lua_version, lua_types::LuaVersion::V51);
 
                 // Inner switch on the escape character
                 let esc = match ls.current {
@@ -1538,11 +1563,7 @@ fn read_string(
                         EscapeResult::ReadSave(c)
                     }
                     _ => {
-                        esc_check(
-                            state, ls,
-                            is_digit(ls.current),
-                            b"invalid escape sequence",
-                        )?;
+                        esc_check(state, ls, is_digit(ls.current), b"invalid escape sequence")?;
                         let decoded = read_dec_esc(state, ls)?;
                         EscapeResult::OnlySave(decoded as i32)
                     }
@@ -1725,10 +1746,7 @@ fn llex(
                 // 5.2. Under V51 the second `:` is left for the parser, which
                 // reports `unexpected symbol near ':'`. See
                 // specs/followup/5.1-roster-syntax.md §2.
-                let is_v51 = matches!(
-                    state.global().lua_version,
-                    lua_types::LuaVersion::V51
-                );
+                let is_v51 = matches!(state.global().lua_version, lua_types::LuaVersion::V51);
                 if !is_v51 && check_next1(ls, b':' as i32) {
                     return Ok(TK_DBCOLON);
                 }
@@ -1797,10 +1815,7 @@ fn llex(
                         // the incidental `'=' expected near 'done'` the oracle
                         // reports. See specs/followup/5.1-roster-syntax.md §2.
                         if tk == TK_GOTO
-                            && matches!(
-                                state.global().lua_version,
-                                lua_types::LuaVersion::V51
-                            )
+                            && matches!(state.global().lua_version, lua_types::LuaVersion::V51)
                         {
                             return Ok(TK_NAME);
                         }
@@ -1832,10 +1847,7 @@ fn llex(
 // method (from lua_vm::string::new_lstr wired in Phase B).
 // TODO_ARCH(phase-b-reconcile): canonical LuaString is constructed via
 // from_bytes; once LuaState::intern_str is wired, route through there instead.
-fn intern_str_stub(
-    state: &mut LuaState,
-    bytes: &[u8],
-) -> Result<GcRef<LuaString>, LuaError> {
+fn intern_str_stub(state: &mut LuaState, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
     state.intern_str(bytes)
 }
 

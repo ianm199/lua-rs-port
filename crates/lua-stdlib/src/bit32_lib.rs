@@ -29,11 +29,7 @@ fn push_u32(state: &mut LuaState, v: u32) {
 }
 
 /// Fold a variadic AND/OR/XOR over every argument, starting from `init`.
-fn fold(
-    state: &mut LuaState,
-    init: u32,
-    op: fn(u32, u32) -> u32,
-) -> Result<usize, LuaError> {
+fn fold(state: &mut LuaState, init: u32, op: fn(u32, u32) -> u32) -> Result<usize, LuaError> {
     let top = state.get_top();
     let mut acc = init;
     for i in 1..=top {

@@ -2,11 +2,12 @@
 //!
 //! Ported from `reference/lua-5.4.7/src/lobject.c` (602 lines, ~20 functions).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::state::LuaState;
-#[allow(unused_imports)] use crate::prelude::*;
-use lua_types::{LuaValue, GcRef, LuaString, StackIdx};
-use lua_types::error::LuaError;
 use lua_types::arith::ArithOp;
+use lua_types::error::LuaError;
+use lua_types::{GcRef, LuaString, LuaValue, StackIdx};
 
 // ──────────────────────────────────────────────────────────────────────────
 // Module-level constants
@@ -47,14 +48,15 @@ const POS: &[u8] = b"\"]";
 ///
 pub fn ceil_log2(x: u32) -> i32 {
     static LOG_2: [u8; 256] = [
-        0,1,2,2,3,3,3,3,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
-        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
-        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
     ];
     let mut l: i32 = 0;
     let mut x = x.wrapping_sub(1);
@@ -136,14 +138,15 @@ pub fn raw_arith(
 ) -> Result<bool, LuaError> {
     match op {
         // case LUA_OPSHL: case LUA_OPSHR: case LUA_OPBNOT: — integer-only ops
-        ArithOp::Band | ArithOp::Bor | ArithOp::Bxor
-        | ArithOp::Shl | ArithOp::Shr | ArithOp::Bnot => {
+        ArithOp::Band
+        | ArithOp::Bor
+        | ArithOp::Bxor
+        | ArithOp::Shl
+        | ArithOp::Shr
+        | ArithOp::Bnot => {
             //        setivalue(res, intarith(L, op, i1, i2));  return 1; }
             //    else return 0;
-            if let (Some(i1), Some(i2)) = (
-                p1.to_integer_no_strconv(),
-                p2.to_integer_no_strconv(),
-            ) {
+            if let (Some(i1), Some(i2)) = (p1.to_integer_no_strconv(), p2.to_integer_no_strconv()) {
                 *res = LuaValue::Int(int_arith(state, op, i1, i2)?);
                 Ok(true)
             } else {
@@ -154,10 +157,7 @@ pub fn raw_arith(
         ArithOp::Div | ArithOp::Pow => {
             //        setfltvalue(res, numarith(L, op, n1, n2));  return 1; }
             //    else return 0;
-            if let (Some(n1), Some(n2)) = (
-                p1.to_number_no_strconv(),
-                p2.to_number_no_strconv(),
-            ) {
+            if let (Some(n1), Some(n2)) = (p1.to_number_no_strconv(), p2.to_number_no_strconv()) {
                 *res = LuaValue::Float(float_arith(state, op, n1, n2)?);
                 Ok(true)
             } else {
@@ -171,10 +171,7 @@ pub fn raw_arith(
                 *res = LuaValue::Int(int_arith(state, op, *i1, *i2)?);
                 return Ok(true);
             }
-            if let (Some(n1), Some(n2)) = (
-                p1.to_number_no_strconv(),
-                p2.to_number_no_strconv(),
-            ) {
+            if let (Some(n1), Some(n2)) = (p1.to_number_no_strconv(), p2.to_number_no_strconv()) {
                 *res = LuaValue::Float(float_arith(state, op, n1, n2)?);
                 Ok(true)
             } else {
@@ -209,7 +206,8 @@ pub fn arith(
     } else {
         let _ = (p1, p2);
         return Err(LuaError::runtime(format_args!(
-            "arithmetic metamethod dispatch not yet implemented for opcode {:?}", op
+            "arithmetic metamethod dispatch not yet implemented for opcode {:?}",
+            op
         )));
     }
     Ok(())
@@ -381,9 +379,9 @@ fn str2dloc(s: &[u8], mode: u8) -> Option<(f64, usize)> {
 ///
 fn str2d(s: &[u8]) -> Option<(f64, usize)> {
     //    int mode = pmode ? ltolower(cast_uchar(*pmode)) : 0;
-    let pmode = s.iter().position(|&b| {
-        b == b'.' || b == b'x' || b == b'X' || b == b'n' || b == b'N'
-    });
+    let pmode = s
+        .iter()
+        .position(|&b| b == b'.' || b == b'x' || b == b'X' || b == b'n' || b == b'N');
     let mode = pmode.map(|i| s[i].to_ascii_lowercase()).unwrap_or(0);
 
     if mode == b'n' {
@@ -449,7 +447,11 @@ fn str2int(s: &[u8]) -> Option<i64> {
     if empty || idx != s.len() {
         return None;
     }
-    let result = if neg { (0u64).wrapping_sub(a) as i64 } else { a as i64 };
+    let result = if neg {
+        (0u64).wrapping_sub(a) as i64
+    } else {
+        a as i64
+    };
     Some(result)
 }
 
@@ -521,10 +523,18 @@ fn fmt_g(f: f64, precision: i32) -> Vec<u8> {
         return b"nan".to_vec();
     }
     if f.is_infinite() {
-        return if f > 0.0 { b"inf".to_vec() } else { b"-inf".to_vec() };
+        return if f > 0.0 {
+            b"inf".to_vec()
+        } else {
+            b"-inf".to_vec()
+        };
     }
     if f == 0.0 {
-        return if f.is_sign_negative() { b"-0".to_vec() } else { b"0".to_vec() };
+        return if f.is_sign_negative() {
+            b"-0".to_vec()
+        } else {
+            b"0".to_vec()
+        };
     }
 
     let abs = f.abs();
@@ -533,9 +543,13 @@ fn fmt_g(f: f64, precision: i32) -> Vec<u8> {
     let s = if exp < -4 || exp >= precision {
         let mantissa_decimals = (precision - 1) as usize;
         let raw = format!("{:.*e}", mantissa_decimals, f);
-        let e_idx = raw.find('e').expect("Rust scientific format always contains 'e'");
+        let e_idx = raw
+            .find('e')
+            .expect("Rust scientific format always contains 'e'");
         let mantissa = strip_fixed_trailing_zeros(&raw[..e_idx]);
-        let exp_num: i32 = raw[e_idx + 1..].parse().expect("Rust formats integer exponents");
+        let exp_num: i32 = raw[e_idx + 1..]
+            .parse()
+            .expect("Rust formats integer exponents");
         let sign = if exp_num < 0 { '-' } else { '+' };
         let abs_exp = exp_num.abs();
         if abs_exp < 10 {

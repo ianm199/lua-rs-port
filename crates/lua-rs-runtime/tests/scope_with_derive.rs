@@ -153,7 +153,8 @@ fn macro_mut_ref_method_becomes_delegate() {
     lua.scope(|s| {
         let ud = s.create_userdata_ref_mut(&lua, &mut rig)?;
         lua.globals().set("rig", &ud)?;
-        lua.load("local k = rig:knob(); k:turn(5); k:turn(2)").exec()
+        lua.load("local k = rig:knob(); k:turn(5); k:turn(2)")
+            .exec()
     })
     .unwrap();
     assert_eq!(rig.knob.setting, 7);

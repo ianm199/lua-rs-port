@@ -22,7 +22,11 @@ fn run(version: LuaVersion, code: &str) -> Result<String, String> {
     // Lua 5.1's `load` takes a reader function only — string loading is
     // `loadstring`'s job (a V51 roster gate). 5.2+ `load` accepts a string. Pick
     // the loader the running version exposes for a string chunk.
-    let loader = if version == LuaVersion::V51 { "loadstring" } else { "load" };
+    let loader = if version == LuaVersion::V51 {
+        "loadstring"
+    } else {
+        "load"
+    };
     let wrapper = format!(
         "local f, e = {loader}([==[\n{code}\n]==])\n\
          if not f then return 'E\\0' .. e end\n\
@@ -56,7 +60,10 @@ fn eq(version: LuaVersion, code: &str, expected: &str) {
 fn err_contains(version: LuaVersion, code: &str, needle: &str) {
     match run(version, code) {
         Ok(got) => panic!("code `{code}` returned `{got}`, expected error containing `{needle}`"),
-        Err(e) => assert!(e.contains(needle), "code `{code}` error `{e}` lacked `{needle}`"),
+        Err(e) => assert!(
+            e.contains(needle),
+            "code `{code}` error `{e}` lacked `{needle}`"
+        ),
     }
 }
 
@@ -79,12 +86,18 @@ fn v53_v55_env_relational_index_returns_nil() {
         // _ENV (upvalue 0) indexed by a folded relational constant.
         eq(v, "return _ENV[1 < 2]", "nil");
         // A captured local upvalue indexed by the same.
-        eq(v, "local up = {}; return (function() return up[1 < 2] end)()", "nil");
+        eq(
+            v,
+            "local up = {}; return (function() return up[1 < 2] end)()",
+            "nil",
+        );
         // Non-folded comparison (two locals) through an upvalue.
-        eq(v,
+        eq(
+            v,
             "local x, y = 1, 1; local up = {}; \
              return (function() return up[x == y] end)()",
-            "nil");
+            "nil",
+        );
         // Store side: `_ENV[1<2] = v` must index correctly too.
         eq(v, "_ENV[1 < 2] = 7; return _ENV[true]", "7");
     }
@@ -94,7 +107,11 @@ fn v53_v55_env_relational_index_returns_nil() {
 fn v54_env_relational_index_errors_like_reference() {
     // Guard the deliberate 5.4-only divergence: the reference 5.4 binary raises
     // on this exact construct; our port must not "improve" on it.
-    err_contains(LuaVersion::V54, "return _ENV[1 < 2]", "index a number value");
+    err_contains(
+        LuaVersion::V54,
+        "return _ENV[1 < 2]",
+        "index a number value",
+    );
     err_contains(
         LuaVersion::V54,
         "local up = {}; return (function() return up[1 < 2] end)()",
@@ -126,7 +143,11 @@ fn v55_global_enforcement() {
     // Declared globals read/write.
     eq(LuaVersion::V55, "global a; a = 5; return a", "5");
     // After an explicit decl, an undeclared free name is a compile error.
-    err_contains(LuaVersion::V55, "global a; a = 1; zz = 2", "variable 'zz' not declared");
+    err_contains(
+        LuaVersion::V55,
+        "global a; a = 1; zz = 2",
+        "variable 'zz' not declared",
+    );
     err_contains(
         LuaVersion::V55,
         "global f; local function g() return nope end return g()",
@@ -139,14 +160,22 @@ fn v55_global_block_scoped() {
     // F1: a `global` decl is confined to its block; strict mode ends with it
     // (using builtins / free names after the block would error if it leaked).
     eq(LuaVersion::V55, "do global Y; Y = 1 end; return Y", "1");
-    eq(LuaVersion::V55, "if true then global Z; Z = 1 end; w = 2; return w", "2");
+    eq(
+        LuaVersion::V55,
+        "if true then global Z; Z = 1 end; w = 2; return w",
+        "2",
+    );
 }
 
 #[test]
 fn v55_global_initializer_stored() {
     // F2: `global x = expr` actually assigns (was previously dropped).
     eq(LuaVersion::V55, "do global x = 7 end; return x", "7");
-    eq(LuaVersion::V55, "do global a, b = 10, 20 end; return a + b", "30");
+    eq(
+        LuaVersion::V55,
+        "do global a, b = 10, 20 end; return a + b",
+        "30",
+    );
 }
 
 #[test]
@@ -189,22 +218,38 @@ fn v55_global_already_defined_guard() {
 
     // Nil'd out first → the re-init is allowed (proves it is a live-value
     // check, not compile-time redeclaration tracking).
-    eq(LuaVersion::V55, "global x = 1; x = nil; global x = 2; return x", "2");
+    eq(
+        LuaVersion::V55,
+        "global x = 1; x = nil; global x = 2; return x",
+        "2",
+    );
     // A no-initializer re-declaration never checks.
     eq(LuaVersion::V55, "global x; global x; return x", "nil");
     // Plain assignments after the first init never check.
     eq(LuaVersion::V55, "global x = 1; x = 2; x = 3; return x", "3");
     // The RHS is evaluated before the guard fires (upstream order); the value
     // here keeps the global nil, so the second init is fine.
-    eq(LuaVersion::V55, "global x = nil; global x = 2; return x", "2");
+    eq(
+        LuaVersion::V55,
+        "global x = nil; global x = 2; return x",
+        "2",
+    );
 }
 
 #[test]
 fn v55_global_guard_inert_pre_55() {
     // `global` is a plain identifier on 5.4/5.3, so none of the guard paths
     // exist there — repeated assignment to a `global`-named variable is fine.
-    eq(LuaVersion::V54, "global = 1; global = 2; return global", "2");
-    eq(LuaVersion::V53, "global = 1; global = 2; return global", "2");
+    eq(
+        LuaVersion::V54,
+        "global = 1; global = 2; return global",
+        "2",
+    );
+    eq(
+        LuaVersion::V53,
+        "global = 1; global = 2; return global",
+        "2",
+    );
 }
 
 #[test]
@@ -213,6 +258,198 @@ fn v55_const_global_rejects_assignment() {
         LuaVersion::V55,
         "global x <const> = 1; x = 2",
         "attempt to assign to const variable 'x'",
+    );
+}
+
+#[test]
+fn v55_plain_global_redeclare_clears_prior_const() {
+    eq(
+        LuaVersion::V55,
+        "global<const> a, b, c = 10, 20, 30; \
+         _ENV.a = nil; _ENV.b = nil; _ENV.c = nil; \
+         global table; \
+         global a, b, c, d = table.unpack{1, 2, 3, 6, 5}; \
+         a = nil; b = nil; c = nil; d = nil; \
+         return _ENV.a == nil and _ENV.b == nil and _ENV.c == nil and _ENV.d == nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_goto_scope_messages_for_locals_and_global_star() {
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[ goto l1; local aa ::l1:: print(3) ]]); \
+         return f == nil and msg:find([[scope of 'aa']], 1, true) ~= nil",
+        "true",
+    );
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[ goto l2; global *; ::l2:: print(3) ]]); \
+         return f == nil and msg:find([[scope of '*']], 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_global_declaration_shadows_outer_local() {
+    eq(
+        LuaVersion::V55,
+        "local X = 10; do global X; X = 20 end; return X == 10 and _ENV.X == 20",
+        "true",
+    );
+    eq(
+        LuaVersion::V55,
+        "local a, b = 100, 200; do global a, b = a, b end; \
+         local ok = _ENV.a == 100 and _ENV.b == 200; \
+         _ENV.a = nil; _ENV.b = nil; return ok",
+        "true",
+    );
+}
+
+#[test]
+fn v55_global_env_declaration_blocks_global_access() {
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[global _ENV, a; a = 10]]); \
+         return f == nil and msg:find([[_ENV is global when accessing variable 'a']], 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_const_global_function_assignment_reports_function_line() {
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[\
+          global foo <const>;\n\
+          function foo (x)\n\
+            return\n\
+          end\n\
+        ]]); \
+        return f == nil and msg:find([[:2: attempt to assign to const variable 'foo']], 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_const_global_wildcard_marks_free_assignments_readonly() {
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[global<const> *; print(Y); Y = 1]]); \
+         return f == nil and msg:find([[assign to const variable 'Y']], 1, true) ~= nil",
+        "true",
+    );
+    eq(
+        LuaVersion::V55,
+        "global *; Y = 10; \
+         global<const> *; local y = Y; \
+         global *; Y = y + Y; \
+         local ok = Y == 20; Y = nil; return ok",
+        "true",
+    );
+    eq(
+        LuaVersion::V55,
+        "local f, msg = load([[global<const> *; _G = nil]]); \
+         global<const> *; \
+         local old = _G.deep; _G.deep = 3; \
+         local ok = f == nil and msg:find([[assign to const variable '_G']], 1, true) ~= nil and _G.deep == 3; \
+         _G.deep = old; return ok",
+        "true",
+    );
+}
+
+#[test]
+fn v55_load_rejects_fixed_buffer_mode_from_lua() {
+    err_contains(LuaVersion::V55, "return load('', '', 'B')", "invalid mode");
+}
+
+#[test]
+fn v55_coroutine_close_main_thread_message() {
+    eq(
+        LuaVersion::V55,
+        "local main = coroutine.running(); \
+         local ok, msg = pcall(coroutine.close, main); \
+         return not ok and msg:find('main', 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_coroutine_close_self_unwinds_to_resume_base() {
+    eq(
+        LuaVersion::V55,
+        "local function func2close(f) return setmetatable({}, {__close = f}) end; \
+         local function new(what) \
+           return coroutine.create(function() \
+             local var <close> = func2close(function() \
+               if what == 'yield' then coroutine.yield() \
+               elseif what == 'error' then error(200) end; \
+             end); \
+             string.gsub('a', 'a', function() \
+               assert(not coroutine.isyieldable()); \
+               pcall(pcall, function() coroutine.close(); os.exit(false) end); \
+             end); \
+           end); \
+         end; \
+         local ret = new('ret'); local ok1, msg1 = coroutine.resume(ret); \
+         local err = new('error'); local ok2, msg2 = coroutine.resume(err); \
+         local yld = new('yield'); local ok3, msg3 = coroutine.resume(yld); \
+         return ok1 and msg1 == nil and not ok2 and msg2 == 200 and \
+                not ok3 and msg3:find('attempt to yield', 1, true) ~= nil and \
+                coroutine.status(ret) == 'dead' and coroutine.status(err) == 'dead' and \
+                coroutine.status(yld) == 'dead'",
+        "true",
+    );
+}
+
+#[test]
+fn v55_debug_getinfo_t_reports_call_metamethod_depth() {
+    eq(
+        LuaVersion::V55,
+        "local debug = require 'debug'; \
+         local function u(...) \
+           local n = debug.getinfo(1, 't').extraargs; \
+           if select('#', ...) ~= n then return false end; \
+           return n; \
+         end; \
+         for i = 0, 4 do \
+           if u() ~= i then return false end; \
+           u = setmetatable({}, {__call = u}); \
+         end; \
+         return true",
+        "true",
+    );
+}
+
+#[test]
+fn v55_string_dump_uses_55_header() {
+    eq(
+        LuaVersion::V55,
+        "local headformat = 'c4BBc6BiBI4BjBn'; \
+         local header = {'\\27Lua', 0x55, 0, '\\x19\\x93\\r\\n\\x1a\\n', \
+                         string.packsize('i'), -0x5678, 4, 0x12345678, \
+                         string.packsize('j'), -0x5678, string.packsize('n'), -370.5}; \
+         local c = string.dump(function () return 1 end); \
+         assert(assert(load(c))() == 1); \
+         local t = {string.unpack(headformat, c)}; \
+         for i = 1, #header do if t[i] ~= header[i] then return false end end; \
+         return true",
+        "true",
+    );
+}
+
+#[test]
+fn v55_explicit_return_limit_is_254_values() {
+    eq(
+        LuaVersion::V55,
+        "local code = 'return 10' .. string.rep(',10', 253); \
+         local res = {assert(load(code))()}; \
+         if #res ~= 254 or res[254] ~= 10 then return false end; \
+         code = code .. ',10'; \
+         local f, msg = load(code); \
+         return f == nil and msg:find('too many returns', 1, true) ~= nil",
+        "true",
     );
 }
 
@@ -228,7 +465,11 @@ fn v55_global_prefixed_const_namelist() {
     // 5.5 `global <const> a, b` — a leading attribute applies to the whole name
     // list (it is NOT tied to `*`). Each name may still carry its own attribute.
     // Captured from lua5.5.0.
-    eq(LuaVersion::V55, "global<const> a, b = 1, 2; return a + b", "3");
+    eq(
+        LuaVersion::V55,
+        "global<const> a, b = 1, 2; return a + b",
+        "3",
+    );
     eq(LuaVersion::V55, "global <const> a = 5; return a", "5");
     err_contains(
         LuaVersion::V55,
@@ -245,6 +486,20 @@ fn v55_global_function_form() {
         LuaVersion::V55,
         "global function f() return 7 end; return f()",
         "7",
+    );
+    eq(
+        LuaVersion::V55,
+        "global<const> *; local ok; local T = false; do \
+           global T<const>; \
+           local foo = 20; \
+           do global function foo (x) \
+             if x == 0 then return 1 else return 2 * foo(x - 1) end \
+           end; \
+           ok = foo == _ENV.foo and foo(4) == 16 and _ENV.foo(4) == 16 \
+         end; \
+         end; \
+         return ok",
+        "true",
     );
     eq(
         LuaVersion::V55,
@@ -275,7 +530,11 @@ fn v55_local_prefixed_attribute() {
     // 5.5 allows a PREFIXED attribute on a local: `local <const> a, b`.
     // 5.4 rejects the prefix form (attribute only postfix). Captured from
     // lua5.5.0 / lua5.4.7.
-    eq(LuaVersion::V55, "local <const> a, b = 1, 2; return a + b", "3");
+    eq(
+        LuaVersion::V55,
+        "local <const> a, b = 1, 2; return a + b",
+        "3",
+    );
     eq(LuaVersion::V55, "local<const> x = 5; return x", "5");
     err_contains(
         LuaVersion::V55,
@@ -290,8 +549,16 @@ fn v55_local_prefixed_attribute() {
 fn v55_attribute_message_text() {
     // Div.3 / Div.4 message text, captured from lua5.5.0 (and the local form is
     // shared with 5.4). Location prefix present, no spurious `near`.
-    err_contains(LuaVersion::V55, "local x <foo> = 1", "unknown attribute 'foo'");
-    err_contains(LuaVersion::V54, "local x <foo> = 1", "unknown attribute 'foo'");
+    err_contains(
+        LuaVersion::V55,
+        "local x <foo> = 1",
+        "unknown attribute 'foo'",
+    );
+    err_contains(
+        LuaVersion::V54,
+        "local x <foo> = 1",
+        "unknown attribute 'foo'",
+    );
     err_contains(
         LuaVersion::V55,
         "global x <foo> = 1",
@@ -307,15 +574,27 @@ fn v55_attribute_message_text() {
 #[test]
 fn v55_for_control_var_readonly() {
     // F3: numeric and first-generic for vars are read-only.
-    err_contains(LuaVersion::V55, "for i = 1, 3 do i = 10 end", "attempt to assign to const variable 'i'");
+    err_contains(
+        LuaVersion::V55,
+        "for i = 1, 3 do i = 10 end",
+        "attempt to assign to const variable 'i'",
+    );
     err_contains(
         LuaVersion::V55,
         "for k, v in pairs({1, 2}) do k = 10 end",
         "attempt to assign to const variable 'k'",
     );
     // The second generic var stays assignable; reads are fine.
-    eq(LuaVersion::V55, "local s = 0; for i = 1, 3 do s = s + i end; return s", "6");
-    eq(LuaVersion::V55, "for k, v in pairs({7}) do v = 9 end; return 'ok'", "ok");
+    eq(
+        LuaVersion::V55,
+        "local s = 0; for i = 1, 3 do s = s + i end; return s",
+        "6",
+    );
+    eq(
+        LuaVersion::V55,
+        "for k, v in pairs({7}) do v = 9 end; return 'ok'",
+        "ok",
+    );
 }
 
 #[test]
@@ -342,18 +621,50 @@ fn v55_table_create_present() {
 /// Div.2a).
 #[test]
 fn v55_named_varargs() {
-    eq(LuaVersion::V55, "local function f(...t) return #t end return f(1,2,3)", "3");
-    eq(LuaVersion::V55, "local function f(...t) return t.n end return f(1,nil,3)", "3");
-    eq(LuaVersion::V55, "local function f(...t) return t.n end return f()", "0");
-    eq(LuaVersion::V55, "local function f(a,...t) return t[2] end return f(0,10,20)", "20");
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) return #t end return f(1,2,3)",
+        "3",
+    );
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) return t.n end return f(1,nil,3)",
+        "3",
+    );
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) return t.n end return f()",
+        "0",
+    );
+    eq(
+        LuaVersion::V55,
+        "local function f(a,...t) return t[2] end return f(0,10,20)",
+        "20",
+    );
     // `...` is still usable alongside the named form.
-    eq(LuaVersion::V55, "local function f(...t) return ... end return select('#', f(1,2,3))", "3");
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) return ... end return select('#', f(1,2,3))",
+        "3",
+    );
     // Fresh table per call.
-    eq(LuaVersion::V55, "local function f(...t) return t end return f(1)==f(1)", "false");
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) return t end return f(1)==f(1)",
+        "false",
+    );
     // The table is mutable.
-    eq(LuaVersion::V55, "local function f(...t) t[1]=99; return t[1] end return f(1,2)", "99");
+    eq(
+        LuaVersion::V55,
+        "local function f(...t) t[1]=99; return t[1] end return f(1,2)",
+        "99",
+    );
     // No attribute allowed on `...t`.
-    err_contains(LuaVersion::V55, "local function f(...t <const>) return t end", "')' expected");
+    err_contains(
+        LuaVersion::V55,
+        "local function f(...t <const>) return t end",
+        "')' expected",
+    );
 }
 
 /// Named-vararg syntax is 5.5-only; on 5.4/5.3 a name after `...` stays a parse
@@ -361,7 +672,11 @@ fn v55_named_varargs() {
 #[test]
 fn named_varargs_rejected_pre_55() {
     for v in [LuaVersion::V53, LuaVersion::V54] {
-        err_contains(v, "local function f(...t) return t end", "')' expected near 't'");
+        err_contains(
+            v,
+            "local function f(...t) return t end",
+            "')' expected near 't'",
+        );
     }
 }
 
@@ -403,12 +718,32 @@ fn v53_bitwise_string_coercion() {
     eq(LuaVersion::V53, r#"return " 0x10 " & 255"#, "16");
     eq(LuaVersion::V53, r#"return "3.0" & 1"#, "1");
     eq(LuaVersion::V53, r#"return "0xffffffffffffffff" | 0"#, "-1");
-    eq(LuaVersion::V53, r#"return "0xfffffffffffffffe" & "-1""#, "-2");
-    eq(LuaVersion::V53, r#"return "   \n  -45  \t " >> "  -2  ""#, "-180");
+    eq(
+        LuaVersion::V53,
+        r#"return "0xfffffffffffffffe" & "-1""#,
+        "-2",
+    );
+    eq(
+        LuaVersion::V53,
+        r#"return "   \n  -45  \t " >> "  -2  ""#,
+        "-180",
+    );
     // Boundaries that MUST still error on 5.3:
-    err_contains(LuaVersion::V53, r#"return "3.5" & 1"#, "no integer representation");
-    err_contains(LuaVersion::V53, r#"return "0xffffffffffffffff.0" | 0"#, "no integer representation");
-    err_contains(LuaVersion::V53, r#"return "abc" & 1"#, "perform bitwise operation on a string value");
+    err_contains(
+        LuaVersion::V53,
+        r#"return "3.5" & 1"#,
+        "no integer representation",
+    );
+    err_contains(
+        LuaVersion::V53,
+        r#"return "0xffffffffffffffff.0" | 0"#,
+        "no integer representation",
+    );
+    err_contains(
+        LuaVersion::V53,
+        r#"return "abc" & 1"#,
+        "perform bitwise operation on a string value",
+    );
 }
 
 /// Cross-version non-regression: 5.4/5.5 do NOT coerce strings in bitwise ops
@@ -416,9 +751,21 @@ fn v53_bitwise_string_coercion() {
 #[test]
 fn v54_v55_bitwise_no_string_coercion() {
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, r#"return "3" & 5"#, "perform bitwise operation on a string value");
-        err_contains(v, r#"return ~"5""#, "perform bitwise operation on a string value");
-        err_contains(v, r#"return "8" >> "1""#, "perform bitwise operation on a string value");
+        err_contains(
+            v,
+            r#"return "3" & 5"#,
+            "perform bitwise operation on a string value",
+        );
+        err_contains(
+            v,
+            r#"return ~"5""#,
+            "perform bitwise operation on a string value",
+        );
+        err_contains(
+            v,
+            r#"return "8" >> "1""#,
+            "perform bitwise operation on a string value",
+        );
     }
 }
 
@@ -447,7 +794,11 @@ fn v53_arith_string_error_wording() {
     );
     // Varinfo comes from the VM call site (local/global/constant).
     err_contains(LuaVersion::V53, r#"local x="a"; return x+1"#, "(local 'x')");
-    err_contains(LuaVersion::V53, r#"aaa="z"; return aaa+1"#, "(global 'aaa')");
+    err_contains(
+        LuaVersion::V53,
+        r#"aaa="z"; return aaa+1"#,
+        "(global 'aaa')",
+    );
     // A coercible string paired with a genuine non-number blames the
     // non-number operand, matching `luaG_opinterror` (errors.lua:102).
     err_contains(
@@ -494,8 +845,16 @@ fn v53_arith_string_error_wording() {
 #[test]
 fn v54_v55_arith_string_wording_unchanged() {
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, r#"return "abc" + 1"#, "attempt to add a 'string' with a 'number'");
-        err_contains(v, r#"aaa="2"; b=nil; return aaa*b"#, "attempt to mul a 'string' with a 'nil'");
+        err_contains(
+            v,
+            r#"return "abc" + 1"#,
+            "attempt to add a 'string' with a 'number'",
+        );
+        err_contains(
+            v,
+            r#"aaa="2"; b=nil; return aaa*b"#,
+            "attempt to mul a 'string' with a 'nil'",
+        );
     }
 }
 
@@ -504,9 +863,21 @@ fn v54_v55_arith_string_wording_unchanged() {
 /// <type>)`. Captured from lua5.3.6 / lua5.4.7 / lua5.5.0.
 #[test]
 fn v53_for_loop_error_wording() {
-    err_contains(LuaVersion::V53, "for i=1,'a' do end", "'for' limit must be a number");
-    err_contains(LuaVersion::V53, "for i='a',10 do end", "'for' initial value must be a number");
-    err_contains(LuaVersion::V53, "for i=1,10,'a' do end", "'for' step must be a number");
+    err_contains(
+        LuaVersion::V53,
+        "for i=1,'a' do end",
+        "'for' limit must be a number",
+    );
+    err_contains(
+        LuaVersion::V53,
+        "for i='a',10 do end",
+        "'for' initial value must be a number",
+    );
+    err_contains(
+        LuaVersion::V53,
+        "for i=1,10,'a' do end",
+        "'for' step must be a number",
+    );
 }
 
 /// Cross-version non-regression: 5.4/5.5 keep the `bad 'for' <what> (number
@@ -514,9 +885,21 @@ fn v53_for_loop_error_wording() {
 #[test]
 fn v54_v55_for_loop_error_wording_unchanged() {
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, "for i=1,'a' do end", "bad 'for' limit (number expected, got string)");
-        err_contains(v, "for i='a',10 do end", "bad 'for' initial value (number expected, got string)");
-        err_contains(v, "for i=1,10,'a' do end", "bad 'for' step (number expected, got string)");
+        err_contains(
+            v,
+            "for i=1,'a' do end",
+            "bad 'for' limit (number expected, got string)",
+        );
+        err_contains(
+            v,
+            "for i='a',10 do end",
+            "bad 'for' initial value (number expected, got string)",
+        );
+        err_contains(
+            v,
+            "for i=1,10,'a' do end",
+            "bad 'for' step (number expected, got string)",
+        );
     }
 }
 
@@ -531,7 +914,11 @@ fn v53_removed_builtins_absent() {
 
 #[test]
 fn v53_rejects_attribute_syntax() {
-    err_contains(LuaVersion::V53, "local x <const> = 1; return x", "unexpected symbol");
+    err_contains(
+        LuaVersion::V53,
+        "local x <const> = 1; return x",
+        "unexpected symbol",
+    );
 }
 
 /// Shared-core item F: `string.unpack` initial-position lower bound.
@@ -567,14 +954,34 @@ fn v54_v55_string_unpack_c0_pos_zero_accepted() {
     for v in [LuaVersion::V54, LuaVersion::V55] {
         // pos=0 is a valid start on 5.4/5.5 (posrelatI maps 0 -> 1). `c0`
         // unpacks an empty string and returns the next position as 2nd result.
-        eq(v, r#"local _, p = string.unpack("c0", "abc", 0); return p"#, "1");
-        eq(v, r#"local _, p = string.unpack("c0", "abc", -4); return p"#, "1");
+        eq(
+            v,
+            r#"local _, p = string.unpack("c0", "abc", 0); return p"#,
+            "1",
+        );
+        eq(
+            v,
+            r#"local _, p = string.unpack("c0", "abc", -4); return p"#,
+            "1",
+        );
     }
     // In-range positions agree across every version (the gate is inert here).
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
-        eq(v, r#"local _, p = string.unpack("c0", "abc", 1); return p"#, "1");
-        eq(v, r#"local _, p = string.unpack("c0", "abc", -3); return p"#, "1");
-        eq(v, r#"local _, p = string.unpack("c0", "abc", 4); return p"#, "4");
+        eq(
+            v,
+            r#"local _, p = string.unpack("c0", "abc", 1); return p"#,
+            "1",
+        );
+        eq(
+            v,
+            r#"local _, p = string.unpack("c0", "abc", -3); return p"#,
+            "1",
+        );
+        eq(
+            v,
+            r#"local _, p = string.unpack("c0", "abc", 4); return p"#,
+            "4",
+        );
     }
 }
 
@@ -589,7 +996,9 @@ fn v54_v55_string_unpack_c0_pos_zero_accepted() {
 #[test]
 fn v53_compat_math_present_and_correct() {
     for v in [LuaVersion::V53, LuaVersion::V54] {
-        for name in ["atan2", "cosh", "sinh", "tanh", "pow", "log10", "frexp", "ldexp"] {
+        for name in [
+            "atan2", "cosh", "sinh", "tanh", "pow", "log10", "frexp", "ldexp",
+        ] {
             eq(v, &format!("return type(math.{name})"), "function");
         }
     }
@@ -610,9 +1019,21 @@ fn v53_compat_math_present_and_correct() {
         // frexp returns (float mantissa, integer exponent).
         eq(v, "local m, e = math.frexp(8.0); return m", "0.5");
         eq(v, "local m, e = math.frexp(8.0); return e", "4");
-        eq(v, "local m, e = math.frexp(8.0); return math.type(m)", "float");
-        eq(v, "local m, e = math.frexp(8.0); return math.type(e)", "integer");
-        eq(v, "local m, e = math.frexp(0.0); return tostring(m) .. ',' .. tostring(e)", "0.0,0");
+        eq(
+            v,
+            "local m, e = math.frexp(8.0); return math.type(m)",
+            "float",
+        );
+        eq(
+            v,
+            "local m, e = math.frexp(8.0); return math.type(e)",
+            "integer",
+        );
+        eq(
+            v,
+            "local m, e = math.frexp(0.0); return tostring(m) .. ',' .. tostring(e)",
+            "0.0,0",
+        );
         // atan2 is the math_atan alias (two-arg form).
         eq(v, "return math.atan2(1, 1) == math.atan(1, 1)", "true");
         eq(v, "return math.atan2(1, 0) == math.atan(1, 0)", "true");
@@ -633,10 +1054,18 @@ fn v55_compat_math_partition() {
         eq(LuaVersion::V55, &format!("return type(math.{name})"), "nil");
     }
     for name in ["frexp", "ldexp"] {
-        eq(LuaVersion::V55, &format!("return type(math.{name})"), "function");
+        eq(
+            LuaVersion::V55,
+            &format!("return type(math.{name})"),
+            "function",
+        );
     }
     eq(LuaVersion::V55, "return math.ldexp(0.5, 3)", "4.0");
-    eq(LuaVersion::V55, "local m, e = math.frexp(8.0); return tostring(m) .. ',' .. tostring(e)", "0.5,4");
+    eq(
+        LuaVersion::V55,
+        "local m, e = math.frexp(8.0); return tostring(m) .. ',' .. tostring(e)",
+        "0.5,4",
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -653,11 +1082,19 @@ fn v54_unchanged() {
     eq(LuaVersion::V54, "return type(coroutine.close)", "function");
     eq(LuaVersion::V54, "return type(bit32)", "nil");
     eq(LuaVersion::V54, "local x <const> = 42; return x", "42");
-    err_contains(LuaVersion::V54, "local x <const> = 1; x = 2", "attempt to assign to const variable 'x'");
+    err_contains(
+        LuaVersion::V54,
+        "local x <const> = 1; x = 2",
+        "attempt to assign to const variable 'x'",
+    );
     // `global` is an ordinary identifier on 5.4.
     eq(LuaVersion::V54, "local global = 8; return global", "8");
     // for-loop var is assignable on 5.4.
-    eq(LuaVersion::V54, "for i = 1, 1 do i = 10 end; return 'ok'", "ok");
+    eq(
+        LuaVersion::V54,
+        "for i = 1, 1 do i = 10 end; return 'ok'",
+        "ok",
+    );
 }
 
 /// #76: math.type / math.tointeger return `nil` (not `false`) on failure.
@@ -741,13 +1178,16 @@ fn issue77_string_find_no_spurious_capture() {
 #[test]
 fn issue78_le_derived_from_lt() {
     // __lt returns false → a<=b == not(b<a) == not(false) == true (5.3/5.4).
-    let only_lt =
-        "local m = {__lt = function() return false end}; \
+    let only_lt = "local m = {__lt = function() return false end}; \
          local a = setmetatable({}, m); local b = setmetatable({}, m); return a <= b";
     eq(LuaVersion::V53, only_lt, "true");
     eq(LuaVersion::V54, only_lt, "true");
     // 5.5 removed the fallback: comparing with no __le raises.
-    err_contains(LuaVersion::V55, only_lt, "attempt to compare two table values");
+    err_contains(
+        LuaVersion::V55,
+        only_lt,
+        "attempt to compare two table values",
+    );
     // >= also routes through __le (with swap) and derives on 5.4.
     eq(
         LuaVersion::V54,
@@ -803,8 +1243,16 @@ fn v_argerror_funcname_value_crossversion() {
     // value. They must now carry both on every affected version.
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
         // collectgarbage invalid option: funcname + offending value.
-        err_contains(v, "return collectgarbage('bogusopt')", "to 'collectgarbage'");
-        err_contains(v, "return collectgarbage('bogusopt')", "invalid option 'bogusopt'");
+        err_contains(
+            v,
+            "return collectgarbage('bogusopt')",
+            "to 'collectgarbage'",
+        );
+        err_contains(
+            v,
+            "return collectgarbage('bogusopt')",
+            "invalid option 'bogusopt'",
+        );
         // tonumber base out of range: funcname.
         err_contains(v, "return tonumber('x', 1)", "to 'tonumber'");
         err_contains(v, "return tonumber('x', 1)", "base out of range");
@@ -816,7 +1264,11 @@ fn v_argerror_funcname_value_crossversion() {
         err_contains(v, "return math.random(5, 2)", "interval is empty");
         // no-integer-representation now routes through the faithful path.
         err_contains(v, "return string.rep('x', 1.5)", "to 'rep'");
-        err_contains(v, "return string.rep('x', 1.5)", "number has no integer representation");
+        err_contains(
+            v,
+            "return string.rep('x', 1.5)",
+            "number has no integer representation",
+        );
     }
 }
 
@@ -831,7 +1283,11 @@ fn v_argerror_pack_unpack_funcname_crossversion() {
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
         // string.unpack: data string too short.
         err_contains(v, r#"return string.unpack("i4", "ab")"#, "to 'unpack'");
-        err_contains(v, r#"return string.unpack("i4", "ab")"#, "data string too short");
+        err_contains(
+            v,
+            r#"return string.unpack("i4", "ab")"#,
+            "data string too short",
+        );
         // string.pack: unsigned overflow.
         err_contains(v, r#"return string.pack("B", 999)"#, "to 'pack'");
         err_contains(v, r#"return string.pack("B", 999)"#, "unsigned overflow");
@@ -840,55 +1296,113 @@ fn v_argerror_pack_unpack_funcname_crossversion() {
         err_contains(v, r#"return string.pack("i2", 99999)"#, "integer overflow");
         // string.pack: string longer than given size.
         err_contains(v, r#"return string.pack("c2", "abcd")"#, "to 'pack'");
-        err_contains(v, r#"return string.pack("c2", "abcd")"#, "string longer than given size");
+        err_contains(
+            v,
+            r#"return string.pack("c2", "abcd")"#,
+            "string longer than given size",
+        );
         // string.pack: invalid next option for 'X' (getdetails helper, now state-threaded).
         err_contains(v, r#"return string.pack("Xc1", 1)"#, "to 'pack'");
         err_contains(v, r#"return string.pack("Xc1", 1)"#, "invalid next option");
         // string.pack: alignment not power of 2 (getdetails helper).
         err_contains(v, r#"return string.pack("!3i4", 1)"#, "to 'pack'");
-        err_contains(v, r#"return string.pack("!3i4", 1)"#, "alignment not power of 2");
+        err_contains(
+            v,
+            r#"return string.pack("!3i4", 1)"#,
+            "alignment not power of 2",
+        );
         // string.packsize: variable-length format.
         err_contains(v, r#"return string.packsize("s")"#, "to 'packsize'");
-        err_contains(v, r#"return string.packsize("s")"#, "variable-length format");
+        err_contains(
+            v,
+            r#"return string.packsize("s")"#,
+            "variable-length format",
+        );
         // string.format: %s with embedded zeros + modifiers (was state-less too).
         err_contains(v, r#"return string.format("%5s", "a\0b")"#, "to 'format'");
-        err_contains(v, r#"return string.format("%5s", "a\0b")"#, "string contains zeros");
+        err_contains(
+            v,
+            r#"return string.format("%5s", "a\0b")"#,
+            "string contains zeros",
+        );
 
         // Guard: the bare truncated `bad argument #N (` form (no `to '<fn>'`)
         // must NOT survive for these callsites on any version.
         let e = run(v, r#"return string.pack("B", 999)"#).unwrap_err();
-        assert!(e.contains("to 'pack'"),
-            "v{v:?} string.pack argerror lost funcname: {e}");
+        assert!(
+            e.contains("to 'pack'"),
+            "v{v:?} string.pack argerror lost funcname: {e}"
+        );
     }
     // pos-0 lower-bound rejection is 5.3-only; when it fires, it must also carry
     // the funcname. (5.4/5.5 accept pos 0, asserted elsewhere.)
-    err_contains(LuaVersion::V53, r#"return string.unpack("c0", "abc", 0)"#, "to 'unpack'");
-    err_contains(LuaVersion::V53, r#"return string.unpack("c0", "abc", 0)"#,
-        "initial position out of string");
+    err_contains(
+        LuaVersion::V53,
+        r#"return string.unpack("c0", "abc", 0)"#,
+        "to 'unpack'",
+    );
+    err_contains(
+        LuaVersion::V53,
+        r#"return string.unpack("c0", "abc", 0)"#,
+        "initial position out of string",
+    );
 }
 
 #[test]
 fn v_argerror_perversion_wording() {
     // Item B per-version wording splits.
     // utf8.offset: 5.3 says "out of range"; 5.4/5.5 say "out of bounds".
-    err_contains(LuaVersion::V53, "return utf8.offset('abc', 0, 0)", "position out of range");
-    err_contains(LuaVersion::V54, "return utf8.offset('abc', 0, 0)", "position out of bounds");
-    err_contains(LuaVersion::V55, "return utf8.offset('abc', 0, 0)", "position out of bounds");
+    err_contains(
+        LuaVersion::V53,
+        "return utf8.offset('abc', 0, 0)",
+        "position out of range",
+    );
+    err_contains(
+        LuaVersion::V54,
+        "return utf8.offset('abc', 0, 0)",
+        "position out of bounds",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return utf8.offset('abc', 0, 0)",
+        "position out of bounds",
+    );
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
         err_contains(v, "return utf8.offset('abc', 0, 0)", "to 'offset'");
     }
     // string.format width: 5.3 uses the old scanformat message; 5.4/5.5 the
     // checkformat message including the offending spec.
-    err_contains(LuaVersion::V53, "return string.format('%200d', 1)",
-        "invalid format (width or precision too long)");
-    err_contains(LuaVersion::V54, "return string.format('%200d', 1)",
-        "invalid conversion specification: '%200d'");
-    err_contains(LuaVersion::V55, "return string.format('%200d', 1)",
-        "invalid conversion specification: '%200d'");
+    err_contains(
+        LuaVersion::V53,
+        "return string.format('%200d', 1)",
+        "invalid format (width or precision too long)",
+    );
+    err_contains(
+        LuaVersion::V54,
+        "return string.format('%200d', 1)",
+        "invalid conversion specification: '%200d'",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return string.format('%200d', 1)",
+        "invalid conversion specification: '%200d'",
+    );
     // string.format unknown conversion: 5.3 "invalid option", 5.4/5.5 "invalid conversion".
-    err_contains(LuaVersion::V53, "return string.format('%y', 1)", "invalid option '%y' to 'format'");
-    err_contains(LuaVersion::V54, "return string.format('%y', 1)", "invalid conversion '%y' to 'format'");
-    err_contains(LuaVersion::V55, "return string.format('%y', 1)", "invalid conversion '%y' to 'format'");
+    err_contains(
+        LuaVersion::V53,
+        "return string.format('%y', 1)",
+        "invalid option '%y' to 'format'",
+    );
+    err_contains(
+        LuaVersion::V54,
+        "return string.format('%y', 1)",
+        "invalid conversion '%y' to 'format'",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return string.format('%y', 1)",
+        "invalid conversion '%y' to 'format'",
+    );
 }
 
 #[test]
@@ -896,14 +1410,24 @@ fn v_length_concat_location_prefix() {
     // (b) `#` and `..` carry the chunk-location prefix and the message body.
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
         err_contains(v, "return #nil", "attempt to get length of a nil value");
-        err_contains(v, "return ({})..({})", "attempt to concatenate a table value");
+        err_contains(
+            v,
+            "return ({})..({})",
+            "attempt to concatenate a table value",
+        );
         // a `:<line>:` prefix appears before the message.
         let e = run(v, "return #nil").unwrap_err();
         let at = e.find("attempt").expect("message body present");
-        assert!(e[..at].contains(':'), "v{v:?} #nil missing location prefix: {e}");
+        assert!(
+            e[..at].contains(':'),
+            "v{v:?} #nil missing location prefix: {e}"
+        );
         let e = run(v, "return ({})..({})").unwrap_err();
         let at = e.find("attempt").expect("message body present");
-        assert!(e[..at].contains(':'), "v{v:?} concat missing location prefix: {e}");
+        assert!(
+            e[..at].contains(':'),
+            "v{v:?} concat missing location prefix: {e}"
+        );
     }
 }
 
@@ -915,12 +1439,23 @@ fn v54_v55_string_arith_coercion_failure() {
     // uses the legacy `perform arithmetic on a <type> value` wording from a
     // different VM path — version-gating that registration is out of #79 scope.)
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, "return ({}) - 'y'", "attempt to sub a 'table' with a 'string'");
-        err_contains(v, "return -'x'", "attempt to unm a 'string' with a 'string'");
+        err_contains(
+            v,
+            "return ({}) - 'y'",
+            "attempt to sub a 'table' with a 'string'",
+        );
+        err_contains(
+            v,
+            "return -'x'",
+            "attempt to unm a 'string' with a 'string'",
+        );
         // location prefix present on the string-arith path.
         let e = run(v, "return ({}) - 'y'").unwrap_err();
         let at = e.find("attempt").expect("message body present");
-        assert!(e[..at].contains(':'), "v{v:?} string-arith missing prefix: {e}");
+        assert!(
+            e[..at].contains(':'),
+            "v{v:?} string-arith missing prefix: {e}"
+        );
     }
 }
 
@@ -928,14 +1463,20 @@ fn v54_v55_string_arith_coercion_failure() {
 fn v_table_concat_invalid_value_type_name() {
     // (e) plain type name, no internal byte-array leak.
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, "return table.concat({ {} })",
-            "invalid value (table) at index 1 in table for 'concat'");
+        err_contains(
+            v,
+            "return table.concat({ {} })",
+            "invalid value (table) at index 1 in table for 'concat'",
+        );
         // negative guard: the internal byte-array repr (e.g. `[116, 97, ...]`)
         // must NOT appear. (The chunk-name prefix `[string "..."]` legitimately
         // contains brackets, so look specifically for the comma-separated digit
         // list that the old `{:?}` Debug-format on `&[u8]` produced.)
         let e = run(v, "return table.concat({ {} })").unwrap_err();
-        assert!(!e.contains("116, 97"), "v{v:?} concat leaked byte-array: {e}");
+        assert!(
+            !e.contains("116, 97"),
+            "v{v:?} concat leaked byte-array: {e}"
+        );
     }
 }
 
@@ -947,19 +1488,34 @@ fn v_table_concat_invalid_value_type_name() {
 #[test]
 fn v55_utf8_offset_returns_end_position() {
     // 5.5 returns (start, end) byte positions; the end is inclusive.
-    eq(LuaVersion::V55,
-        "local a,b = utf8.offset('aébc', 2); return a .. ',' .. b", "2,3");
-    eq(LuaVersion::V55,
-        "local a,b = utf8.offset('héllo', 3); return a .. ',' .. b", "4,4");
+    eq(
+        LuaVersion::V55,
+        "local a,b = utf8.offset('aébc', 2); return a .. ',' .. b",
+        "2,3",
+    );
+    eq(
+        LuaVersion::V55,
+        "local a,b = utf8.offset('héllo', 3); return a .. ',' .. b",
+        "4,4",
+    );
     // arity is 2 on the success branch.
-    eq(LuaVersion::V55,
-        "return select('#', utf8.offset('héllo', 3))", "2");
+    eq(
+        LuaVersion::V55,
+        "return select('#', utf8.offset('héllo', 3))",
+        "2",
+    );
     // one-byte char: end == start.
-    eq(LuaVersion::V55,
-        "local a,b = utf8.offset('abc', 2); return a .. ',' .. b", "2,2");
+    eq(
+        LuaVersion::V55,
+        "local a,b = utf8.offset('abc', 2); return a .. ',' .. b",
+        "2,2",
+    );
     // not-found / out-of-range: arity stays 1 (only nil).
-    eq(LuaVersion::V55,
-        "return select('#', utf8.offset('abc', 99))", "1");
+    eq(
+        LuaVersion::V55,
+        "return select('#', utf8.offset('abc', 99))",
+        "1",
+    );
 }
 
 #[test]
@@ -976,59 +1532,92 @@ fn v55_collectgarbage_drops_setpause_setstepmul() {
     // 5.5 removed setpause/setstepmul; they are now invalid options.
     // Item B: the message carries the function name and the offending value,
     // not the bare truncated `invalid option`.
-    err_contains(LuaVersion::V55,
-        "return collectgarbage('setpause', 100)", "to 'collectgarbage'");
-    err_contains(LuaVersion::V55,
-        "return collectgarbage('setpause', 100)", "invalid option 'setpause'");
-    err_contains(LuaVersion::V55,
-        "return collectgarbage('setstepmul', 100)", "invalid option 'setstepmul'");
+    err_contains(
+        LuaVersion::V55,
+        "return collectgarbage('setpause', 100)",
+        "to 'collectgarbage'",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return collectgarbage('setpause', 100)",
+        "invalid option 'setpause'",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return collectgarbage('setstepmul', 100)",
+        "invalid option 'setstepmul'",
+    );
 }
 
 #[test]
 fn v54_collectgarbage_keeps_setpause_setstepmul() {
     // Regression guard: 5.4/5.3 still accept setpause/setstepmul.
     for v in [LuaVersion::V53, LuaVersion::V54] {
-        eq(v, "local ok = pcall(collectgarbage, 'setpause', 100); return ok", "true");
-        eq(v, "local ok = pcall(collectgarbage, 'setstepmul', 100); return ok", "true");
+        eq(
+            v,
+            "local ok = pcall(collectgarbage, 'setpause', 100); return ok",
+            "true",
+        );
+        eq(
+            v,
+            "local ok = pcall(collectgarbage, 'setstepmul', 100); return ok",
+            "true",
+        );
     }
 }
 
 #[test]
 fn v55_collectgarbage_param_surface() {
     // param read returns an integer.
-    eq(LuaVersion::V55,
-        "return math.type(collectgarbage('param', 'pause'))", "integer");
+    eq(
+        LuaVersion::V55,
+        "return math.type(collectgarbage('param', 'pause'))",
+        "integer",
+    );
     // invalid param name errors via luaL_checkoption, carrying the value.
-    err_contains(LuaVersion::V55,
-        "return collectgarbage('param', 'bogus')", "invalid option 'bogus'");
+    err_contains(
+        LuaVersion::V55,
+        "return collectgarbage('param', 'bogus')",
+        "invalid option 'bogus'",
+    );
     // write returns the OLD value, then read returns the value just written
     // (round-trip on the faithful-shape backing store).
-    eq(LuaVersion::V55,
+    eq(
+        LuaVersion::V55,
         "collectgarbage('param', 'stepmul', 333); return collectgarbage('param', 'stepmul')",
-        "333");
+        "333",
+    );
     // arity is 1.
-    eq(LuaVersion::V55,
-        "return select('#', collectgarbage('param', 'pause'))", "1");
+    eq(
+        LuaVersion::V55,
+        "return select('#', collectgarbage('param', 'pause'))",
+        "1",
+    );
 }
 
 #[test]
 fn v54_collectgarbage_param_not_an_option() {
     // Regression guard: 'param' is NOT a valid collectgarbage option on 5.4/5.3.
     for v in [LuaVersion::V53, LuaVersion::V54] {
-        err_contains(v,
-            "return collectgarbage('param', 'pause')", "invalid option");
+        err_contains(
+            v,
+            "return collectgarbage('param', 'pause')",
+            "invalid option",
+        );
     }
 }
 
 #[test]
 fn v54_v55_start_in_reported_generational_mode() {
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        eq(v,
+        eq(
+            v,
             "local a = collectgarbage('incremental'); \
              local b = collectgarbage('generational'); \
              local c = collectgarbage('incremental'); \
              return a .. '|' .. b .. '|' .. c",
-            "generational|incremental|generational");
+            "generational|incremental|generational",
+        );
     }
 }
 
@@ -1046,37 +1635,61 @@ fn v55_error_nil_becomes_no_error_object() {
     // wrapper pcalls the chunk and returns `tostring(error_object)`, so on 5.5
     // the propagated object is the string and on 5.3/5.4 it stays nil.
     // error(nil): explicit nil object.
-    err_contains(LuaVersion::V55,
-        "error(nil)", "<no error object>");
+    err_contains(LuaVersion::V55, "error(nil)", "<no error object>");
     // error() with no argument: object defaults to nil.
-    err_contains(LuaVersion::V55,
-        "error()", "<no error object>");
+    err_contains(LuaVersion::V55, "error()", "<no error object>");
     // nested pcall still sees the converted string.
-    eq(LuaVersion::V55,
+    eq(
+        LuaVersion::V55,
         "local ok, e = pcall(function() error(nil) end); return type(e) .. ':' .. tostring(e)",
-        "string:<no error object>");
+        "string:<no error object>",
+    );
     // xpcall whose handler returns nil also settles to the string (the
     // conversion runs on the handler result, matching upstream ordering).
-    eq(LuaVersion::V55,
+    eq(
+        LuaVersion::V55,
         "local ok, e = xpcall(function() error('x') end, function() return nil end); \
          return type(e) .. ':' .. tostring(e)",
-        "string:<no error object>");
+        "string:<no error object>",
+    );
+}
+
+#[test]
+fn v55_xpcall_message_handler_retries_until_result_or_c_stack_overflow() {
+    eq(
+        LuaVersion::V55,
+        "local function err(n) \
+           if type(n) ~= 'number' then return n \
+           elseif n == 0 then return 'END' \
+           else error(n - 1) end \
+         end; \
+         local _, msg170 = xpcall(error, err, 170); \
+         local _, msg300 = xpcall(error, err, 300); \
+         return msg170 .. '|' .. msg300",
+        "END|C stack overflow",
+    );
 }
 
 #[test]
 fn v53_v54_error_nil_stays_nil() {
     // Regression guard: 5.3/5.4 leave a nil error object as nil (no conversion).
     for v in [LuaVersion::V53, LuaVersion::V54] {
-        eq(v,
+        eq(
+            v,
             "local ok, e = pcall(function() error(nil) end); return type(e) .. ':' .. tostring(e)",
-            "nil:nil");
-        eq(v,
+            "nil:nil",
+        );
+        eq(
+            v,
             "local ok, e = pcall(function() error() end); return type(e) .. ':' .. tostring(e)",
-            "nil:nil");
+            "nil:nil",
+        );
         // A real string error object is untouched (sanity: conversion is nil-only).
-        eq(v,
+        eq(
+            v,
             "local ok, e = pcall(function() error('boom') end); return (e:gsub('^.*: ', ''))",
-            "boom");
+            "boom",
+        );
     }
 }
 
@@ -1094,9 +1707,21 @@ fn v53_utf8_escape_caps_at_10ffff() {
     // 0x10FFFF is the largest accepted codepoint on 5.3.
     eq(LuaVersion::V53, r#"return #"\u{10FFFF}""#, "4");
     // One past the cap, and the legacy 5.4/5.5 ceiling, both reject on 5.3.
-    err_contains(LuaVersion::V53, r#"return #"\u{110000}""#, "UTF-8 value too large");
-    err_contains(LuaVersion::V53, r#"return #"\u{110001}""#, "UTF-8 value too large");
-    err_contains(LuaVersion::V53, r#"return #"\u{7FFFFFFF}""#, "UTF-8 value too large");
+    err_contains(
+        LuaVersion::V53,
+        r#"return #"\u{110000}""#,
+        "UTF-8 value too large",
+    );
+    err_contains(
+        LuaVersion::V53,
+        r#"return #"\u{110001}""#,
+        "UTF-8 value too large",
+    );
+    err_contains(
+        LuaVersion::V53,
+        r#"return #"\u{7FFFFFFF}""#,
+        "UTF-8 value too large",
+    );
 }
 
 #[test]
@@ -1309,7 +1934,11 @@ fn v53_random_interval_guards() {
         "interval too large",
     );
     // A normal interval still works.
-    eq(LuaVersion::V53, "local r = math.random(1, 6); return r >= 1 and r <= 6", "true");
+    eq(
+        LuaVersion::V53,
+        "local r = math.random(1, 6); return r >= 1 and r <= 6",
+        "true",
+    );
 }
 
 #[test]
@@ -1318,7 +1947,11 @@ fn v54_v55_random_zero_and_full_range() {
         // random(0) returns a full-range integer (no error).
         eq(v, "return math.type(math.random(0))", "integer");
         // Full integer range is accepted.
-        eq(v, "return math.type(math.random(math.mininteger, math.maxinteger))", "integer");
+        eq(
+            v,
+            "return math.type(math.random(math.mininteger, math.maxinteger))",
+            "integer",
+        );
     }
 }
 
@@ -1345,19 +1978,47 @@ fn v54_v55_random_zero_and_full_range() {
 fn v51_random_contract() {
     let v = LuaVersion::V51;
     // random() ∈ [0, 1), is a number, and float-only (no math.type).
-    eq(v, "local r = math.random(); return type(r) .. ',' .. tostring(r >= 0 and r < 1)", "number,true");
+    eq(
+        v,
+        "local r = math.random(); return type(r) .. ',' .. tostring(r >= 0 and r < 1)",
+        "number,true",
+    );
     eq(v, "return math.type", "nil");
     // random(n) ∈ [1, n], integer-valued.
-    eq(v, "local r = math.random(10); return r >= 1 and r <= 10 and r == math.floor(r)", "true");
+    eq(
+        v,
+        "local r = math.random(10); return r >= 1 and r <= 10 and r == math.floor(r)",
+        "true",
+    );
     // random(m, n) ∈ [m, n].
-    eq(v, "local r = math.random(5, 8); return r >= 5 and r <= 8", "true");
+    eq(
+        v,
+        "local r = math.random(5, 8); return r >= 5 and r <= 8",
+        "true",
+    );
     // random(0) is an EMPTY interval [1, 0] — it errors (no 5.4 full-range case).
-    err_contains(v, "local ok, e = pcall(math.random, 0); error(e, 0)", "interval is empty");
+    err_contains(
+        v,
+        "local ok, e = pcall(math.random, 0); error(e, 0)",
+        "interval is empty",
+    );
     // random(m, n) empty-interval error reports argument #2 (the upper bound).
-    err_contains(v, "local ok, e = pcall(math.random, 5, 2); error(e, 0)", "bad argument #2");
-    err_contains(v, "local ok, e = pcall(math.random, 5, 2); error(e, 0)", "interval is empty");
+    err_contains(
+        v,
+        "local ok, e = pcall(math.random, 5, 2); error(e, 0)",
+        "bad argument #2",
+    );
+    err_contains(
+        v,
+        "local ok, e = pcall(math.random, 5, 2); error(e, 0)",
+        "interval is empty",
+    );
     // Three args is "wrong number of arguments".
-    err_contains(v, "local ok, e = pcall(math.random, 1, 2, 3); error(e, 0)", "wrong number of arguments");
+    err_contains(
+        v,
+        "local ok, e = pcall(math.random, 1, 2, 3); error(e, 0)",
+        "wrong number of arguments",
+    );
 }
 
 #[test]
@@ -1374,7 +2035,11 @@ fn v51_randomseed_contract() {
         "local ok, e = pcall(math.randomseed, 'x'); error(e, 0)",
         "number expected, got string",
     );
-    err_contains(v, "local ok, e = pcall(math.randomseed); error(e, 0)", "bad argument #1");
+    err_contains(
+        v,
+        "local ok, e = pcall(math.randomseed); error(e, 0)",
+        "bad argument #1",
+    );
     // randomseed accepts a number and returns NO values.
     eq(v, "return select('#', math.randomseed(42))", "0");
     eq(v, "return select('#', math.randomseed(5))", "0");
@@ -1389,7 +2054,11 @@ fn v51_prng_non_regression_modern_unchanged() {
         "local ok, e = pcall(math.random, 0); error(e, 0)",
         "interval is empty",
     );
-    eq(LuaVersion::V53, "return select('#', math.randomseed(42))", "2");
+    eq(
+        LuaVersion::V53,
+        "return select('#', math.randomseed(42))",
+        "2",
+    );
     // 5.4/5.5: random(0) is full-range integer; randomseed(N) returns 2 words;
     // randomseed() auto-seeds (no required arg) and also returns 2.
     for v in [LuaVersion::V54, LuaVersion::V55] {
@@ -1404,7 +2073,11 @@ fn v51_prng_non_regression_modern_unchanged() {
         "local ok, e = pcall(math.random, 0); error(e, 0)",
         "interval is empty",
     );
-    eq(LuaVersion::V52, "return select('#', math.randomseed(42))", "0");
+    eq(
+        LuaVersion::V52,
+        "return select('#', math.randomseed(42))",
+        "0",
+    );
     err_contains(
         LuaVersion::V52,
         "local ok, e = pcall(math.randomseed); error(e, 0)",
@@ -1432,7 +2105,11 @@ fn v52_float_only_number_model() {
     eq(LuaVersion::V52, "return string.format('%d', 42)", "42");
     // All numeric literals lex as float, so a 2^53+1 literal loses precision
     // exactly as lua5.2.4 does (it has no i64 to preserve it).
-    eq(LuaVersion::V52, "return 9007199254740993", "9.007199254741e+15");
+    eq(
+        LuaVersion::V52,
+        "return 9007199254740993",
+        "9.007199254741e+15",
+    );
     eq(LuaVersion::V52, "return _VERSION", "Lua 5.2");
 }
 
@@ -1515,12 +2192,24 @@ fn v52_rejects_53_integer_operators() {
     err_contains(LuaVersion::V52, "return 7//2", "unexpected symbol near '/'");
     err_contains(LuaVersion::V52, "return 6 & 3", "near '&'");
     err_contains(LuaVersion::V52, "return 6 | 3", "near '|'");
-    err_contains(LuaVersion::V52, "return 1 << 4", "unexpected symbol near '<'");
-    err_contains(LuaVersion::V52, "return 256 >> 4", "unexpected symbol near '>'");
+    err_contains(
+        LuaVersion::V52,
+        "return 1 << 4",
+        "unexpected symbol near '<'",
+    );
+    err_contains(
+        LuaVersion::V52,
+        "return 256 >> 4",
+        "unexpected symbol near '>'",
+    );
     err_contains(LuaVersion::V52, "return 5 ~ 3", "near '~'");
     err_contains(LuaVersion::V52, "return ~0", "unexpected symbol near '~'");
     // The 5.4 <const> attribute syntax is also absent.
-    err_contains(LuaVersion::V52, "local x <const> = 1", "unexpected symbol near '<'");
+    err_contains(
+        LuaVersion::V52,
+        "local x <const> = 1",
+        "unexpected symbol near '<'",
+    );
 }
 
 #[test]
@@ -1542,7 +2231,11 @@ fn v53_plus_format_int_family_still_strict() {
     // The truncation behavior is V52-gated: the dual-number versions keep the
     // strict integer-representation check for the same %d-family conversions.
     for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
-        err_contains(v, "return string.format('%d', 3.5)", "no integer representation");
+        err_contains(
+            v,
+            "return string.format('%d', 3.5)",
+            "no integer representation",
+        );
         eq(v, "return string.format('%d', 42)", "42");
     }
 }
@@ -1586,7 +2279,11 @@ fn v51_setfenv_per_closure_env() {
         "42,nil",
     );
     // setfenv returns the function it set (even an empty-body closure).
-    eq(LuaVersion::V51, "local function f() end return setfenv(f, {}) == f", "true");
+    eq(
+        LuaVersion::V51,
+        "local function f() end return setfenv(f, {}) == f",
+        "true",
+    );
 }
 
 #[test]
@@ -1672,14 +2369,26 @@ fn v51_c_function_env_is_g() {
 #[test]
 fn v51_fenv_error_cases() {
     err_contains(LuaVersion::V51, "return getfenv(5)", "invalid level");
-    err_contains(LuaVersion::V51, "return getfenv(-1)", "level must be non-negative");
-    err_contains(LuaVersion::V51, "return getfenv('x')", "number expected, got string");
+    err_contains(
+        LuaVersion::V51,
+        "return getfenv(-1)",
+        "level must be non-negative",
+    );
+    err_contains(
+        LuaVersion::V51,
+        "return getfenv('x')",
+        "number expected, got string",
+    );
     err_contains(
         LuaVersion::V51,
         "return setfenv(print, {})",
         "'setfenv' cannot change environment of given object",
     );
-    err_contains(LuaVersion::V51, "return setfenv(0, 'x')", "table expected, got string");
+    err_contains(
+        LuaVersion::V51,
+        "return setfenv(0, 'x')",
+        "table expected, got string",
+    );
     err_contains(LuaVersion::V51, "return setfenv(100, {})", "invalid level");
 }
 
@@ -1716,7 +2425,12 @@ fn v52_plus_pairs_honors_metamethod() {
     // lua5.2.4/5.3.6/5.4.7/5.5.0 — a __pairs that error()s fires on all four).
     // A __pairs returning an empty iterator makes the loop body never run, so
     // the raw sum is shadowed (0).
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         eq(
             v,
             "local t = setmetatable({10,20,30}, {__pairs = function(tt) \
@@ -1749,7 +2463,12 @@ fn v52_plus_gc_on_table_fires() {
     // exercised by the gc canaries — here we only guard that table finalizers
     // remain *registered* (not silently skipped) off V51 by confirming the
     // setmetatable path accepts a table __gc without raising.
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         eq(
             v,
             "local ok = pcall(function() \
@@ -1788,7 +2507,12 @@ fn v52_plus_no_fenv_globals() {
     // Non-regression guard: getfenv/setfenv are 5.1-ONLY. They were removed in
     // 5.2 (lexical _ENV) and must stay absent on 5.2/5.3/5.4/5.5. The 5.2+
     // family also keeps consulting a table __len metamethod.
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         eq(v, "return type(getfenv)", "nil");
         eq(v, "return type(setfenv)", "nil");
     }
@@ -1824,11 +2548,19 @@ fn v51_global_roster() {
     eq(LuaVersion::V51, "return type(table.move)", "nil");
     // legacy table roster present.
     eq(LuaVersion::V51, "return table.getn({1,2,3})", "3");
-    eq(LuaVersion::V51, "return table.maxn({[1]=1,[5]=2,[3]=3})", "5");
+    eq(
+        LuaVersion::V51,
+        "return table.maxn({[1]=1,[5]=2,[3]=3})",
+        "5",
+    );
     eq(LuaVersion::V51, "return type(table.foreach)", "function");
     eq(LuaVersion::V51, "return type(table.foreachi)", "function");
     // table.setn is a gravestone raising the obsolete message.
-    err_contains(LuaVersion::V51, "return table.setn({}, 3)", "'setn' is obsolete");
+    err_contains(
+        LuaVersion::V51,
+        "return table.setn({}, 3)",
+        "'setn' is obsolete",
+    );
     // 5.1 holdover globals.
     eq(LuaVersion::V51, "return type(gcinfo())", "number");
     eq(LuaVersion::V51, "return type(newproxy)", "function");
@@ -1850,7 +2582,11 @@ fn v51_math_roster() {
     eq(LuaVersion::V51, "return type(math.mod)", "function");
     eq(LuaVersion::V51, "return math.mod(7,3)", "1");
     // math.log(8,2) == math.log(8) == ln(8); the base is silently ignored.
-    eq(LuaVersion::V51, "return math.log(8,2) == math.log(8)", "true");
+    eq(
+        LuaVersion::V51,
+        "return math.log(8,2) == math.log(8)",
+        "true",
+    );
 }
 
 #[test]
@@ -1872,7 +2608,11 @@ fn v51_string_and_package_roster() {
 #[test]
 fn v51_body_behavior_deltas() {
     // load takes a reader function ONLY; a string errors. loadstring loads it.
-    err_contains(LuaVersion::V51, "return load('return 1')", "function expected, got string");
+    err_contains(
+        LuaVersion::V51,
+        "return load('return 1')",
+        "function expected, got string",
+    );
     eq(LuaVersion::V51, "return loadstring('return 7')()", "7");
     // xpcall(f, h) does NOT forward extra args; f is called with zero args.
     eq(
@@ -1881,7 +2621,11 @@ fn v51_body_behavior_deltas() {
         "0",
     );
     // collectgarbage rejects the 5.4-only options under V51.
-    err_contains(LuaVersion::V51, "return collectgarbage('isrunning')", "invalid option 'isrunning'");
+    err_contains(
+        LuaVersion::V51,
+        "return collectgarbage('isrunning')",
+        "invalid option 'isrunning'",
+    );
     // coroutine.running() returns nil in the main coroutine.
     eq(LuaVersion::V51, "return coroutine.running()", "nil");
     eq(LuaVersion::V51, "return type(coroutine.isyieldable)", "nil");
@@ -1893,13 +2637,25 @@ fn v51_syntax_rejections() {
     eq(LuaVersion::V51, "local goto = 5; return goto", "5");
     // The goto STATEMENT and ::label:: do not parse (goto lexes as a name, so
     // `goto done` is a name beginning an assignment → "'=' expected").
-    err_contains(LuaVersion::V51, "do goto done; ::done:: end", "'=' expected");
+    err_contains(
+        LuaVersion::V51,
+        "do goto done; ::done:: end",
+        "'=' expected",
+    );
     err_contains(LuaVersion::V51, "::lbl::", "unexpected symbol near ':'");
     // 5.3 integer operators and 5.4 attribs do not parse in 5.1.
     err_contains(LuaVersion::V51, "return 7//2", "unexpected symbol near '/'");
     err_contains(LuaVersion::V51, "return 6 & 3", "near '&'");
-    err_contains(LuaVersion::V51, "return 1 << 4", "unexpected symbol near '<'");
-    err_contains(LuaVersion::V51, "local x <const> = 1", "unexpected symbol near '<'");
+    err_contains(
+        LuaVersion::V51,
+        "return 1 << 4",
+        "unexpected symbol near '<'",
+    );
+    err_contains(
+        LuaVersion::V51,
+        "local x <const> = 1",
+        "unexpected symbol near '<'",
+    );
 }
 
 #[test]
@@ -1912,7 +2668,11 @@ fn v51_escape_leniency() {
     // Decimal escapes still work; \65 → "A".
     eq(LuaVersion::V51, "return '\\65'", "A");
     // A decimal escape > 255 errors (5.1 wording: "escape sequence too large").
-    err_contains(LuaVersion::V51, "return '\\999'", "escape sequence too large");
+    err_contains(
+        LuaVersion::V51,
+        "return '\\999'",
+        "escape sequence too large",
+    );
 }
 
 #[test]
@@ -1920,7 +2680,12 @@ fn v52_plus_roster_unchanged_by_v51_work() {
     // Non-regression guards for the SHARED code paths the V51 gates touched:
     // they must remain version-correct off V51.
     //  - xpcall forwards extra args in 5.2+ (added in 5.2).
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         eq(
             v,
             "local n; xpcall(function(...) n = select('#', ...) end, function(e) return e end, 1, 2, 3); return n",
@@ -1928,8 +2693,17 @@ fn v52_plus_roster_unchanged_by_v51_work() {
         );
     }
     //  - coroutine.running returns thread + is-main boolean in 5.2+.
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
-        eq(v, "local _, m = coroutine.running(); return tostring(m)", "true");
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
+        eq(
+            v,
+            "local _, m = coroutine.running(); return tostring(m)",
+            "true",
+        );
     }
     //  - 5.2 keeps isyieldable absent (added in 5.3); 5.3+ has it.
     eq(LuaVersion::V52, "return type(coroutine.isyieldable)", "nil");
@@ -1939,7 +2713,11 @@ fn v52_plus_roster_unchanged_by_v51_work() {
     //  - 5.2 keeps load accepting a string (the reader-only restriction is V51).
     eq(LuaVersion::V52, "return load('return 1')()", "1");
     //  - 5.2 collectgarbage still accepts isrunning (added in 5.2).
-    eq(LuaVersion::V52, "return type(collectgarbage('isrunning'))", "boolean");
+    eq(
+        LuaVersion::V52,
+        "return type(collectgarbage('isrunning'))",
+        "boolean",
+    );
     //  - math.log honors a base argument in 5.2+ (float-only: prints "3").
     eq(LuaVersion::V52, "return math.log(8, 2)", "3");
     //  - 5.2 keeps table.unpack/pack present (V51 drops them).
@@ -2039,7 +2817,12 @@ fn v54_v55_deeply_nested_label_rejected() {
 fn same_block_duplicate_label_rejected_all_versions() {
     // A duplicate label in the *same* block is an error on every version that
     // has goto (5.2+).
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         err_contains(v, "::l:: ::l:: print('x')", "label 'l' already defined");
     }
 }
@@ -2067,7 +2850,12 @@ fn goto_label_errors_carry_chunkname_line_prefix() {
     // built these two messages without that prefix. Both must now carry a
     // `<chunk>:<line>:` location ahead of the message body, on every version
     // that has goto/labels (5.2+).
-    for v in [LuaVersion::V52, LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
         match run(v, "::l:: ::l:: print('x')") {
             Ok(got) => panic!("expected duplicate-label error, got `{got}`"),
             Err(e) => {
@@ -2082,7 +2870,10 @@ fn goto_label_errors_carry_chunkname_line_prefix() {
         match run(v, "goto nowhere") {
             Ok(got) => panic!("expected undefined-goto error, got `{got}`"),
             Err(e) => {
-                assert!(e.contains("no visible label 'nowhere'"), "body missing: {e}");
+                assert!(
+                    e.contains("no visible label 'nowhere'"),
+                    "body missing: {e}"
+                );
                 assert!(
                     e.find(": no visible label 'nowhere'").is_some(),
                     "undefined-goto error `{e}` lacks a chunkname:line: prefix"
@@ -2169,14 +2960,23 @@ return tostring(drive(function() return a <= b end)) .. ',' .. tostring(drive(fu
 
 #[test]
 fn v51_v54_derived_le_survives_yield() {
-    for v in [LuaVersion::V51, LuaVersion::V52, LuaVersion::V53, LuaVersion::V54] {
+    for v in [
+        LuaVersion::V51,
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+    ] {
         eq(v, LE_ACROSS_YIELD, "true,false");
     }
 }
 
 #[test]
 fn v55_le_without_metamethod_errors_no_derivation() {
-    err_contains(LuaVersion::V55, LE_ACROSS_YIELD, "attempt to compare two table values");
+    err_contains(
+        LuaVersion::V55,
+        LE_ACROSS_YIELD,
+        "attempt to compare two table values",
+    );
 }
 
 // #95 — `break` outside a loop: the error wording is version-specific.
@@ -2236,6 +3036,206 @@ fn v55_named_vararg_count_follows_n_field() {
         LuaVersion::V55,
         "local function f(...t) t.n = 2; return ... end\nreturn table.concat({f(1,2,3)}, ',')",
         "1,2",
+    );
+}
+
+#[test]
+fn v55_named_vararg_rejects_invalid_n_field() {
+    for value in ["-1", "math.maxinteger", "math.mininteger", "1.0"] {
+        eq(
+            LuaVersion::V55,
+            &format!(
+                "local function f(n, ...t) t.n = n; return ... end; \
+                 local ok, msg = pcall(f, {value}, 1); \
+                 return not ok and msg:find([[no proper 'n']], 1, true) ~= nil"
+            ),
+            "true",
+        );
+    }
+}
+
+#[test]
+fn v55_named_vararg_indexed_reads_do_not_materialize_table() {
+    eq(
+        LuaVersion::V55,
+        "local function f(keys, t, ...v) \
+           for _, k in pairs(keys) do assert(t[k] == v[k]) end \
+           assert(t.n == v.n); \
+           return ... \
+         end; \
+         local t = table.pack(10, 20, 30); \
+         local keys = {-1, 0, 1, 1.0, 1.1, t.n, t.n + 1, 'n', print, 'k', '1'}; \
+         f(keys, t, 10, 20, 30); \
+         local m = collectgarbage'count'; \
+         f(keys, t, 10, 20, 30); \
+         return m == collectgarbage'count'",
+        "true",
+    );
+}
+
+#[test]
+fn v55_named_vararg_parameter_is_readonly() {
+    err_contains(
+        LuaVersion::V55,
+        "return assert(load([[return function (... t) t = 10 end]]))",
+        "const variable 't'",
+    );
+    err_contains(
+        LuaVersion::V55,
+        "return assert(load([[local function foo (...extra) return function (...) extra = nil end end]]))",
+        "const variable 'extra'",
+    );
+}
+
+#[test]
+fn v55_generic_for_third_state_local_is_closing_value() {
+    eq(
+        LuaVersion::V55,
+        "local debug = require 'debug'; \
+         local closed = false; \
+         local closer = setmetatable({}, {__close = function () closed = true end}); \
+         local done = false; \
+         local function iter(_, _) if not done then done = true; return 1 end end; \
+         local function gettoclose(lv) \
+           lv = lv + 1; local stvar = 0; \
+           for i = 1, 100 do \
+             local n, v = debug.getlocal(lv, i); \
+             if n == '(for state)' then stvar = stvar + 1; if stvar == 3 then return v end end \
+           end \
+         end; \
+         local seen; \
+         do for x in iter, nil, nil, closer do seen = gettoclose(1); break end end; \
+         return seen == closer and closed",
+        "true",
+    );
+}
+
+#[test]
+fn v55_pairs_metamethod_fourth_result_is_closed() {
+    eq(
+        LuaVersion::V55,
+        "local a = {n = 2, 2, 3}; \
+         local function iter(t, i) i = i + 1; if i <= t.n then return i, t[i] end end; \
+         local closed = false; \
+         setmetatable(a, {__pairs = function(t) \
+           local tbc = setmetatable({}, {__close = function() closed = true end}); \
+           return iter, t, 0, tbc \
+         end}); \
+         for _ in pairs(a) do end; \
+         return closed",
+        "true",
+    );
+}
+
+#[test]
+fn v55_close_metamethod_omits_error_argument_on_normal_exit() {
+    eq(
+        LuaVersion::V55,
+        "local nargs, second; \
+         do \
+           local x <close> = setmetatable({}, {__close = function(...) \
+             nargs = select('#', ...); second = select(2, ...) \
+           end}) \
+         end; \
+         return tostring(nargs) .. ':' .. tostring(second)",
+        "1:nil",
+    );
+}
+
+#[test]
+fn v55_plain_vararg_has_hidden_vararg_table_local() {
+    eq(
+        LuaVersion::V55,
+        "local debug = require 'debug'; \
+         local function f(...) \
+           local name, value = debug.getlocal(1, 1); \
+           return name .. ':' .. tostring(value) \
+         end; \
+         return f(10, 20)",
+        "(vararg table):nil",
+    );
+}
+
+#[test]
+fn v55_string_env_index_error_is_field_not_global() {
+    eq(
+        LuaVersion::V55,
+        "local ok, msg = pcall(function() return ('_ENV').x + 1 end); \
+         return (not ok) and msg:find(\"field 'x'\", 1, true) ~= nil and \
+                msg:find(\"global 'x'\", 1, true) == nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_stripped_bytecode_errors_use_unknown_source_and_line() {
+    eq(
+        LuaVersion::V55,
+        "local f = function(a) return a + 1 end; \
+         f = assert(load(string.dump(f, true))); \
+         local ok, msg = pcall(f, {}); \
+         return tostring(msg):match('^%?:%?:') ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_out_of_range_method_key_error_is_field() {
+    eq(
+        LuaVersion::V55,
+        "local parts = {}; \
+         for i = 1, 1000 do parts[i] = 'aaa = x' .. i end; \
+         local prefix = table.concat(parts, '; '); \
+         local f = assert(load(prefix .. '; local t = {}; t:bbb()')); \
+         local ok, msg = pcall(f); \
+         return (not ok) and msg:find(\"field 'bbb'\", 1, true) ~= nil and \
+                msg:find(\"method 'bbb'\", 1, true) == nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_global_function_env_index_error_is_prefixed_upvalue() {
+    eq(
+        LuaVersion::V55,
+        "local code = '_ENV = 1\\nglobal function foo()\\n  return 10\\nend'; \
+         local ok, msg = pcall(assert(load(code))); \
+         return (not ok) and msg:find(':2:', 1, true) ~= nil and \
+                msg:find(\"upvalue '_ENV'\", 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_duplicate_label_error_uses_duplicate_line() {
+    eq(
+        LuaVersion::V55,
+        "local _, msg = load('::L1::\\n::L1::\\n'); \
+         return msg:find(':2:', 1, true) ~= nil and \
+                msg:find(\"label 'L1' already defined on line 2\", 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_undeclared_global_error_uses_name_line() {
+    eq(
+        LuaVersion::V55,
+        "local _, msg = load('global none\\nlocal x = b\\n'); \
+         return msg:find(':2:', 1, true) ~= nil and \
+                msg:find(\"variable 'b' not declared\", 1, true) ~= nil",
+        "true",
+    );
+}
+
+#[test]
+fn v55_multiple_close_local_error_is_prefixed() {
+    eq(
+        LuaVersion::V55,
+        "local _, msg = load('local <close> a, b\\n'); \
+         return msg:find(':1:', 1, true) ~= nil and \
+                msg:find('multiple to-be-closed variables', 1, true) ~= nil",
+        "true",
     );
 }
 
@@ -2325,7 +3325,11 @@ fn issue95_break_outside_loop_wording_v55() {
 // ─────────────────────────────────────────────────────────────────────────
 fn trace_lines(version: LuaVersion, code: &str) -> String {
     let lua = Lua::new_versioned(version);
-    let loader = if version == LuaVersion::V51 { "loadstring" } else { "load" };
+    let loader = if version == LuaVersion::V51 {
+        "loadstring"
+    } else {
+        "load"
+    };
     let wrapper = format!(
         "local s = [==[\n{code}\n]==]\n\
          local out = {{}}\n\
@@ -2361,6 +3365,12 @@ fn issue92_if_test_jmp_line_attribution_v55() {
     assert_eq!(trace_lines(LuaVersion::V55, IF_MULTILINE), "2,4,7");
 }
 
+#[test]
+fn v55_if_then_break_hook_includes_break_line() {
+    let code = "while math.sin(1) do\n  if math.sin(1)\n  then break\n  end\nend\na=1";
+    assert_eq!(trace_lines(LuaVersion::V55, code), "1,2,3,6");
+}
+
 /// `while`/`repeat` already attribute their conditional `TEST`/`JMP` to the
 /// condition-expression line on every version (the codegen `cond()` captures the
 /// line before any `do`/`until` token), so 5.5 does not change them. Pin that
@@ -2376,7 +3386,11 @@ fn issue92_while_condition_line_attribution_unchanged_all_versions() {
         LuaVersion::V55,
     ] {
         let got = trace_lines(v, code);
-        assert_eq!(got, trace_lines(LuaVersion::V54, code), "version {v:?} drifted: {got}");
+        assert_eq!(
+            got,
+            trace_lines(LuaVersion::V54, code),
+            "version {v:?} drifted: {got}"
+        );
     }
 }
 
@@ -2397,7 +3411,11 @@ fn issue92_numeric_for_backedge_legacy_pre54() {
     // 4-iteration single-line loop: <=5.3 fire one event per iteration plus the
     // entry → 5 events.
     for v in [LuaVersion::V51, LuaVersion::V52, LuaVersion::V53] {
-        assert_eq!(trace_lines(v, "for i=1,4 do a=1 end"), "1,1,1,1,1", "version {v:?}");
+        assert_eq!(
+            trace_lines(v, "for i=1,4 do a=1 end"),
+            "1,1,1,1,1",
+            "version {v:?}"
+        );
     }
 }
 
@@ -2405,7 +3423,11 @@ fn issue92_numeric_for_backedge_legacy_pre54() {
 fn issue92_numeric_for_backedge_modern_54_55() {
     // 5.4 count-based loop: iteration 1 falls through, so 4 events.
     for v in [LuaVersion::V54, LuaVersion::V55] {
-        assert_eq!(trace_lines(v, "for i=1,4 do a=1 end"), "1,1,1,1", "version {v:?}");
+        assert_eq!(
+            trace_lines(v, "for i=1,4 do a=1 end"),
+            "1,1,1,1",
+            "version {v:?}"
+        );
     }
 }
 
@@ -2432,10 +3454,26 @@ fn issue92_numeric_for_multiline_unchanged_all_versions() {
 /// runs zero times instead of raising "'for' step is zero".
 #[test]
 fn issue92_legacy_numeric_for_behavior_matches_53() {
-    eq(LuaVersion::V53, "local t={} for i=5,1,-1 do t[#t+1]=i end return table.concat(t,',')", "5,4,3,2,1");
-    eq(LuaVersion::V53, "local n=0 for i=1,0 do n=n+1 end return n", "0");
+    eq(
+        LuaVersion::V53,
+        "local t={} for i=5,1,-1 do t[#t+1]=i end return table.concat(t,',')",
+        "5,4,3,2,1",
+    );
+    eq(
+        LuaVersion::V53,
+        "local n=0 for i=1,0 do n=n+1 end return n",
+        "0",
+    );
     // 5.3 has no zero-step error; the comparison just fails and the loop is empty.
-    eq(LuaVersion::V53, "local n=0 for i=1,2,0 do n=n+1 if n>3 then break end end return n", "0");
+    eq(
+        LuaVersion::V53,
+        "local n=0 for i=1,2,0 do n=n+1 if n>3 then break end end return n",
+        "0",
+    );
     // control variable stays an integer subtype on 5.3.
-    eq(LuaVersion::V53, "local r for i=1,1 do r=math.type(i) end return r", "integer");
+    eq(
+        LuaVersion::V53,
+        "local r for i=1,1 do r=math.type(i) end return r",
+        "integer",
+    );
 }

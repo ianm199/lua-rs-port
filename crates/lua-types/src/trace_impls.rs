@@ -8,16 +8,16 @@
 //! method resolution dispatches through `Deref` to each underlying type's
 //! own `trace` method.
 
-use lua_gc::{Marker, Trace};
+use crate::closure::{LuaCClosure, LuaClosure, LuaLClosure};
 use crate::gc::GcRef;
-use crate::value::LuaValue;
+use crate::proto::LuaProto;
+use crate::string::LuaString;
 use crate::table::LuaTable;
 use crate::upval::UpVal;
-use crate::string::LuaString;
-use crate::proto::LuaProto;
-use crate::closure::{LuaClosure, LuaLClosure, LuaCClosure};
 use crate::userdata::LuaUserData;
 use crate::value::LuaThread;
+use crate::value::LuaValue;
+use lua_gc::{Marker, Trace};
 
 /// Forwarder for `GcRef<T>`. Now that `GcRef` wraps a real `lua_gc::Gc<T>`
 /// (D-1e), tracing must enqueue the box onto the gray queue via
@@ -110,8 +110,12 @@ impl Trace for LuaTable {
         let trace_keys = (mode & WEAK_KEYS) == 0;
         let trace_values = (mode & WEAK_VALUES) == 0 && trace_keys;
         self.for_each_entry(|k, v| {
-            if trace_keys { k.trace(m); }
-            if trace_values { v.trace(m); }
+            if trace_keys {
+                k.trace(m);
+            }
+            if trace_values {
+                v.trace(m);
+            }
         });
         if let Some(mt) = self.metatable() {
             mt.trace(m);

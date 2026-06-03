@@ -7,7 +7,6 @@
 //!
 //! C source preserved inline as `
 
-
 // ─── Instruction format diagram ──────────────────────────────────────────────
 //
 
@@ -86,8 +85,7 @@ pub use lua_vm::vm::OpCode;
 
 /// Total number of opcodes.
 ///
-pub const NUM_OPCODES: usize = OpCode::VarArgPack as usize + 1;
-
+pub const NUM_OPCODES: usize = OpCode::GetVArg as usize + 1;
 
 // ─── opmode_byte helper ───────────────────────────────────────────────────────
 //
@@ -208,6 +206,7 @@ pub(crate) const OP_MODES: [u8; NUM_OPCODES] = [
     opmode_byte(0, 0, 1, 0, 1, M_ABC),
     opmode_byte(0, 0, 0, 0, 0, M_AX),
     opmode_byte(0, 0, 0, 0, 0, M_ABX),
+    opmode_byte(0, 0, 0, 0, 1, M_ABC),
     opmode_byte(0, 0, 0, 0, 1, M_ABC),
 ];
 
@@ -423,13 +422,7 @@ impl Instruction {
     ///
     #[inline]
     pub fn abck(op: OpCode, a: u32, b: u32, c: u32, k: u32) -> Self {
-        Self(
-            ((op as u32) << POS_OP)
-                | (a << POS_A)
-                | (b << POS_B)
-                | (c << POS_C)
-                | (k << POS_K),
-        )
+        Self(((op as u32) << POS_OP) | (a << POS_A) | (b << POS_B) | (c << POS_C) | (k << POS_K))
     }
 
     /// Build an `iABx` instruction.
@@ -509,10 +502,11 @@ mod tests {
 
     #[test]
     fn num_opcodes_matches_enum() {
-        assert_eq!(NUM_OPCODES, 85);
+        assert_eq!(NUM_OPCODES, 86);
         assert_eq!(OpCode::ExtraArg as usize, 82);
         assert_eq!(OpCode::ErrNNil as usize, 83);
         assert_eq!(OpCode::VarArgPack as usize, 84);
+        assert_eq!(OpCode::GetVArg as usize, 85);
     }
 
     #[test]
@@ -536,7 +530,7 @@ mod tests {
             let op = OpCode::from_u32(i as u32).expect("valid opcode");
             assert_eq!(op as usize, i);
         }
-        assert!(OpCode::from_u32(85).is_none());
+        assert!(OpCode::from_u32(86).is_none());
     }
 
     #[test]

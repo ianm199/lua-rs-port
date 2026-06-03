@@ -16,11 +16,9 @@
 //! Keeping the platform calls behind hooks lets `lua-stdlib` stay free of
 //! `unsafe` per PORTING.md §1; `libloading` lives entirely in `lua-cli`.
 
-use lua_types::{
- LuaError, LuaType, LuaValue,
-};
+use crate::state_stub::{lua_CFunction, LuaState, LuaStateStubExt as _};
+use lua_types::{LuaError, LuaType, LuaValue};
 use lua_vm::state::{DynLibId, DynamicSymbol};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction};
 
 // ── Module-level constants ────────────────────────────────────────────────────
 
@@ -662,7 +660,12 @@ pub fn ll_searchpath(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Find a module file using the path stored in `package[pname]`.
 ///
 /// const char *pname, const char *dirsep)`
-fn findfile(state: &mut LuaState, name: &[u8], pname: &[u8], dirsep: u8) -> Result<Option<Vec<u8>>, LuaError> {
+fn findfile(
+    state: &mut LuaState,
+    name: &[u8],
+    pname: &[u8],
+    dirsep: u8,
+) -> Result<Option<Vec<u8>>, LuaError> {
     // The package table is upvalue #1 for the searcher closures.
     let uv = state.upvalue_index(1);
     let _ = state.get_field(uv, pname);
@@ -1030,12 +1033,8 @@ pub fn ll_require(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 fn createsearcherstable(state: &mut LuaState) -> Result<(), LuaError> {
     //        searcher_Lua, searcher_C, searcher_Croot, NULL };
-    let searchers: &[fn(&mut LuaState) -> Result<usize, LuaError>] = &[
-        searcher_preload,
-        searcher_lua,
-        searcher_c,
-        searcher_croot,
-    ];
+    let searchers: &[fn(&mut LuaState) -> Result<usize, LuaError>] =
+        &[searcher_preload, searcher_lua, searcher_c, searcher_croot];
 
     state.create_table(searchers.len() as i32, 0)?;
 
@@ -1127,7 +1126,7 @@ fn findtable(state: &mut LuaState, table_idx: i32, name: &[u8]) -> Result<(), Lu
             state.create_table(0, 1)?; // new subtable
             state.push_value(-1)?; // duplicate it
             state.set_field(-3, part)?; // current[part] = subtable
-            // Stack: ..., current, subtable. Remove the parent, keep subtable.
+                                        // Stack: ..., current, subtable. Remove the parent, keep subtable.
             state.remove(-2)?;
         } else if ty == LuaType::Table {
             // Stack: ..., current, value. Remove the parent, keep value.
@@ -1158,7 +1157,7 @@ fn ll_module(state: &mut LuaState) -> Result<usize, LuaError> {
     state.get_field(loaded_idx, &modname)?;
     if state.type_at(-1) != LuaType::Table {
         state.pop_n(1); // remove non-table result
-        // Find/create a global table named `modname` (supporting dotted names).
+                        // Find/create a global table named `modname` (supporting dotted names).
         state.push_globals()?;
         let g_idx = state.top() as i32;
         findtable(state, g_idx, &modname)?;
@@ -1211,8 +1210,14 @@ pub fn luaopen_package(state: &mut LuaState) -> Result<usize, LuaError> {
     // "preload", "cpath", "path", "searchers", "loaded" (all NULL). In Rust
     // those fields are set explicitly below; only the real functions are here.
     state.new_lib(&[
-        (b"loadlib" as &[u8], ll_loadlib as fn(&mut LuaState) -> Result<usize, LuaError>),
-        (b"searchpath", ll_searchpath as fn(&mut LuaState) -> Result<usize, LuaError>),
+        (
+            b"loadlib" as &[u8],
+            ll_loadlib as fn(&mut LuaState) -> Result<usize, LuaError>,
+        ),
+        (
+            b"searchpath",
+            ll_searchpath as fn(&mut LuaState) -> Result<usize, LuaError>,
+        ),
     ])?;
 
     createsearcherstable(state)?;
@@ -1230,7 +1235,7 @@ pub fn luaopen_package(state: &mut LuaState) -> Result<usize, LuaError> {
     config.push(b'\n');
     config.push(LUA_PATH_MARK);
     config.push(b'\n');
-    config.push(b'!');   // LUA_EXEC_DIR
+    config.push(b'!'); // LUA_EXEC_DIR
     config.push(b'\n');
     config.push(LUA_IGMARK);
     config.push(b'\n');
@@ -1248,7 +1253,10 @@ pub fn luaopen_package(state: &mut LuaState) -> Result<usize, LuaError> {
     state.push_globals()?;
     state.push_value(-2)?;
     state.set_funcs_with_upvalues(
-        &[(b"require" as &[u8], ll_require as fn(&mut LuaState) -> Result<usize, LuaError>)],
+        &[(
+            b"require" as &[u8],
+            ll_require as fn(&mut LuaState) -> Result<usize, LuaError>,
+        )],
         1,
     )?;
     state.pop_n(1);

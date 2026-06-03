@@ -8,8 +8,9 @@
 
 // TODO(port): resolve import paths once the crate module graph is settled
 // in Phase B.  These are best-guess paths based on other translated files.
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::state::LuaState;
-#[allow(unused_imports)] use crate::prelude::*;
 use crate::zio::ZIO;
 use lua_types::error::LuaError;
 use lua_types::value::LuaValue;
@@ -17,11 +18,12 @@ use lua_types::value::LuaValue;
 // PORT NOTE: GcRef<T>, LuaProto, LuaClosure, LuaString, UpvalDesc, LocalVar,
 // AbsLineInfo, and Instruction are expected to live in lua_types or lua_vm
 // crates.  All paths below are provisional for Phase A.
-use lua_types::proto::{LuaProto, UpvalDesc, LocalVar, AbsLineInfo};
 use lua_types::closure::LuaLClosure;
-use lua_types::string::LuaString;
 use lua_types::gc::GcRef;
 use lua_types::opcode::Instruction;
+use lua_types::proto::{AbsLineInfo, LocalVar, LuaProto, UpvalDesc};
+use lua_types::string::LuaString;
+use lua_types::LuaVersion;
 
 // ── Constants (from lundump.h) ─────────────────────────────────────────────
 
@@ -36,9 +38,16 @@ const LUAC_INT: i64 = 0x5678;
 /// Reference float written in the header to detect float format mismatches.
 const LUAC_NUM: f64 = 370.5;
 
+const LUAC_INT_55: i64 = -0x5678;
+
+const LUAC_INST_55: u32 = 0x12345678;
+
+const LUAC_NUM_55: f64 = -370.5;
+
 // LUA_VERSION_NUM = 504 → ((5 * 16) + 4) = 0x54 = 84
 /// One-byte version tag: upper nibble = major, lower nibble = minor.
-const LUAC_VERSION: u8 = 0x54;
+const LUAC_VERSION_54: u8 = 0x54;
+const LUAC_VERSION_55: u8 = 0x55;
 
 const LUAC_FORMAT: u8 = 0;
 
@@ -266,6 +275,18 @@ fn load_integer(s: &mut LoadState<'_>) -> Result<i64, LuaError> {
     Ok(i64::from_ne_bytes(buf))
 }
 
+fn load_raw_i32(s: &mut LoadState<'_>) -> Result<i32, LuaError> {
+    let mut buf = [0u8; 4];
+    load_block(s, &mut buf)?;
+    Ok(i32::from_ne_bytes(buf))
+}
+
+fn load_raw_u32(s: &mut LoadState<'_>) -> Result<u32, LuaError> {
+    let mut buf = [0u8; 4];
+    load_block(s, &mut buf)?;
+    Ok(u32::from_ne_bytes(buf))
+}
+
 // ── String loading ─────────────────────────────────────────────────────────
 
 /// Load a nullable string.  Returns `None` if the stored size is zero.
@@ -350,10 +371,7 @@ fn load_string_n(
 /// //   return st;
 /// // }
 /// ```
-fn load_string(
-    s: &mut LoadState<'_>,
-    proto: &LuaProto,
-) -> Result<GcRef<LuaString>, LuaError> {
+fn load_string(s: &mut LoadState<'_>, proto: &LuaProto) -> Result<GcRef<LuaString>, LuaError> {
     match load_string_n(s, proto)? {
         Some(ts) => Ok(ts),
         None => Err(load_error(s, "bad format for constant string")),
@@ -494,7 +512,6 @@ fn load_protos(s: &mut LoadState<'_>, f: &mut LuaProto) -> Result<(), LuaError> 
     // TODO(port): add overflow / OOM check.
     let mut protos = Vec::with_capacity(n);
 
-
     for _ in 0..n {
         let mut sub = LuaProto::placeholder();
 
@@ -557,7 +574,7 @@ fn load_upvalues(s: &mut LoadState<'_>, f: &mut LuaProto) -> Result<(), LuaError
 
         // types.tsv: Upvaldesc.instack → bool (stored as lu_byte in C)
         upvalues.push(UpvalDesc {
-            name: None,           // filled by load_debug
+            name: None, // filled by load_debug
             instack: instack_raw != 0,
             idx,
             kind,
@@ -647,7 +664,11 @@ fn load_debug(s: &mut LoadState<'_>, f: &mut LuaProto) -> Result<(), LuaError> {
             Some(v) => v,
             None => s.state.new_string(b"")?,
         };
-        locvars.push(LocalVar { varname, startpc, endpc });
+        locvars.push(LocalVar {
+            varname,
+            startpc,
+            endpc,
+        });
     }
     f.locvars = locvars;
 
@@ -724,15 +745,23 @@ fn load_function(
 /// C's bytecode layout (which the structural oracle compares).
 ///
 /// A named-vararg function emits exactly one `OP_VARARGPACK` (opcode 84) at
-/// entry; its A operand is the register holding the shared vararg table. The
-/// opcode occupies the low 7 bits of the instruction word and A the next 8.
+/// entry; its A operand is the register holding the shared vararg table. Its
+/// k bit records whether the table must be materialized.
 fn reconstruct_vararg_table_reg(f: &mut LuaProto) {
     const OP_VARARGPACK: u32 = 84;
     const OPCODE_MASK: u32 = 0x7F;
-    f.vararg_table_reg = f.code.iter().find_map(|inst| {
+    const POS_K: u32 = 15;
+    if let Some((reg, needed)) = f.code.iter().find_map(|inst| {
         let raw = inst.raw();
-        (raw & OPCODE_MASK == OP_VARARGPACK).then(|| ((raw >> 7) & 0xFF) as u8)
-    });
+        (raw & OPCODE_MASK == OP_VARARGPACK).then(|| {
+            let reg = ((raw >> 7) & 0xFF) as u8;
+            let needed = ((raw >> POS_K) & 1) != 0;
+            (reg, needed)
+        })
+    }) {
+        f.vararg_table_reg = Some(reg);
+        f.vararg_table_needed = needed;
+    }
 }
 
 // ── Header validation ──────────────────────────────────────────────────────
@@ -790,10 +819,7 @@ fn fcheck_size(
         // luaO_pushfstring to avoid a stack push just for error formatting.
         // TODO(port): include `tname` in the error message once LuaError::syntax
         // supports composing byte-string and &str fragments.
-        return Err(LuaError::syntax(format_args!(
-            "{} size mismatch",
-            tname
-        )));
+        return Err(LuaError::syntax(format_args!("{} size mismatch", tname)));
     }
     Ok(())
 }
@@ -828,8 +854,14 @@ fn check_header(s: &mut LoadState<'_>) -> Result<(), LuaError> {
     // Skip LUA_SIGNATURE[0] (\x1b) — already consumed by the caller.
     check_literal(s, &LUA_SIGNATURE[1..], "not a binary chunk")?;
 
+    let version = s.state.global().lua_version;
+    let expected_version = if matches!(version, LuaVersion::V55) {
+        LUAC_VERSION_55
+    } else {
+        LUAC_VERSION_54
+    };
     let ver = load_byte(s)?;
-    if ver != LUAC_VERSION {
+    if ver != expected_version {
         return Err(load_error(s, "version mismatch"));
     }
 
@@ -840,20 +872,42 @@ fn check_header(s: &mut LoadState<'_>) -> Result<(), LuaError> {
 
     check_literal(s, LUAC_DATA, "corrupted chunk")?;
 
-    fcheck_size(s, 4, "Instruction")?;
+    if matches!(version, LuaVersion::V55) {
+        fcheck_size(s, 4, "int")?;
+        if load_raw_i32(s)? != LUAC_INT_55 as i32 {
+            return Err(load_error(s, "int format mismatch"));
+        }
 
-    fcheck_size(s, 8, "lua_Integer")?;
+        fcheck_size(s, 4, "instruction")?;
+        if load_raw_u32(s)? != LUAC_INST_55 {
+            return Err(load_error(s, "instruction format mismatch"));
+        }
 
-    fcheck_size(s, 8, "lua_Number")?;
+        fcheck_size(s, 8, "Lua integer")?;
+        if load_integer(s)? != LUAC_INT_55 {
+            return Err(load_error(s, "Lua integer format mismatch"));
+        }
 
-    let int_check = load_integer(s)?;
-    if int_check != LUAC_INT {
-        return Err(load_error(s, "integer format mismatch"));
-    }
+        fcheck_size(s, 8, "Lua number")?;
+        if load_number(s)? != LUAC_NUM_55 {
+            return Err(load_error(s, "Lua number format mismatch"));
+        }
+    } else {
+        fcheck_size(s, 4, "Instruction")?;
 
-    let num_check = load_number(s)?;
-    if num_check != LUAC_NUM {
-        return Err(load_error(s, "float format mismatch"));
+        fcheck_size(s, 8, "lua_Integer")?;
+
+        fcheck_size(s, 8, "lua_Number")?;
+
+        let int_check = load_integer(s)?;
+        if int_check != LUAC_INT {
+            return Err(load_error(s, "integer format mismatch"));
+        }
+
+        let num_check = load_number(s)?;
+        if num_check != LUAC_NUM {
+            return Err(load_error(s, "float format mismatch"));
+        }
     }
 
     Ok(())
@@ -918,10 +972,7 @@ pub(crate) fn undump(
     z: &mut ZIO,
     _name: &[u8],
 ) -> Result<GcRef<LuaLClosure>, LuaError> {
-    let mut s = LoadState {
-        state,
-        z,
-    };
+    let mut s = LoadState { state, z };
 
     check_header(&mut s)?;
 
@@ -935,7 +986,9 @@ pub(crate) fn undump(
     let mut cl = LuaLClosure::placeholder();
     let mut upvals_vec = Vec::with_capacity(nupvalues as usize);
     for _ in 0..nupvalues as usize {
-        upvals_vec.push(std::cell::Cell::new(s.state.new_upval_closed(LuaValue::Nil)));
+        upvals_vec.push(std::cell::Cell::new(
+            s.state.new_upval_closed(LuaValue::Nil),
+        ));
     }
     cl.upvals = upvals_vec;
 

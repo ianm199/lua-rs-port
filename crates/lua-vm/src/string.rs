@@ -19,8 +19,9 @@
 //! - `reference/lua-5.4.7/src/lstring.c`  (275 lines, 15 functions)
 //! - `reference/lua-5.4.7/src/lstring.h`  (57 lines; merged here)
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::cell::Cell;
-#[allow(unused_imports)] use crate::prelude::*;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -333,9 +334,7 @@ pub(crate) fn hash_bytes(bytes: &[u8], seed: u32) -> u32 {
     while l > 0 {
         l -= 1;
         // macros.tsv: cast_byte → x as u8 (then as u32 for the arithmetic)
-        h ^= (h << 5)
-            .wrapping_add(h >> 2)
-            .wrapping_add(bytes[l] as u32);
+        h ^= (h << 5).wrapping_add(h >> 2).wrapping_add(bytes[l] as u32);
     }
 
     h
@@ -475,7 +474,10 @@ pub(crate) fn init(state: &mut LuaState) -> Result<(), LuaError> {
 /// //   }
 /// // }
 /// ```
-pub(crate) fn new_lstr(state: &mut LuaState, bytes: &[u8]) -> Result<GcRef<LuaStringImpl>, LuaError> {
+pub(crate) fn new_lstr(
+    state: &mut LuaState,
+    bytes: &[u8],
+) -> Result<GcRef<LuaStringImpl>, LuaError> {
     if bytes.len() <= MAX_SHORT_LEN {
         intern_short_str(state, bytes)
     } else {
@@ -537,7 +539,7 @@ fn create_str_obj(
     // TODO(port): register with GC tracking list (state.global_mut().allgc)
     // in Phase D; Phase A–C creates a bare Rc
     let _ = state; // state needed for GC registration in Phase D
-    // TODO(D-1c-bridge): LuaStringImpl is the rich local type; state helper produces lua_types::LuaString
+                   // TODO(D-1c-bridge): LuaStringImpl is the rich local type; state helper produces lua_types::LuaString
     GcRef::new(LuaStringImpl {
         hash: Cell::new(hash),
         extra: Cell::new(0),
@@ -623,10 +625,7 @@ fn grow_str_tab(state: &mut LuaState) -> Result<(), LuaError> {
 /// PORT NOTE: `lmod(h, tb->size)` (power-of-two bucket modulo via
 /// `macros.tsv: lmod → (s & (size - 1)) as usize`) and the `hnext` chain walk
 /// are both gone.  `HashMap::get` replaces the linear bucket scan.
-fn intern_short_str(
-    state: &mut LuaState,
-    bytes: &[u8],
-) -> Result<GcRef<LuaStringImpl>, LuaError> {
+fn intern_short_str(state: &mut LuaState, bytes: &[u8]) -> Result<GcRef<LuaStringImpl>, LuaError> {
     // In Rust, &[u8] slices are never null; the assertion is trivially satisfied.
 
     let seed = state.global().seed;

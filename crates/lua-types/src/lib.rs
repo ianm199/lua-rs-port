@@ -26,7 +26,7 @@ pub mod version;
 
 // ── Top-level re-exports (most consumers use these flat names) ──────────
 pub use closure::{LuaClosure, LuaLClosure};
-pub use error::{LuaError, LuaExit};
+pub use error::{LuaError, LuaExit, LuaThreadClose};
 pub use filehandle::LuaFileHandle;
 pub use gc::GcRef;
 pub use proto::{AbsLineInfo, LocalVar, LuaProto, UpvalDesc};
@@ -48,25 +48,35 @@ pub struct StackIdx(pub u32);
 impl StackIdx {
     pub const ZERO: Self = StackIdx(0);
     #[inline(always)]
-    pub fn get(self) -> u32 { self.0 }
+    pub fn get(self) -> u32 {
+        self.0
+    }
     #[inline(always)]
-    pub fn as_usize(self) -> usize { self.0 as usize }
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
 }
 
 impl std::ops::Add<i32> for StackIdx {
     type Output = Self;
     #[inline(always)]
-    fn add(self, rhs: i32) -> Self { StackIdx((self.0 as i32 + rhs) as u32) }
+    fn add(self, rhs: i32) -> Self {
+        StackIdx((self.0 as i32 + rhs) as u32)
+    }
 }
 impl std::ops::Sub<i32> for StackIdx {
     type Output = Self;
     #[inline(always)]
-    fn sub(self, rhs: i32) -> Self { StackIdx((self.0 as i32 - rhs) as u32) }
+    fn sub(self, rhs: i32) -> Self {
+        StackIdx((self.0 as i32 - rhs) as u32)
+    }
 }
 impl std::ops::Sub<StackIdx> for StackIdx {
     type Output = i32;
     #[inline(always)]
-    fn sub(self, rhs: StackIdx) -> i32 { self.0 as i32 - rhs.0 as i32 }
+    fn sub(self, rhs: StackIdx) -> i32 {
+        self.0 as i32 - rhs.0 as i32
+    }
 }
 
 /// Index into the call-info stack.
@@ -76,25 +86,29 @@ pub struct CallInfoIdx(pub u32);
 impl CallInfoIdx {
     pub const ZERO: Self = CallInfoIdx(0);
     #[inline(always)]
-    pub fn get(self) -> u32 { self.0 }
+    pub fn get(self) -> u32 {
+        self.0
+    }
     #[inline(always)]
-    pub fn as_usize(self) -> usize { self.0 as usize }
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// The base type tag for a Lua value. Matches C-Lua's LUA_T* constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i8)]
 pub enum LuaType {
-    None          = -1,
-    Nil           = 0,
-    Boolean       = 1,
+    None = -1,
+    Nil = 0,
+    Boolean = 1,
     LightUserData = 2,
-    Number        = 3,
-    String        = 4,
-    Table         = 5,
-    Function      = 6,
-    UserData      = 7,
-    Thread        = 8,
+    Number = 3,
+    String = 4,
+    Table = 5,
+    Function = 6,
+    UserData = 7,
+    Thread = 8,
 }
 
 impl LuaType {

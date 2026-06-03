@@ -9,9 +9,9 @@
 //! Strict mode rejects surrogates (U+D800..U+DFFF) and values above U+10FFFF.
 //! Lax mode accepts any well-formed byte sequence with a value ≤ MAX_UTF.
 
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_types::error::LuaError;
 use lua_types::value::LuaValue;
-use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 const MAX_UNICODE: u32 = 0x10_FFFF;
 
@@ -487,12 +487,18 @@ fn iter_aux(state: &mut LuaState, strict: bool) -> Result<usize, LuaError> {
 
     //    if (next == NULL || iscontp(next)) return luaL_error(L, MSGInvalid);
     match utf8_decode(&s[n as usize..], strict) {
-        None => Err(lua_vm::debug::c_api_runtime(state, b"invalid UTF-8 code".to_vec())),
+        None => Err(lua_vm::debug::c_api_runtime(
+            state,
+            b"invalid UTF-8 code".to_vec(),
+        )),
         Some((remaining, code)) => {
             let next_pos = len - remaining.len(); // 0-based index of the next character
-            // valid sequence indicates a malformed input stream.
+                                                  // valid sequence indicates a malformed input stream.
             if next_pos < len && is_cont(s[next_pos]) {
-                return Err(lua_vm::debug::c_api_runtime(state, b"invalid UTF-8 code".to_vec()));
+                return Err(lua_vm::debug::c_api_runtime(
+                    state,
+                    b"invalid UTF-8 code".to_vec(),
+                ));
             }
             state.push(LuaValue::Int((n + 1) as i64)); // 1-based position for next iteration
             state.push(LuaValue::Int(code as i64));

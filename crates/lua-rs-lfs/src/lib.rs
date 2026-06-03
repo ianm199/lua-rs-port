@@ -62,9 +62,8 @@ fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf, LuaError> {
     }
     #[cfg(not(unix))]
     {
-        let s = std::str::from_utf8(bytes).map_err(|_| {
-            LuaError::runtime(format_args!("path is not valid UTF-8"))
-        })?;
+        let s = std::str::from_utf8(bytes)
+            .map_err(|_| LuaError::runtime(format_args!("path is not valid UTF-8")))?;
         Ok(PathBuf::from(s))
     }
 }
@@ -118,7 +117,14 @@ fn lfs_chdir(state: &mut LuaState) -> Result<usize, LuaError> {
             state.push(LuaValue::Bool(true));
             Ok(1)
         }
-        Err(e) => push_fail(state, &format!("Unable to change working directory to '{}': {}", path.display(), e)),
+        Err(e) => push_fail(
+            state,
+            &format!(
+                "Unable to change working directory to '{}': {}",
+                path.display(),
+                e
+            ),
+        ),
     }
 }
 
@@ -180,7 +186,10 @@ fn lfs_link(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         #[cfg(not(any(unix, windows)))]
         {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "symlinks not supported on this platform"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "symlinks not supported on this platform",
+            ))
         }
     } else {
         std::fs::hard_link(&old_path, &new_path)
@@ -380,9 +389,15 @@ fn push_attr_field(
                 let m = md.permissions().mode() & 0o777;
                 let mut buf = [b'-'; 9];
                 let bits = [
-                    (0o400, 0, b'r'), (0o200, 1, b'w'), (0o100, 2, b'x'),
-                    (0o040, 3, b'r'), (0o020, 4, b'w'), (0o010, 5, b'x'),
-                    (0o004, 6, b'r'), (0o002, 7, b'w'), (0o001, 8, b'x'),
+                    (0o400, 0, b'r'),
+                    (0o200, 1, b'w'),
+                    (0o100, 2, b'x'),
+                    (0o040, 3, b'r'),
+                    (0o020, 4, b'w'),
+                    (0o010, 5, b'x'),
+                    (0o004, 6, b'r'),
+                    (0o002, 7, b'w'),
+                    (0o001, 8, b'x'),
                 ];
                 for (mask, idx, ch) in bits {
                     if m & mask != 0 {
@@ -393,7 +408,11 @@ fn push_attr_field(
             }
             #[cfg(not(unix))]
             {
-                let s = if md.permissions().readonly() { b"r--r--r--" } else { b"rw-rw-rw-" };
+                let s = if md.permissions().readonly() {
+                    b"r--r--r--"
+                } else {
+                    b"rw-rw-rw-"
+                };
                 state.push_string(s)?;
             }
         }
@@ -501,7 +520,14 @@ fn lfs_attributes(state: &mut LuaState) -> Result<usize, LuaError> {
     let md = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
-            return push_fail(state, &format!("cannot obtain information from file '{}': {}", path.display(), e));
+            return push_fail(
+                state,
+                &format!(
+                    "cannot obtain information from file '{}': {}",
+                    path.display(),
+                    e
+                ),
+            );
         }
     };
 
@@ -532,14 +558,22 @@ fn lfs_attributes(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// Fill the table on top of the stack with every attribute field. Used by the
 /// no-request and table-request branches of [`lfs_attributes`].
-fn populate_attr_table(
-    state: &mut LuaState,
-    md: &std::fs::Metadata,
-) -> Result<(), LuaError> {
+fn populate_attr_table(state: &mut LuaState, md: &std::fs::Metadata) -> Result<(), LuaError> {
     const FIELDS: &[&[u8]] = &[
-        b"mode", b"size", b"modification", b"access", b"change",
-        b"permissions", b"nlink", b"uid", b"gid", b"dev", b"rdev",
-        b"ino", b"blocks", b"blksize",
+        b"mode",
+        b"size",
+        b"modification",
+        b"access",
+        b"change",
+        b"permissions",
+        b"nlink",
+        b"uid",
+        b"gid",
+        b"dev",
+        b"rdev",
+        b"ino",
+        b"blocks",
+        b"blksize",
     ];
     for field in FIELDS {
         if !push_attr_field(state, field, md)? {
@@ -639,7 +673,8 @@ fn lfs_dir(state: &mut LuaState) -> Result<usize, LuaError> {
     let ud = state.new_userdata_typed(b"lfs.dir.handle", 0, 0)?;
     let id = ud.identity();
     DIR_ITER_REGISTRY.with(|reg| {
-        reg.borrow_mut().insert(id, DirIterState { iter: Some(iter) });
+        reg.borrow_mut()
+            .insert(id, DirIterState { iter: Some(iter) });
     });
 
     lua_vm::api::push_cclosure(state, lfs_dir_next, 1)?;
@@ -657,14 +692,14 @@ fn upvalue_index(i: i32) -> i32 {
 
 const LFS_FUNCS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] = &[
     (b"attributes", lfs_attributes),
-    (b"chdir",      lfs_chdir),
+    (b"chdir", lfs_chdir),
     (b"currentdir", lfs_currentdir),
-    (b"dir",        lfs_dir),
-    (b"link",       lfs_link),
-    (b"lock_dir",   lfs_lock_dir),
-    (b"mkdir",      lfs_mkdir),
-    (b"rmdir",      lfs_rmdir),
-    (b"touch",      lfs_touch),
+    (b"dir", lfs_dir),
+    (b"link", lfs_link),
+    (b"lock_dir", lfs_lock_dir),
+    (b"mkdir", lfs_mkdir),
+    (b"rmdir", lfs_rmdir),
+    (b"touch", lfs_touch),
 ];
 
 /// Module entry point. Mirrors the stock lfs C signature

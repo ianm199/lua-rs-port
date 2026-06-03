@@ -1350,11 +1350,7 @@ impl Lua {
     /// the closure. The result is threaded back out via an `Option` slot
     /// to satisfy `FnMut`'s constraint on the inner callback. The slot is
     /// always populated by the enter path before it returns.
-    fn dispatch_scoped_borrow<T, F, R>(
-        &self,
-        userdata: &AnyUserData,
-        f: F,
-    ) -> Result<R>
+    fn dispatch_scoped_borrow<T, F, R>(&self, userdata: &AnyUserData, f: F) -> Result<R>
     where
         T: 'static,
         F: FnOnce(&T) -> Result<R>,
@@ -1385,11 +1381,7 @@ impl Lua {
         )))
     }
 
-    fn dispatch_scoped_borrow_mut<T, F, R>(
-        &self,
-        userdata: &AnyUserData,
-        f: F,
-    ) -> Result<R>
+    fn dispatch_scoped_borrow_mut<T, F, R>(&self, userdata: &AnyUserData, f: F) -> Result<R>
     where
         T: 'static,
         F: FnOnce(&mut T) -> Result<R>,
@@ -1444,9 +1436,8 @@ impl Lua {
             match catch_unwind(AssertUnwindSafe(|| {
                 let (userdata, args) = callback_userdata_args(state, &lua)?;
                 let args = A::from_lua_multi(args, &lua)?;
-                let returns = lua.dispatch_scoped_borrow::<T, _, _>(&userdata, |t| {
-                    method(&lua, t, args)
-                })?;
+                let returns =
+                    lua.dispatch_scoped_borrow::<T, _, _>(&userdata, |t| method(&lua, t, args))?;
                 let returns = returns.into_lua_multi(&lua)?;
                 push_callback_returns(state, &lua, returns)
             })) {
@@ -1479,9 +1470,8 @@ impl Lua {
             match catch_unwind(AssertUnwindSafe(|| {
                 let (userdata, args) = callback_userdata_args(state, &lua)?;
                 let args = A::from_lua_multi(args, &lua)?;
-                let returns = lua.dispatch_scoped_borrow_mut::<T, _, _>(&userdata, |t| {
-                    method(&lua, t, args)
-                })?;
+                let returns = lua
+                    .dispatch_scoped_borrow_mut::<T, _, _>(&userdata, |t| method(&lua, t, args))?;
                 let returns = returns.into_lua_multi(&lua)?;
                 push_callback_returns(state, &lua, returns)
             })) {
@@ -1941,12 +1931,11 @@ impl AnyUserData {
         // for multi-level chains.
         if let Ok(parent_cell) = Rc::clone(host).downcast::<ScopedCell<P>>() {
             let parent_for_closure = Rc::clone(&parent_cell);
-            let enter: Box<dyn Fn(&mut dyn FnMut(&mut S)) -> Result<()>> =
-                Box::new(move |f| {
-                    let mut guard = parent_for_closure.try_borrow_mut()?;
-                    f(accessor(&mut *guard));
-                    Ok(())
-                });
+            let enter: Box<dyn Fn(&mut dyn FnMut(&mut S)) -> Result<()>> = Box::new(move |f| {
+                let mut guard = parent_for_closure.try_borrow_mut()?;
+                f(accessor(&mut *guard));
+                Ok(())
+            });
             let cell = Rc::new(DelegatedCell::<S> {
                 enter: RefCell::new(Some(DelegateEnter::Mut(enter))),
             });
@@ -1955,12 +1944,11 @@ impl AnyUserData {
 
         if let Ok(parent_cell) = Rc::clone(host).downcast::<DelegatedCell<P>>() {
             let parent_for_closure = Rc::clone(&parent_cell);
-            let enter: Box<dyn Fn(&mut dyn FnMut(&mut S)) -> Result<()>> =
-                Box::new(move |f| {
-                    parent_for_closure.enter_mut(&mut |p| {
-                        f(accessor(p));
-                    })
-                });
+            let enter: Box<dyn Fn(&mut dyn FnMut(&mut S)) -> Result<()>> = Box::new(move |f| {
+                parent_for_closure.enter_mut(&mut |p| {
+                    f(accessor(p));
+                })
+            });
             let cell = Rc::new(DelegatedCell::<S> {
                 enter: RefCell::new(Some(DelegateEnter::Mut(enter))),
             });
@@ -3477,7 +3465,11 @@ fn apply_sandbox_config(state: &mut LuaState, config: &SandboxConfig) -> Result<
     strip_globals(state, &config.remove_globals)?;
     if config.instruction_limit.is_some() || config.memory_limit_bytes.is_some() {
         let interval = config.check_interval.max(1) as i32;
-        state.install_sandbox_limits(interval, config.instruction_limit, config.memory_limit_bytes);
+        state.install_sandbox_limits(
+            interval,
+            config.instruction_limit,
+            config.memory_limit_bytes,
+        );
     }
     Ok(())
 }
@@ -4005,16 +3997,32 @@ mod tests {
 
         let lua_a = Lua::new();
         let _a1 = lua_a.create_userdata(Marker { v: 1 }).unwrap();
-        assert_eq!(BUILDS.load(Ordering::SeqCst) - start, 1, "state A first build");
+        assert_eq!(
+            BUILDS.load(Ordering::SeqCst) - start,
+            1,
+            "state A first build"
+        );
         let _a2 = lua_a.create_userdata(Marker { v: 2 }).unwrap();
-        assert_eq!(BUILDS.load(Ordering::SeqCst) - start, 1, "state A reuses cache");
+        assert_eq!(
+            BUILDS.load(Ordering::SeqCst) - start,
+            1,
+            "state A reuses cache"
+        );
 
         let lua_b = Lua::new();
         let _b1 = lua_b.create_userdata(Marker { v: 3 }).unwrap();
-        assert_eq!(BUILDS.load(Ordering::SeqCst) - start, 2, "state B is independent");
+        assert_eq!(
+            BUILDS.load(Ordering::SeqCst) - start,
+            2,
+            "state B is independent"
+        );
 
         let _a3 = lua_a.create_userdata(Marker { v: 4 }).unwrap();
-        assert_eq!(BUILDS.load(Ordering::SeqCst) - start, 2, "state A still cached");
+        assert_eq!(
+            BUILDS.load(Ordering::SeqCst) - start,
+            2,
+            "state A still cached"
+        );
     }
 
     /// Field beats method when names collide. The composed `__index` looks up
@@ -4038,7 +4046,10 @@ mod tests {
             .unwrap();
 
         let r: i64 = lua.load("return v.x").eval().unwrap();
-        assert_eq!(r, 42, "the field getter should beat the method of the same name");
+        assert_eq!(
+            r, 42,
+            "the field getter should beat the method of the same name"
+        );
     }
 
     /// Direct Lua-side proof the cache is real: two userdata of the same type
@@ -4065,7 +4076,10 @@ mod tests {
             .load("return getmetatable(a) == getmetatable(b)")
             .eval()
             .unwrap();
-        assert!(same, "cached metatable must be shared across values of the same type");
+        assert!(
+            same,
+            "cached metatable must be shared across values of the same type"
+        );
     }
 
     #[test]
@@ -4530,7 +4544,10 @@ mod tests {
             msg.contains("already") && msg.contains("borrowed"),
             "expected borrow-conflict error, got: {msg}"
         );
-        assert_eq!(counter.value, 1, "outer mutation persists despite inner failure");
+        assert_eq!(
+            counter.value, 1,
+            "outer mutation persists despite inner failure"
+        );
     }
 
     /// Two shared borrows of the same scoped cell must be compatible: a
@@ -5023,7 +5040,8 @@ mod tests {
                 })?;
                 lua.globals().set(format!("f{}", i).as_str(), &f)?;
             }
-            lua.load("f1(); f2(); f3(); f4(); f5(); f6(); f7(); f8()").exec()
+            lua.load("f1(); f2(); f3(); f4(); f5(); f6(); f7(); f8()")
+                .exec()
         })
         .expect("scope with many closures should succeed");
         assert_eq!(total.get(), 36);
@@ -5079,7 +5097,8 @@ mod tests {
             let clone = ud.clone();
             lua.globals().set("a", &ud)?;
             lua.globals().set("b", &clone)?;
-            lua.load("assert(a:get() == 9); assert(b:get() == 9)").exec()
+            lua.load("assert(a:get() == 9); assert(b:get() == 9)")
+                .exec()
         })
         .expect("scope body should succeed");
 
@@ -5117,7 +5136,8 @@ mod tests {
             lua.scope(|inner| {
                 let i = inner.create_userdata_ref_mut(&lua, &mut inner_counter)?;
                 lua.globals().set("inner", &i)?;
-                lua.load("assert(outer:get() == 1); assert(inner:get() == 100)").exec()
+                lua.load("assert(outer:get() == 1); assert(inner:get() == 100)")
+                    .exec()
             })?;
 
             // Inner ended. `inner` global is dead, but `outer` is still live.
@@ -5195,7 +5215,9 @@ mod tests {
         assert!(m.is_err(), "mut borrow while shared-held must fail");
         drop(s);
 
-        let mut m = cell.try_borrow_mut().expect("mut borrow after shared release");
+        let mut m = cell
+            .try_borrow_mut()
+            .expect("mut borrow after shared release");
         *m = 100;
         drop(m);
         assert_eq!(data, 100);
@@ -5236,7 +5258,8 @@ mod tests {
         });
 
         let lua = Lua::new();
-        cell.try_call(&lua, Vec::new()).expect("pre-invalidate call");
+        cell.try_call(&lua, Vec::new())
+            .expect("pre-invalidate call");
         counter.set(counter.get() + 1);
 
         cell.invalidate();

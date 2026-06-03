@@ -102,11 +102,7 @@ fn msghandler(state: &mut LuaState) -> Result<usize, LuaError> {
                 return Ok(1);
             }
             let tn = api::type_name(state, api::lua_type_at(state, 1));
-            format!(
-                "(error object is a {} value)",
-                String::from_utf8_lossy(tn)
-            )
-            .into_bytes()
+            format!("(error object is a {} value)", String::from_utf8_lossy(tn)).into_bytes()
         }
     };
     auxlib::traceback(state, None, Some(&msg), 1)?;
@@ -233,11 +229,8 @@ impl SandboxCliOpts {
     /// Resolve the effective instruction limit: an explicit `--max-instructions`
     /// wins, otherwise the strict preset's 10M when `--sandbox` is set.
     fn instruction_limit(&self) -> Option<u64> {
-        self.max_instructions.or(if self.strict {
-            Some(10_000_000)
-        } else {
-            None
-        })
+        self.max_instructions
+            .or(if self.strict { Some(10_000_000) } else { None })
     }
 
     /// Resolve the effective memory limit: explicit `--max-memory`, otherwise
@@ -254,9 +247,7 @@ impl SandboxCliOpts {
 /// Whether `a` is one of the sandbox long-options (so `collectargs` accepts it
 /// rather than rejecting it as an unknown option).
 fn is_sandbox_opt(a: &[u8]) -> bool {
-    a == b"--sandbox"
-        || a.starts_with(b"--max-instructions=")
-        || a.starts_with(b"--max-memory=")
+    a == b"--sandbox" || a.starts_with(b"--max-instructions=") || a.starts_with(b"--max-memory=")
 }
 
 /// Parse a byte count with an optional `K`/`M`/`G` (1024-based) suffix.
@@ -391,7 +382,12 @@ impl Cli {
     /// installed `msghandler`, so any error comes back as a traceback string.
     /// C-Lua's SIGINT-driven interrupt of a running chunk (`laction`/`lstop`)
     /// is not yet ported; see the `repl.rs` PORT STATUS for why.
-    pub(crate) fn docall(&self, state: &mut LuaState, nargs: i32, nres: i32) -> Result<(), LuaError> {
+    pub(crate) fn docall(
+        &self,
+        state: &mut LuaState,
+        nargs: i32,
+        nres: i32,
+    ) -> Result<(), LuaError> {
         let base = api::get_top(state) - nargs;
         api::push_cclosure(state, msghandler, 0)?;
         state.insert(base)?;
@@ -473,7 +469,9 @@ impl Cli {
 
         let load = (|| {
             if api::get_global(state, b"require")? != LuaType::Function {
-                return Err(LuaError::runtime(format_args!("'require' is not a function")));
+                return Err(LuaError::runtime(format_args!(
+                    "'require' is not a function"
+                )));
             }
             api::push_lstring(state, modname)?;
             Ok(())
@@ -574,7 +572,11 @@ impl Cli {
         let _ = err.write_all(prog);
         let _ = err.write_all(b": ");
         if badoption.get(1) == Some(&b'e') || badoption.get(1) == Some(&b'l') {
-            let _ = writeln!(err, "'{}' needs argument", String::from_utf8_lossy(badoption));
+            let _ = writeln!(
+                err,
+                "'{}' needs argument",
+                String::from_utf8_lossy(badoption)
+            );
         } else {
             let _ = writeln!(
                 err,
@@ -662,14 +664,14 @@ fn pmain_body(
     let (args, script) = collectargs(argv);
 
     let mut cli = Cli {
-        progname: argv
-            .first()
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_vec()),
+        progname: argv.first().filter(|p| !p.is_empty()).map(|p| p.to_vec()),
     };
 
     if args == HAS_ERROR {
-        let bad = argv.get(script as usize).map(|v| v.as_slice()).unwrap_or(b"");
+        let bad = argv
+            .get(script as usize)
+            .map(|v| v.as_slice())
+            .unwrap_or(b"");
         cli.print_usage(bad);
         return false;
     }
@@ -710,9 +712,10 @@ fn pmain_body(
     let sandbox_opts = parse_sandbox_opts(argv);
     if sandbox_opts.active() {
         if sandbox_opts.strict {
-            if let Err(e) =
-                lua_stdlib::sandbox::strip_globals(state, lua_stdlib::sandbox::STRICT_REMOVED_GLOBALS)
-            {
+            if let Err(e) = lua_stdlib::sandbox::strip_globals(
+                state,
+                lua_stdlib::sandbox::STRICT_REMOVED_GLOBALS,
+            ) {
                 cli.report(Err(e));
                 return false;
             }
@@ -733,7 +736,11 @@ fn pmain_body(
         return false;
     }
 
-    let optlim = if script > 0 { script } else { argv.len() as i32 };
+    let optlim = if script > 0 {
+        script
+    } else {
+        argv.len() as i32
+    };
     if !cli.runargs(state, argv, optlim) {
         return false;
     }
@@ -773,10 +780,7 @@ pub(crate) fn run(
     state.global_mut().cli_argv = Some(argv.to_vec());
     state.global_mut().cli_preload = Some(preload);
 
-    let progname = argv
-        .first()
-        .filter(|p| !p.is_empty())
-        .map(|p| p.to_vec());
+    let progname = argv.first().filter(|p| !p.is_empty()).map(|p| p.to_vec());
 
     if let Err(e) = api::push_cclosure(state, pmain, 0) {
         Cli { progname }.report(Err(e));

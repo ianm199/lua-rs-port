@@ -128,25 +128,46 @@ pub struct TableNode {
 
 impl TableNode {
     fn empty() -> Self {
-        TableNode { value: LuaValue::Nil, key: LuaValue::Nil, next: 0 }
+        TableNode {
+            value: LuaValue::Nil,
+            key: LuaValue::Nil,
+            next: 0,
+        }
     }
 
-    fn key_is_nil(&self) -> bool { matches!(self.key, LuaValue::Nil) }
-    fn key_is_int(&self) -> bool { matches!(self.key, LuaValue::Int(_)) }
+    fn key_is_nil(&self) -> bool {
+        matches!(self.key, LuaValue::Nil)
+    }
+    fn key_is_int(&self) -> bool {
+        matches!(self.key, LuaValue::Int(_))
+    }
     fn key_int(&self) -> i64 {
-        if let LuaValue::Int(i) = self.key { i }
-        else { panic!("TableNode::key_int: key is not int") }
+        if let LuaValue::Int(i) = self.key {
+            i
+        } else {
+            panic!("TableNode::key_int: key is not int")
+        }
     }
     fn key_is_short_str(&self) -> bool {
-        if let LuaValue::Str(s) = &self.key { s.is_short() }
-        else { false }
+        if let LuaValue::Str(s) = &self.key {
+            s.is_short()
+        } else {
+            false
+        }
     }
     fn key_string(&self) -> &GcRef<LuaString> {
-        if let LuaValue::Str(s) = &self.key { s }
-        else { panic!("TableNode::key_string: key is not a string") }
+        if let LuaValue::Str(s) = &self.key {
+            s
+        } else {
+            panic!("TableNode::key_string: key is not a string")
+        }
     }
-    fn key_value(&self) -> LuaValue { self.key.clone() }
-    fn set_key(&mut self, k: &LuaValue) { self.key = k.clone(); }
+    fn key_value(&self) -> LuaValue {
+        self.key.clone()
+    }
+    fn set_key(&mut self, k: &LuaValue) {
+        self.key = k.clone();
+    }
 }
 
 #[inline]
@@ -175,18 +196,22 @@ pub enum TableSlotRef {
 /// Computes `ceil(log2(x))`; returns the minimum `k` such that `2^k >= x`.
 fn ceil_log2(x: u32) -> i32 {
     static LOG_2: [u8; 256] = [
-        0,1,2,2,3,3,3,3,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
-        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
-        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
-        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
     ];
     let mut l: i32 = 0;
     let mut x = x.wrapping_sub(1);
-    while x >= 256 { l += 8; x >>= 8; }
+    while x >= 256 {
+        l += 8;
+        x >>= 8;
+    }
     l + LOG_2[x as usize] as i32
 }
 
@@ -208,7 +233,11 @@ fn hash_float(n: f64) -> i32 {
         return 0;
     }
     let u = (exp as u32).wrapping_add(ni as u32);
-    if u <= i32::MAX as u32 { u as i32 } else { !(u as i32) }
+    if u <= i32::MAX as u32 {
+        u as i32
+    } else {
+        !(u as i32)
+    }
 }
 
 /// Decompose `x` into mantissa ∈ `[0.5, 1)` and integer exponent.
@@ -257,25 +286,37 @@ impl TableInner {
 
     /// `isdummy(t)` — true when the table has no allocated hash part.
     #[inline]
-    fn is_dummy(&self) -> bool { self.lastfree.is_none() }
+    fn is_dummy(&self) -> bool {
+        self.lastfree.is_none()
+    }
 
     /// `sizenode(t)` — nominal hash-part capacity (`1 << lsizenode`).
     #[inline]
-    fn sizenode(&self) -> u32 { 1u32 << self.lsizenode }
+    fn sizenode(&self) -> u32 {
+        1u32 << self.lsizenode
+    }
 
     /// `allocsizenode(t)` — 0 when dummy, else `1 << lsizenode`.
     #[inline]
     fn alloc_sizenode(&self) -> u32 {
-        if self.is_dummy() { 0 } else { self.sizenode() }
+        if self.is_dummy() {
+            0
+        } else {
+            self.sizenode()
+        }
     }
 
     /// `isrealasize(t)` accessor.
     #[inline]
-    fn is_real_asize(&self) -> bool { self.flags.is_real_asize() }
+    fn is_real_asize(&self) -> bool {
+        self.flags.is_real_asize()
+    }
 
     /// `ispow2(x)` — C treats 0 as a power of two.
     #[inline]
-    fn is_pow2(x: u32) -> bool { x == 0 || x.is_power_of_two() }
+    fn is_pow2(x: u32) -> bool {
+        x == 0 || x.is_power_of_two()
+    }
 
     /// Returns the real size of the array part. C: `luaH_realasize`.
     fn real_asize(&self) -> u32 {
@@ -289,9 +330,7 @@ impl TableInner {
         size |= size >> 8;
         size |= size >> 16;
         size = size.wrapping_add(1);
-        debug_assert!(
-            Self::is_pow2(size) && size / 2 < self.alimit && self.alimit < size
-        );
+        debug_assert!(Self::is_pow2(size) && size / 2 < self.alimit && self.alimit < size);
         size
     }
 
@@ -402,7 +441,9 @@ impl TableInner {
             LuaValue::Str(ns) if ns.is_long() => {
                 if let LuaValue::Str(ks) = k1 {
                     lua_string_content_eq(ks, ns)
-                } else { false }
+                } else {
+                    false
+                }
             }
             _ => Self::gc_ptr_eq(k1, &n2.key),
         }
@@ -427,14 +468,18 @@ impl TableInner {
     // ── Generic hash-part lookup ───────────────────────────────────────────
 
     fn get_generic_slot(&self, key: &LuaValue) -> TableSlotRef {
-        if self.is_dummy() { return TableSlotRef::Absent; }
+        if self.is_dummy() {
+            return TableSlotRef::Absent;
+        }
         let mut n = self.main_position(key);
         loop {
             if Self::equal_key(key, &self.node[n]) {
                 return TableSlotRef::Hash(n);
             }
             let nx = self.node[n].next;
-            if nx == 0 { return TableSlotRef::Absent; }
+            if nx == 0 {
+                return TableSlotRef::Absent;
+            }
             n = (n as isize + nx as isize) as usize;
         }
     }
@@ -443,21 +488,31 @@ impl TableInner {
 
     fn array_index(k: i64) -> u32 {
         let uk = k as u64;
-        if uk.wrapping_sub(1) < MAXASIZE as u64 { k as u32 } else { 0 }
+        if uk.wrapping_sub(1) < MAXASIZE as u64 {
+            k as u32
+        } else {
+            0
+        }
     }
 
     /// Find the linear traversal position of `key`. Returns 0 for `Nil`
     /// (first iteration). Errors with `"invalid key to 'next'"` when
     /// the key is non-nil and not present in the table.
     fn find_index(&self, key: &LuaValue, asize: u32) -> Result<u32, LuaError> {
-        if matches!(key, LuaValue::Nil) { return Ok(0); }
-        let i = if let LuaValue::Int(k) = key { Self::array_index(*k) } else { 0 };
-        if i.wrapping_sub(1) < asize { return Ok(i); }
+        if matches!(key, LuaValue::Nil) {
+            return Ok(0);
+        }
+        let i = if let LuaValue::Int(k) = key {
+            Self::array_index(*k)
+        } else {
+            0
+        };
+        if i.wrapping_sub(1) < asize {
+            return Ok(i);
+        }
         let slot = self.get_generic_slot(key);
         match slot {
-            TableSlotRef::Absent => {
-                Err(LuaError::runtime(format_args!("invalid key to 'next'")))
-            }
+            TableSlotRef::Absent => Err(LuaError::runtime(format_args!("invalid key to 'next'"))),
             TableSlotRef::Hash(node_idx) => Ok((node_idx as u32 + 1) + asize),
             TableSlotRef::Array(_) => unreachable!("getgeneric returned Array slot"),
         }
@@ -478,7 +533,10 @@ impl TableInner {
         let mut hi = i.saturating_sub(asize as usize);
         while hi < self.node.len() {
             if !matches!(self.node[hi].value, LuaValue::Nil) {
-                return Ok(Some((self.node[hi].key_value(), self.node[hi].value.clone())));
+                return Ok(Some((
+                    self.node[hi].key_value(),
+                    self.node[hi].value.clone(),
+                )));
             }
             hi += 1;
         }
@@ -493,7 +551,9 @@ impl TableInner {
         let mut na: u32 = 0;
         let mut optimal: u32 = 0;
         for i in 0..nums.len() {
-            if twotoi == 0 || *pna <= twotoi / 2 { break; }
+            if twotoi == 0 || *pna <= twotoi / 2 {
+                break;
+            }
             a += nums[i];
             if a > twotoi / 2 {
                 optimal = twotoi;
@@ -511,11 +571,16 @@ impl TableInner {
         if k != 0 {
             nums[ceil_log2(k) as usize] += 1;
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     fn num_use_array(&self, nums: &mut [u32]) -> u32 {
-        debug_assert!(self.is_real_asize(), "numusearray: alimit must be real size");
+        debug_assert!(
+            self.is_real_asize(),
+            "numusearray: alimit must be real size"
+        );
         let asize = self.alimit as usize;
         let mut ause: u32 = 0;
         let mut i: usize = 1;
@@ -523,9 +588,13 @@ impl TableInner {
         for lg in 0..=(MAXABITS as usize) {
             let mut lc: u32 = 0;
             let lim = if ttlg > asize { asize } else { ttlg };
-            if i > lim { break; }
+            if i > lim {
+                break;
+            }
             while i <= lim {
-                if !matches!(self.array[i - 1], LuaValue::Nil) { lc += 1; }
+                if !matches!(self.array[i - 1], LuaValue::Nil) {
+                    lc += 1;
+                }
                 i += 1;
             }
             nums[lg] += lc;
@@ -544,7 +613,9 @@ impl TableInner {
             let n = &self.node[i];
             if !matches!(n.value, LuaValue::Nil) {
                 if n.key_is_int() {
-                    if Self::count_int(n.key_int(), nums) { ause += 1; }
+                    if Self::count_int(n.key_int(), nums) {
+                        ause += 1;
+                    }
                 }
                 totaluse += 1;
             }
@@ -565,7 +636,9 @@ impl TableInner {
             }
             let actual_size = 1u32 << lsize;
             let mut nodes = Vec::with_capacity(actual_size as usize);
-            for _ in 0..actual_size { nodes.push(TableNode::empty()); }
+            for _ in 0..actual_size {
+                nodes.push(TableNode::empty());
+            }
             self.node = nodes;
             self.lsizenode = lsize as u8;
             self.lastfree = Some(actual_size as usize);
@@ -642,7 +715,9 @@ impl TableInner {
         totaluse += self.num_use_hash(&mut nums, &mut na);
 
         if let LuaValue::Int(ek) = extra_key {
-            if Self::count_int(*ek, &mut nums) { na += 1; }
+            if Self::count_int(*ek, &mut nums) {
+                na += 1;
+            }
         }
         totaluse += 1;
 
@@ -653,7 +728,9 @@ impl TableInner {
     }
 
     fn get_free_pos(&mut self) -> Option<usize> {
-        if self.is_dummy() { return None; }
+        if self.is_dummy() {
+            return None;
+        }
         loop {
             let lf = self.lastfree?;
             if lf == 0 {
@@ -669,9 +746,13 @@ impl TableInner {
     }
 
     fn find_chain_predecessor(&self, idx: usize) -> Option<usize> {
-        self.node.iter().enumerate().find(|(prev, node)| {
-            node.next != 0 && (*prev as isize + node.next as isize) == idx as isize
-        }).map(|(prev, _)| prev)
+        self.node
+            .iter()
+            .enumerate()
+            .find(|(prev, node)| {
+                node.next != 0 && (*prev as isize + node.next as isize) == idx as isize
+            })
+            .map(|(prev, _)| prev)
     }
 
     fn clear_node(&mut self, idx: usize) {
@@ -732,10 +813,16 @@ impl TableInner {
             if k as f64 == f {
                 normalised_key = LuaValue::Int(k);
                 &normalised_key
-            } else { key }
-        } else { key };
+            } else {
+                key
+            }
+        } else {
+            key
+        };
 
-        if matches!(value, LuaValue::Nil) { return Ok(()); }
+        if matches!(value, LuaValue::Nil) {
+            return Ok(());
+        }
 
         if self.is_dummy() && !matches!(key, LuaValue::Int(_)) {
             self.set_node_vector(DUMMY_TABLE_INIT_HASH_NODES)?;
@@ -810,14 +897,18 @@ impl TableInner {
                 return TableSlotRef::Array((key - 1) as usize);
             }
         }
-        if self.is_dummy() { return TableSlotRef::Absent; }
+        if self.is_dummy() {
+            return TableSlotRef::Absent;
+        }
         let mut n = self.hash_idx_for_int(key);
         loop {
             if self.node[n].key_is_int() && self.node[n].key_int() == key {
                 return TableSlotRef::Hash(n);
             }
             let nx = self.node[n].next;
-            if nx == 0 { break; }
+            if nx == 0 {
+                break;
+            }
             n = (n as isize + nx as isize) as usize;
         }
         TableSlotRef::Absent
@@ -850,14 +941,18 @@ impl TableInner {
                 return self.array[(key - 1) as usize].clone();
             }
         }
-        if self.is_dummy() { return LuaValue::Nil; }
+        if self.is_dummy() {
+            return LuaValue::Nil;
+        }
         let mut n = self.hash_idx_for_int(key);
         loop {
             if self.node[n].key_is_int() && self.node[n].key_int() == key {
                 return self.node[n].value.clone();
             }
             let nx = self.node[n].next;
-            if nx == 0 { break; }
+            if nx == 0 {
+                break;
+            }
             n = (n as isize + nx as isize) as usize;
         }
         LuaValue::Nil
@@ -865,7 +960,9 @@ impl TableInner {
 
     fn get_short_str_slot(&self, key: &GcRef<LuaString>) -> TableSlotRef {
         debug_assert!(key.is_short());
-        if self.is_dummy() { return TableSlotRef::Absent; }
+        if self.is_dummy() {
+            return TableSlotRef::Absent;
+        }
         let mut n = self.hashpow2_idx(key.hash());
         loop {
             if self.node[n].key_is_short_str() {
@@ -875,7 +972,9 @@ impl TableInner {
                 }
             }
             let nx = self.node[n].next;
-            if nx == 0 { return TableSlotRef::Absent; }
+            if nx == 0 {
+                return TableSlotRef::Absent;
+            }
             n = (n as isize + nx as isize) as usize;
         }
     }
@@ -890,7 +989,9 @@ impl TableInner {
     #[inline]
     fn get_str_value(&self, key: &GcRef<LuaString>) -> LuaValue {
         debug_assert!(key.is_short());
-        if self.is_dummy() { return LuaValue::Nil; }
+        if self.is_dummy() {
+            return LuaValue::Nil;
+        }
         let mut n = self.hashpow2_idx(key.hash());
         loop {
             if self.node[n].key_is_short_str() {
@@ -900,7 +1001,9 @@ impl TableInner {
                 }
             }
             let nx = self.node[n].next;
-            if nx == 0 { return LuaValue::Nil; }
+            if nx == 0 {
+                return LuaValue::Nil;
+            }
             n = (n as isize + nx as isize) as usize;
         }
     }
@@ -933,8 +1036,11 @@ impl TableInner {
             LuaValue::Float(f) => {
                 let f = *f;
                 let k = f as i64;
-                if k as f64 == f { self.get_int_slot(k) }
-                else { self.get_generic_slot(key) }
+                if k as f64 == f {
+                    self.get_int_slot(k)
+                } else {
+                    self.get_generic_slot(key)
+                }
             }
             _ => self.get_generic_slot(key),
         }
@@ -948,11 +1054,22 @@ impl TableInner {
         }
     }
 
-    fn finish_set(&mut self, key: &LuaValue, slot: TableSlotRef, value: LuaValue) -> Result<(), LuaError> {
+    fn finish_set(
+        &mut self,
+        key: &LuaValue,
+        slot: TableSlotRef,
+        value: LuaValue,
+    ) -> Result<(), LuaError> {
         match slot {
             TableSlotRef::Absent => self.new_key(key, value),
-            TableSlotRef::Array(i) => { self.array[i] = value; Ok(()) }
-            TableSlotRef::Hash(i) => { self.node[i].value = value; Ok(()) }
+            TableSlotRef::Array(i) => {
+                self.array[i] = value;
+                Ok(())
+            }
+            TableSlotRef::Hash(i) => {
+                self.node[i].value = value;
+                Ok(())
+            }
         }
     }
 
@@ -986,8 +1103,14 @@ impl TableInner {
                 let k = LuaValue::Int(key);
                 self.new_key(&k, value)
             }
-            TableSlotRef::Array(i) => { self.array[i] = value; Ok(()) }
-            TableSlotRef::Hash(i) => { self.node[i].value = value; Ok(()) }
+            TableSlotRef::Array(i) => {
+                self.array[i] = value;
+                Ok(())
+            }
+            TableSlotRef::Hash(i) => {
+                self.node[i].value = value;
+                Ok(())
+            }
         }
     }
 
@@ -1045,7 +1168,9 @@ impl TableInner {
                     return Ok(());
                 }
                 let nx = self.node[n].next;
-                if nx == 0 { break; }
+                if nx == 0 {
+                    break;
+                }
                 n = (n as isize + nx as isize) as usize;
             }
         }
@@ -1070,7 +1195,9 @@ impl TableInner {
 
     fn hash_search(&self, mut j: u64) -> u64 {
         let mut i: u64;
-        if j == 0 { j = 1; }
+        if j == 0 {
+            j = 1;
+        }
         loop {
             i = j;
             if j <= (i64::MAX as u64) / 2 {
@@ -1078,22 +1205,31 @@ impl TableInner {
             } else {
                 j = i64::MAX as u64;
                 let s = self.get_int_slot(j as i64);
-                if matches!(s, TableSlotRef::Absent)
-                    || matches!(self.slot_value(s), LuaValue::Nil)
+                if matches!(s, TableSlotRef::Absent) || matches!(self.slot_value(s), LuaValue::Nil)
                 {
                     break;
-                } else { return j; }
+                } else {
+                    return j;
+                }
             }
             let s = self.get_int_slot(j as i64);
-            if matches!(s, TableSlotRef::Absent) { break; }
-            if matches!(self.slot_value(s), LuaValue::Nil) { break; }
+            if matches!(s, TableSlotRef::Absent) {
+                break;
+            }
+            if matches!(self.slot_value(s), LuaValue::Nil) {
+                break;
+            }
         }
         while j - i > 1 {
             let m = i / 2 + j / 2;
             let s = self.get_int_slot(m as i64);
-            let empty = matches!(s, TableSlotRef::Absent)
-                || matches!(self.slot_value(s), LuaValue::Nil);
-            if empty { j = m; } else { i = m; }
+            let empty =
+                matches!(s, TableSlotRef::Absent) || matches!(self.slot_value(s), LuaValue::Nil);
+            if empty {
+                j = m;
+            } else {
+                i = m;
+            }
         }
         i
     }
@@ -1101,8 +1237,11 @@ impl TableInner {
     fn bin_search(array: &[LuaValue], mut i: u32, mut j: u32) -> u32 {
         while j - i > 1 {
             let m = (i + j) / 2;
-            if matches!(array[(m - 1) as usize], LuaValue::Nil) { j = m; }
-            else { i = m; }
+            if matches!(array[(m - 1) as usize], LuaValue::Nil) {
+                j = m;
+            } else {
+                i = m;
+            }
         }
         i
     }
@@ -1192,7 +1331,9 @@ impl Default for LuaTable {
 impl LuaTable {
     /// Construct an empty table. Used as a placeholder by callers that
     /// will populate it via the normal API.
-    pub fn placeholder() -> Self { Self::default() }
+    pub fn placeholder() -> Self {
+        Self::default()
+    }
 
     /// Borrow inner storage for read access. Intended for advanced
     /// callers (e.g. the GC trace impl); prefer the typed methods.
@@ -1265,7 +1406,9 @@ impl LuaTable {
     pub fn get_str_bytes(&self, key_bytes: &[u8]) -> LuaValue {
         let mut found = LuaValue::Nil;
         self.for_each_entry(|k, v| {
-            if !matches!(found, LuaValue::Nil) { return; }
+            if !matches!(found, LuaValue::Nil) {
+                return;
+            }
             if let LuaValue::Str(s) = k {
                 if s.as_bytes() == key_bytes {
                     found = v.clone();
@@ -1278,9 +1421,13 @@ impl LuaTable {
     /// Raw set without metamethod dispatch. Nil keys are an error;
     /// NaN-float keys are an error. Setting `v == Nil` clears the slot.
     pub fn raw_set(&self, k: LuaValue, v: LuaValue) {
-        if matches!(k, LuaValue::Nil) { return; }
+        if matches!(k, LuaValue::Nil) {
+            return;
+        }
         if let LuaValue::Float(f) = &k {
-            if f.is_nan() { return; }
+            if f.is_nan() {
+                return;
+            }
         }
         let mut inner = self.inner.borrow_mut();
         let _ = inner.set(&k, v);
@@ -1294,9 +1441,7 @@ impl LuaTable {
     #[inline]
     pub fn try_raw_set(&self, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
         match &k {
-            LuaValue::Nil => {
-                Err(LuaError::runtime(format_args!("table index is nil")))
-            }
+            LuaValue::Nil => Err(LuaError::runtime(format_args!("table index is nil"))),
             LuaValue::Float(f) if f.is_nan() => {
                 Err(LuaError::runtime(format_args!("table index is NaN")))
             }
@@ -1354,7 +1499,9 @@ impl LuaTable {
 
     /// Number of array-part slots currently allocated. Cheap counter
     /// for sizing decisions; NOT the Lua `#t` length operator.
-    pub fn array_len(&self) -> usize { self.inner.borrow().array.len() }
+    pub fn array_len(&self) -> usize {
+        self.inner.borrow().array.len()
+    }
 
     /// Total occupied slots (array + hash) — used for legacy
     /// `len()` callers; prefer `getn` for the Lua `#` operator.
@@ -1362,14 +1509,20 @@ impl LuaTable {
         let inner = self.inner.borrow();
         let mut n = 0usize;
         for v in inner.array.iter() {
-            if !matches!(v, LuaValue::Nil) { n += 1; }
+            if !matches!(v, LuaValue::Nil) {
+                n += 1;
+            }
         }
         for node in inner.node.iter() {
-            if !matches!(node.value, LuaValue::Nil) { n += 1; }
+            if !matches!(node.value, LuaValue::Nil) {
+                n += 1;
+            }
         }
         n
     }
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// `#t` boundary (C: `luaH_getn`). Mutates internal caching state.
     pub fn getn(&self) -> u64 {
@@ -1380,7 +1533,9 @@ impl LuaTable {
     /// Returns true iff `k` resolves to a slot in this table (array or
     /// hash). Used by `next` to validate the resumption key.
     pub fn contains_key(&self, k: &LuaValue) -> bool {
-        if matches!(k, LuaValue::Nil) { return false; }
+        if matches!(k, LuaValue::Nil) {
+            return false;
+        }
         let inner = self.inner.borrow();
         let slot = inner.get_slot(k);
         !matches!(slot, TableSlotRef::Absent)
@@ -1399,7 +1554,9 @@ impl LuaTable {
         *self.metatable.borrow_mut() = mt;
     }
 
-    pub fn weak_mode(&self) -> u8 { self.weak_mode.get() }
+    pub fn weak_mode(&self) -> u8 {
+        self.weak_mode.get()
+    }
 
     /// Implements Lua's `next(t, k)`.
     pub fn next_pair(&self, k: &LuaValue) -> Option<(LuaValue, LuaValue)> {
@@ -1463,20 +1620,26 @@ impl LuaTable {
         is_value_reachable: &dyn Fn(&LuaValue) -> bool,
     ) -> Vec<LuaValue> {
         let mode = self.weak_mode.get();
-        if mode == 0 { return Vec::new(); }
+        if mode == 0 {
+            return Vec::new();
+        }
         let weak_k = (mode & WEAK_KEYS) != 0;
         let weak_v = (mode & WEAK_VALUES) != 0;
         let mut to_mark: Vec<LuaValue> = Vec::new();
         let mut inner = self.inner.borrow_mut();
         for i in 0..inner.array.len() {
             let v = inner.array[i].clone();
-            if matches!(v, LuaValue::Nil) { continue; }
+            if matches!(v, LuaValue::Nil) {
+                continue;
+            }
             if weak_v && value_is_dead_collectable(&v, is_value_reachable) {
                 inner.array[i] = LuaValue::Nil;
                 continue;
             }
             if weak_v {
-                if matches!(v, LuaValue::Str(_)) { to_mark.push(v); }
+                if matches!(v, LuaValue::Str(_)) {
+                    to_mark.push(v);
+                }
             }
         }
         let mut i = 0;
@@ -1496,10 +1659,14 @@ impl LuaTable {
                 continue;
             }
             if weak_k {
-                if matches!(k, LuaValue::Str(_)) { to_mark.push(k); }
+                if matches!(k, LuaValue::Str(_)) {
+                    to_mark.push(k);
+                }
             }
             if weak_v {
-                if matches!(v, LuaValue::Str(_)) { to_mark.push(v); }
+                if matches!(v, LuaValue::Str(_)) {
+                    to_mark.push(v);
+                }
             }
             i += 1;
         }
@@ -1508,9 +1675,9 @@ impl LuaTable {
 
     /// Ephemeron-convergence helper for pure `__mode = "k"` tables.
     pub fn ephemeron_values_to_mark(&self, is_reachable: &dyn Fn(usize) -> bool) -> Vec<LuaValue> {
-        self.ephemeron_values_to_mark_with_value(
-            &|v| collectable_identity(v).map_or(true, is_reachable),
-        )
+        self.ephemeron_values_to_mark_with_value(&|v| {
+            collectable_identity(v).map_or(true, is_reachable)
+        })
     }
 
     /// Value-aware ephemeron helper for minor collections, where unmarked old
@@ -1526,13 +1693,17 @@ impl LuaTable {
         let inner = self.inner.borrow();
         let mut out = Vec::new();
         for node in inner.node.iter() {
-            if matches!(node.value, LuaValue::Nil) { continue; }
+            if matches!(node.value, LuaValue::Nil) {
+                continue;
+            }
             if !value_is_dead_collectable(&node.key, is_reachable) {
                 out.push(node.value.clone());
             }
         }
         for (i, v) in inner.array.iter().enumerate() {
-            if matches!(v, LuaValue::Nil) { continue; }
+            if matches!(v, LuaValue::Nil) {
+                continue;
+            }
             let k = LuaValue::Int((i + 1) as i64);
             if !value_is_dead_collectable(&k, is_reachable) {
                 out.push(v.clone());
@@ -1580,8 +1751,12 @@ fn extract_weak_mode(mt: &LuaTable) -> u8 {
                 if let LuaValue::Str(vs) = &node.value {
                     let bytes = vs.as_bytes();
                     let mut mode = 0u8;
-                    if bytes.iter().any(|b| *b == b'k') { mode |= WEAK_KEYS; }
-                    if bytes.iter().any(|b| *b == b'v') { mode |= WEAK_VALUES; }
+                    if bytes.iter().any(|b| *b == b'k') {
+                        mode |= WEAK_KEYS;
+                    }
+                    if bytes.iter().any(|b| *b == b'v') {
+                        mode |= WEAK_VALUES;
+                    }
                     return mode;
                 }
                 return 0;

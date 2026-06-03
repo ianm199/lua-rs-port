@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use std::io::{self, SeekFrom};
 use std::rc::Rc;
 
+use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_types::{LuaError, LuaFileHandle, LuaType, LuaValue};
 use lua_vm::state::{InputHook, OutputHook};
-use crate::state_stub::{LuaState, LuaStateStubExt as _};
 
 thread_local! {
     /// Side-table mapping userdata identity (the `Rc` pointer address from
@@ -250,11 +250,15 @@ impl LuaFileHandle for StdStreamHandle {
         Err(io::Error::new(io::ErrorKind::Unsupported, "stdio tell"))
     }
     fn clear_error(&mut self) {}
-    fn has_error(&self) -> bool { false }
+    fn has_error(&self) -> bool {
+        false
+    }
 }
 
 impl LuaFileOps for StdStreamHandle {
-    fn set_buf_mode(&mut self, _mode: BufMode, _size: usize) -> io::Result<()> { Ok(()) }
+    fn set_buf_mode(&mut self, _mode: BufMode, _size: usize) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl StdStreamHandle {
@@ -343,34 +347,34 @@ impl ReadNumState {
 
 /// `io.*` module functions. C: `static const luaL_Reg iolib[]`.
 pub const IO_LIB: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] = &[
-    (b"close",   io_close),
-    (b"flush",   io_flush),
-    (b"input",   io_input),
-    (b"lines",   io_lines),
-    (b"open",    io_open),
-    (b"output",  io_output),
-    (b"popen",   io_popen),
-    (b"read",    io_read),
+    (b"close", io_close),
+    (b"flush", io_flush),
+    (b"input", io_input),
+    (b"lines", io_lines),
+    (b"open", io_open),
+    (b"output", io_output),
+    (b"popen", io_popen),
+    (b"read", io_read),
     (b"tmpfile", io_tmpfile),
-    (b"type",    io_type),
-    (b"write",   io_write),
+    (b"type", io_type),
+    (b"write", io_write),
 ];
 
 /// `file:*` instance methods. C: `static const luaL_Reg meth[]`.
 pub const FILE_METHODS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] = &[
-    (b"read",    f_read),
-    (b"write",   f_write),
-    (b"lines",   f_lines),
-    (b"flush",   f_flush),
-    (b"seek",    f_seek),
-    (b"close",   f_close),
+    (b"read", f_read),
+    (b"write", f_write),
+    (b"lines", f_lines),
+    (b"flush", f_flush),
+    (b"seek", f_seek),
+    (b"close", f_close),
     (b"setvbuf", f_setvbuf),
 ];
 
 /// File-handle metamethods. C: `static const luaL_Reg metameth[]`.
 pub const FILE_METAMETHODS: &[(&[u8], fn(&mut LuaState) -> Result<usize, LuaError>)] = &[
-    (b"__gc",       f_gc),
-    (b"__close",    f_gc),
+    (b"__gc", f_gc),
+    (b"__close", f_gc),
     (b"__tostring", f_tostring),
 ];
 
@@ -458,9 +462,8 @@ fn exec_result(state: &mut LuaState, stat: i32) -> Result<usize, LuaError> {
 /// reinterpreted from a raw byte buffer in safe Rust.
 fn get_lstream(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
     let ud = state.check_arg_userdata(1, LUA_FILE_HANDLE)?;
-    lookup_lstream(ud.identity()).ok_or_else(|| {
-        LuaError::runtime(format_args!("invalid file handle"))
-    })
+    lookup_lstream(ud.identity())
+        .ok_or_else(|| LuaError::runtime(format_args!("invalid file handle")))
 }
 
 /// Look up the `LStream` registered for the userdata sitting at upvalue `idx`.
@@ -469,10 +472,7 @@ fn get_lstream(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
 /// this helper performs the same registry round-trip that `get_lstream` does
 /// for argument 1, but reads the value from the closure's upvalue slot instead
 /// of the call stack.
-fn lstream_from_upvalue(
-    state: &mut LuaState,
-    idx: i32,
-) -> Result<Rc<RefCell<LStream>>, LuaError> {
+fn lstream_from_upvalue(state: &mut LuaState, idx: i32) -> Result<Rc<RefCell<LStream>>, LuaError> {
     let v = state.value_at(crate::state_stub::upvalue_index(idx));
     let ud_id = match v {
         LuaValue::UserData(ud) => ud.identity(),
@@ -483,9 +483,8 @@ fn lstream_from_upvalue(
             )));
         }
     };
-    lookup_lstream(ud_id).ok_or_else(|| {
-        LuaError::runtime(format_args!("invalid file handle in upvalue {}", idx))
-    })
+    lookup_lstream(ud_id)
+        .ok_or_else(|| LuaError::runtime(format_args!("invalid file handle in upvalue {}", idx)))
 }
 
 /// Validate that argument 1 is an open file handle; error if closed.
@@ -512,7 +511,13 @@ fn tofile(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
 fn new_pre_file(state: &mut LuaState) -> Result<Rc<RefCell<LStream>>, LuaError> {
     let ud = state.new_userdata_typed(LUA_FILE_HANDLE, std::mem::size_of::<LStream>(), 0)?;
     state.set_metatable_by_name(LUA_FILE_HANDLE)?;
-    let cell = register_lstream(ud.identity(), LStream { file: None, close_fn: None });
+    let cell = register_lstream(
+        ud.identity(),
+        LStream {
+            file: None,
+            close_fn: None,
+        },
+    );
     Ok(cell)
 }
 
@@ -702,10 +707,8 @@ pub fn io_open(state: &mut LuaState) -> Result<usize, LuaError> {
             }
         },
         None => {
-            let os_err = io::Error::new(
-                io::ErrorKind::Unsupported,
-                "no filesystem hook registered",
-            );
+            let os_err =
+                io::Error::new(io::ErrorKind::Unsupported, "no filesystem hook registered");
             file_result(state, false, Some(&filename), os_err)
         }
     }
@@ -791,10 +794,7 @@ fn native_temp_name() -> io::Result<Vec<u8>> {
 pub fn io_tmpfile(state: &mut LuaState) -> Result<usize, LuaError> {
     let hook = state.global().file_open_hook;
     let Some(open_fn) = hook else {
-        let os_err = io::Error::new(
-            io::ErrorKind::Unsupported,
-            "no filesystem hook registered",
-        );
+        let os_err = io::Error::new(io::ErrorKind::Unsupported, "no filesystem hook registered");
         return file_result(state, false, None, os_err);
     };
 
@@ -850,7 +850,12 @@ pub fn io_tmpfile(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 /// TODO(port): borrow split — returns `&mut dyn LuaFileHandle` while caller also
 /// needs `&mut LuaState`. Phase B: use `RefCell` inside `LStream`.
-#[expect(dead_code, unreachable_code, unused_variables, reason = "io default-file helper: not yet wired; pending LStream-from-registry port")]
+#[expect(
+    dead_code,
+    unreachable_code,
+    unused_variables,
+    reason = "io default-file helper: not yet wired; pending LStream-from-registry port"
+)]
 fn get_io_file<'a>(
     state: &'a mut LuaState,
     key: &[u8],
@@ -865,7 +870,10 @@ fn get_io_file<'a>(
             label.escape_ascii()
         )));
     }
-    Ok(p.file.as_mut().expect("open stream has no file handle").as_mut())
+    Ok(p.file
+        .as_mut()
+        .expect("open stream has no file handle")
+        .as_mut())
 }
 
 /// Generic setter/getter for `io.input` and `io.output`. C: `g_iofile`.
@@ -1049,7 +1057,10 @@ fn g_read(
     if nargs == 0 {
         let (bytes, had) = {
             let mut p = p_rc.borrow_mut();
-            let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+            let fh = p
+                .file
+                .as_deref_mut()
+                .expect("open stream has no file handle");
             read_line(fh, true)
         };
         state.push_string(&bytes)?;
@@ -1064,7 +1075,10 @@ fn g_read(
                 if l == 0 {
                     let not_eof = {
                         let mut p = p_rc.borrow_mut();
-                        let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                        let fh = p
+                            .file
+                            .as_deref_mut()
+                            .expect("open stream has no file handle");
                         test_eof(fh)
                     };
                     state.push_string(b"")?;
@@ -1072,7 +1086,10 @@ fn g_read(
                 } else {
                     let (bytes, had) = {
                         let mut p = p_rc.borrow_mut();
-                        let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                        let fh = p
+                            .file
+                            .as_deref_mut()
+                            .expect("open stream has no file handle");
                         read_chars(fh, l)
                     };
                     state.push_string(&bytes)?;
@@ -1080,12 +1097,19 @@ fn g_read(
                 }
             } else {
                 let s: Vec<u8> = state.check_arg_string(n)?;
-                let pp: &[u8] = if s.first() == Some(&b'*') { &s[1..] } else { &s[..] };
+                let pp: &[u8] = if s.first() == Some(&b'*') {
+                    &s[1..]
+                } else {
+                    &s[..]
+                };
                 match pp.first() {
                     Some(&b'n') => {
                         let bytes = {
                             let mut p = p_rc.borrow_mut();
-                            let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                            let fh = p
+                                .file
+                                .as_deref_mut()
+                                .expect("open stream has no file handle");
                             read_number_bytes(fh)
                         };
                         let pushed = state.string_to_number_push(&bytes)?;
@@ -1099,7 +1123,10 @@ fn g_read(
                     Some(&b'l') => {
                         let (bytes, had) = {
                             let mut p = p_rc.borrow_mut();
-                            let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                            let fh = p
+                                .file
+                                .as_deref_mut()
+                                .expect("open stream has no file handle");
                             read_line(fh, true)
                         };
                         state.push_string(&bytes)?;
@@ -1108,7 +1135,10 @@ fn g_read(
                     Some(&b'L') => {
                         let (bytes, had) = {
                             let mut p = p_rc.borrow_mut();
-                            let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                            let fh = p
+                                .file
+                                .as_deref_mut()
+                                .expect("open stream has no file handle");
                             read_line(fh, false)
                         };
                         state.push_string(&bytes)?;
@@ -1117,7 +1147,10 @@ fn g_read(
                     Some(&b'a') => {
                         let bytes = {
                             let mut p = p_rc.borrow_mut();
-                            let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                            let fh = p
+                                .file
+                                .as_deref_mut()
+                                .expect("open stream has no file handle");
                             read_all(fh)
                         };
                         state.push_string(&bytes)?;
@@ -1149,12 +1182,7 @@ fn g_read(
                 None => io::Error::new(io::ErrorKind::Other, "file read error"),
             }
         };
-        return file_result(
-            state,
-            false,
-            None,
-            err,
-        );
+        return file_result(state, false, None, err);
     }
 
     if !success {
@@ -1229,7 +1257,10 @@ fn num_to_write_bytes(state: &mut LuaState, val: &LuaValue) -> Result<Vec<u8>, L
 /// Dispatch one or more write values. C: `g_write(L, f, arg)`.
 ///
 /// TODO(port): borrow split — same issue as g_read.
-#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
+#[expect(
+    dead_code,
+    reason = "ported stdlib helper; not yet wired into the runtime"
+)]
 fn g_write(
     state: &mut LuaState,
     file: &mut dyn LuaFileHandle,
@@ -1303,9 +1334,8 @@ pub fn io_write(state: &mut LuaState) -> Result<usize, LuaError> {
         let mut p = p_rc.borrow_mut();
         let fh = p.file.as_mut().expect("open stream has no file handle");
         for chunk in &chunks {
-            fh.write_bytes(chunk).map_err(|e| {
-                LuaError::runtime(format_args!("io.write: {}", e))
-            })?;
+            fh.write_bytes(chunk)
+                .map_err(|e| LuaError::runtime(format_args!("io.write: {}", e)))?;
         }
     }
     state.registry_get(IO_OUTPUT_KEY)?;
@@ -1439,7 +1469,10 @@ pub fn io_flush(state: &mut LuaState) -> Result<usize, LuaError> {
                         "default output file is closed"
                     )));
                 }
-                let fh = p.file.as_deref_mut().expect("open stream has no file handle");
+                let fh = p
+                    .file
+                    .as_deref_mut()
+                    .expect("open stream has no file handle");
                 fh.flush()
             };
             return match result {
@@ -1530,7 +1563,7 @@ pub fn io_lines(state: &mut LuaState) -> Result<usize, LuaError> {
     if toclose {
         state.push(LuaValue::Nil); // state
         state.push(LuaValue::Nil); // control
-        state.push_value_at(1)?;    // file as to-be-closed variable (4th result)
+        state.push_value_at(1)?; // file as to-be-closed variable (4th result)
         Ok(4)
     } else {
         Ok(1)

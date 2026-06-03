@@ -77,11 +77,7 @@ impl LuaVersion {
     pub fn is_supported(self) -> bool {
         matches!(
             self,
-            LuaVersion::V51
-                | LuaVersion::V52
-                | LuaVersion::V53
-                | LuaVersion::V54
-                | LuaVersion::V55
+            LuaVersion::V51 | LuaVersion::V52 | LuaVersion::V53 | LuaVersion::V54 | LuaVersion::V55
         )
     }
 

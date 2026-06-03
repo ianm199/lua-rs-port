@@ -15,17 +15,13 @@
 //! Translated from: `reference/lua-5.4.7/src/lcorolib.c` (210 lines, 12 functions)
 //! Target crate: `lua-stdlib`
 
-use lua_types::{
-    error::LuaError,
-    value::LuaValue,
-    LuaType,
-    LuaStatus,
-    gc::GcRef,
-};
-use crate::state_stub::{LuaState, LuaStateStubExt as _, lua_CFunction, upvalue_index};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex};
+
+use crate::state_stub::{lua_CFunction, upvalue_index, LuaState, LuaStateStubExt as _};
+use lua_types::{error::LuaError, gc::GcRef, value::LuaValue, LuaStatus, LuaThreadClose, LuaType};
 
 // ── Coroutine status codes ────────────────────────────────────────────────────
-
 
 /// Coroutine is the currently running thread.
 const COS_RUN: i32 = 0;
@@ -52,14 +48,14 @@ const STAT_NAMES: [&[u8]; 4] = [b"running", b"dead", b"suspended", b"normal"];
 /// Each entry is `(name_bytes, function_pointer)`. Phase B resolves
 /// `lua_CFunction` to the canonical type alias from `lua-types`.
 pub const CO_FUNCS: &[(&[u8], lua_CFunction)] = &[
-    (b"create",      co_create),
-    (b"resume",      co_resume),
-    (b"running",     co_running),
-    (b"status",      co_status),
-    (b"wrap",        co_wrap),
-    (b"yield",       co_yield),
+    (b"create", co_create),
+    (b"resume", co_resume),
+    (b"running", co_running),
+    (b"status", co_status),
+    (b"wrap", co_wrap),
+    (b"yield", co_yield),
     (b"isyieldable", co_isyieldable),
-    (b"close",       co_close),
+    (b"close", co_close),
 ];
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -74,6 +70,19 @@ fn get_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>, Lu
         return Err(LuaError::type_arg_error(1, "thread", &got));
     }
     Ok(co.expect("checked above"))
+}
+
+fn get_opt_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>, LuaError> {
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V55)
+        && state.type_at(1) == LuaType::None
+    {
+        let id = state.global().current_thread_id;
+        return state
+            .global()
+            .thread_value_for(id)
+            .ok_or_else(|| LuaError::runtime(format_args!("current thread is not registered")));
+    }
+    get_co(state)
 }
 
 /// Returns one of the `COS_*` status codes describing `co` relative to the
@@ -178,9 +187,7 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         .openupval
         .iter()
         .filter_map(|uv| match &*uv.slot() {
-            lua_types::UpValState::Open { thread_id, idx } => {
-                Some((*thread_id as u64, *idx))
-            }
+            lua_types::UpValState::Open { thread_id, idx } => Some((*thread_id as u64, *idx)),
             lua_types::UpValState::Closed(_) => None,
         })
         .collect();
@@ -224,8 +231,35 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
         }
         co_state.global_mut().current_thread_id = co_id;
         let mut nres: i32 = 0;
-        let status = lua_vm::do_::lua_resume(&mut *co_state, Some(state), narg, &mut nres);
+        let previous_hook = Arc::new(Mutex::new(Some(std::panic::take_hook())));
+        let previous_for_hook = Arc::clone(&previous_hook);
+        std::panic::set_hook(Box::new(move |info| {
+            if info.payload().downcast_ref::<LuaThreadClose>().is_none() {
+                if let Ok(guard) = previous_for_hook.lock() {
+                    if let Some(hook) = guard.as_ref() {
+                        hook(info);
+                    }
+                }
+            }
+        }));
+        let resume_result = catch_unwind(AssertUnwindSafe(|| {
+            lua_vm::do_::lua_resume(&mut *co_state, Some(state), narg, &mut nres)
+        }));
+        let _installed_hook = std::panic::take_hook();
+        if let Some(hook) = previous_hook.lock().ok().and_then(|mut h| h.take()) {
+            std::panic::set_hook(hook);
+        }
         co_state.global_mut().current_thread_id = parent_thread_id;
+        let status = match resume_result {
+            Ok(status) => status,
+            Err(payload) => {
+                if let Some(close) = payload.downcast_ref::<LuaThreadClose>() {
+                    close.0
+                } else {
+                    resume_unwind(payload);
+                }
+            }
+        };
         let co_top = co_state.top_idx().0 as i32;
         let ci_func = co_state.current_call_info().func.0 as i32;
         let count = if status == LuaStatus::Ok || status == LuaStatus::Yield {
@@ -508,12 +542,40 @@ pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
 pub fn co_close(state: &mut LuaState) -> Result<usize, LuaError> {
     lua_vm::state::inc_c_stack(state)?;
     let result = (|| {
-        let co = get_co(state)?;
+        let co = get_opt_co(state)?;
         let status = aux_status(state, &co);
         match status {
             COS_DEAD | COS_YIELD => close_suspended_or_dead(state, co),
             _ => {
-                let name = if status == COS_RUN { "running" } else { "normal" };
+                if matches!(state.global().lua_version, lua_types::LuaVersion::V55)
+                    && status == COS_RUN
+                    && state.global().closing_thread_id == Some(co.id)
+                {
+                    state.push(LuaValue::Bool(true));
+                    return Ok(1);
+                }
+                if matches!(state.global().lua_version, lua_types::LuaVersion::V55)
+                    && status == COS_RUN
+                    && co.id == state.global().main_thread_id
+                {
+                    return Err(LuaError::runtime(format_args!("cannot close main thread")));
+                }
+                if matches!(state.global().lua_version, lua_types::LuaVersion::V55)
+                    && status == COS_RUN
+                    && co.id == state.global().current_thread_id
+                {
+                    state.global_mut().closing_thread_id = Some(co.id);
+                    let in_status = state.status as i32;
+                    let s = lua_vm::state::reset_thread(state, in_status);
+                    state.global_mut().closing_thread_id = None;
+                    state.n_ccalls = state.n_ccalls.saturating_sub(1);
+                    std::panic::panic_any(LuaThreadClose(LuaStatus::from_raw(s)));
+                }
+                let name = if status == COS_RUN {
+                    "running"
+                } else {
+                    "normal"
+                };
                 Err(LuaError::runtime(format_args!(
                     "cannot close a {} coroutine",
                     name
@@ -549,9 +611,7 @@ fn close_suspended_or_dead(
         .openupval
         .iter()
         .filter_map(|uv| match &*uv.slot() {
-            lua_types::UpValState::Open { thread_id, idx } => {
-                Some((*thread_id as u64, *idx))
-            }
+            lua_types::UpValState::Open { thread_id, idx } => Some((*thread_id as u64, *idx)),
             lua_types::UpValState::Closed(_) => None,
         })
         .collect();
@@ -568,9 +628,11 @@ fn close_suspended_or_dead(
     let (status, err_value): (i32, Option<LuaValue>) = {
         let mut co_state = entry_rc.borrow_mut();
         co_state.global_mut().current_thread_id = co_id;
+        co_state.global_mut().closing_thread_id = Some(co_id);
         co_state.n_ccalls = caller_c_calls;
         let in_status = co_state.status as i32;
         let s = lua_vm::state::reset_thread(&mut *co_state, in_status);
+        co_state.global_mut().closing_thread_id = None;
         co_state.global_mut().current_thread_id = parent_thread_id;
         if s == LuaStatus::Ok as i32 {
             (s, None)
@@ -627,10 +689,7 @@ pub fn open_coroutine(state: &mut LuaState) -> Result<usize, LuaError> {
     // from the roster entirely.
     use lua_types::LuaVersion;
     let version = state.global().lua_version;
-    let has_close = !matches!(
-        version,
-        LuaVersion::V51 | LuaVersion::V52 | LuaVersion::V53
-    );
+    let has_close = !matches!(version, LuaVersion::V51 | LuaVersion::V52 | LuaVersion::V53);
     // `coroutine.isyieldable` is a Lua 5.3 addition; it is absent in 5.1 and 5.2
     // (verified against lua5.1.5 and lua5.2.4: `type(coroutine.isyieldable)` ==
     // "nil"). See specs/followup/5.1-roster-syntax.md §1.

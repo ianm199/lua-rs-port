@@ -149,11 +149,20 @@ struct Legacy {
 fn lua_field_force_exposes_a_private_field() {
     let lua = Lua::new();
     lua.globals()
-        .set("o", Legacy { hidden: 7, shown: 3 })
+        .set(
+            "o",
+            Legacy {
+                hidden: 7,
+                shown: 3,
+            },
+        )
         .unwrap();
 
     let hidden: i64 = lua.load("return o.hidden").eval().unwrap();
-    assert_eq!(hidden, 7, "#[lua(field)] should force-expose a private field");
+    assert_eq!(
+        hidden, 7,
+        "#[lua(field)] should force-expose a private field"
+    );
     let shown: i64 = lua.load("return o.shown").eval().unwrap();
     assert_eq!(shown, 3);
 

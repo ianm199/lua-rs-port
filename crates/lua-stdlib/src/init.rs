@@ -56,16 +56,16 @@ type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 //   Phase B should rename every stdlib opener to `pub fn open` and update
 //   this table accordingly.
 static LOADED_LIBS: &[(&[u8], LuaCFunction)] = &[
-    (b"_G",         crate::base::open),
-    (b"package",    crate::loadlib::luaopen_package),
-    (b"coroutine",  crate::coro_lib::open_coroutine),
-    (b"table",      crate::table_lib::open_table),
-    (b"io",         crate::io_lib::luaopen_io),
-    (b"os",         crate::os_lib::open_os),
-    (b"string",     crate::string_lib::luaopen_string),
-    (b"math",       crate::math_lib::luaopen_math),
-    (b"utf8",       crate::utf8_lib::open_utf8),
-    (b"debug",      crate::debug_lib::open_debug),
+    (b"_G", crate::base::open),
+    (b"package", crate::loadlib::luaopen_package),
+    (b"coroutine", crate::coro_lib::open_coroutine),
+    (b"table", crate::table_lib::open_table),
+    (b"io", crate::io_lib::luaopen_io),
+    (b"os", crate::os_lib::open_os),
+    (b"string", crate::string_lib::luaopen_string),
+    (b"math", crate::math_lib::luaopen_math),
+    (b"utf8", crate::utf8_lib::open_utf8),
+    (b"debug", crate::debug_lib::open_debug),
 ];
 
 //   const luaL_Reg *lib;

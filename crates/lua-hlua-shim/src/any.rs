@@ -66,7 +66,10 @@ pub(crate) fn push_any(state: &mut LuaState, value: &AnyLuaValue) -> Result<(), 
 }
 
 /// Push an `AnyHashableLuaValue` onto the top of the stack.
-pub(crate) fn push_hashable(state: &mut LuaState, value: &AnyHashableLuaValue) -> Result<(), VmError> {
+pub(crate) fn push_hashable(
+    state: &mut LuaState,
+    value: &AnyHashableLuaValue,
+) -> Result<(), VmError> {
     match value {
         AnyHashableLuaValue::LuaNil | AnyHashableLuaValue::LuaOther => api::push_nil(state),
         AnyHashableLuaValue::LuaBoolean(b) => api::push_boolean(state, *b),

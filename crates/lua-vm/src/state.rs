@@ -9,7 +9,6 @@
 //! - `reference/lua-5.4.7/src/lstate.c`  (445 lines, 25 functions)
 //! - `reference/lua-5.4.7/src/lstate.h`  (408 lines; struct + macro definitions merged)
 
-
 // PORT NOTE: The C `LX` (thread + extra space) and `LG` (LX + global state) layout
 // wrappers are C-only pointer-arithmetic helpers for allocating the main thread and
 // GlobalState as one contiguous block. In Rust, `GlobalState` and `LuaState` are
@@ -38,31 +37,43 @@ pub struct StackIdxConv(pub StackIdx);
 /// `state.top_idx().raw() as i32`. The non-primitive-cast error is silenced
 /// here by promoting the StackIdx through a free-function conversion.
 #[inline(always)]
-pub fn stack_idx_to_i32(i: StackIdx) -> i32 { i.0 as i32 }
+pub fn stack_idx_to_i32(i: StackIdx) -> i32 {
+    i.0 as i32
+}
 
 impl From<u32> for StackIdxConv {
     #[inline(always)]
-    fn from(v: u32) -> Self { StackIdxConv(StackIdx(v)) }
+    fn from(v: u32) -> Self {
+        StackIdxConv(StackIdx(v))
+    }
 }
 impl From<i32> for StackIdxConv {
     #[inline(always)]
-    fn from(v: i32) -> Self { StackIdxConv(StackIdx(v.max(0) as u32)) }
+    fn from(v: i32) -> Self {
+        StackIdxConv(StackIdx(v.max(0) as u32))
+    }
 }
 impl From<usize> for StackIdxConv {
     #[inline(always)]
-    fn from(v: usize) -> Self { StackIdxConv(StackIdx(v as u32)) }
+    fn from(v: usize) -> Self {
+        StackIdxConv(StackIdx(v as u32))
+    }
 }
 impl From<StackIdx> for StackIdxConv {
     #[inline(always)]
-    fn from(v: StackIdx) -> Self { StackIdxConv(v) }
+    fn from(v: StackIdx) -> Self {
+        StackIdxConv(v)
+    }
 }
-pub use lua_types::value::{LuaTable, LuaValue, F2Imod};
-pub use lua_types::string::LuaString;
-pub use lua_types::userdata::LuaUserData;
-pub use lua_types::closure::{LuaCFnPtr, LuaClosure, LuaLClosure as LuaClosureLua, LuaCClosure as LuaClosureC};
-pub use lua_types::proto::LuaProto;
-pub use lua_types::upval::{UpVal, UpValState};
+pub use lua_types::closure::{
+    LuaCClosure as LuaClosureC, LuaCFnPtr, LuaClosure, LuaLClosure as LuaClosureLua,
+};
 pub use lua_types::gc::GcRef;
+pub use lua_types::proto::LuaProto;
+pub use lua_types::string::LuaString;
+pub use lua_types::upval::{UpVal, UpValState};
+pub use lua_types::userdata::LuaUserData;
+pub use lua_types::value::{F2Imod, LuaTable, LuaValue};
 
 pub struct LuaByteHasher {
     hash: u64,
@@ -70,7 +81,9 @@ pub struct LuaByteHasher {
 
 impl Default for LuaByteHasher {
     fn default() -> Self {
-        Self { hash: 0xcbf2_9ce4_8422_2325 }
+        Self {
+            hash: 0xcbf2_9ce4_8422_2325,
+        }
     }
 }
 
@@ -255,7 +268,10 @@ impl WeakTableEntry {
             (false, true) => lua_gc::WeakListKind::WeakValues,
             (false, false) => lua_gc::WeakListKind::WeakValues,
         };
-        Self { table: table.downgrade(), kind }
+        Self {
+            table: table.downgrade(),
+            kind,
+        }
     }
 }
 
@@ -440,6 +456,11 @@ pub struct CallInfo {
 
     // types.tsv: CallInfo.callstatus → u16 (bit-packed CIST_* flags)
     pub callstatus: u16,
+
+    /// Lua 5.5: number of `__call` metamethods traversed before entering this
+    /// frame. Upstream stores this in the repacked 5.5 `callstatus` bits; keep
+    /// it separate here so older transfer/recover-status bits stay unchanged.
+    pub call_metamethods: u8,
 }
 
 /// Payload of `CallInfo.u`.
@@ -508,33 +529,59 @@ impl Default for CallInfo {
             u2: CallInfoExtra::default(),
             nresults: 0,
             callstatus: 0,
+            call_metamethods: 0,
         }
     }
 }
 
 impl CallInfo {
-    pub fn is_lua(&self) -> bool { (self.callstatus & CIST_C) == 0 }
-    pub fn is_lua_code(&self) -> bool { self.is_lua() }
+    pub fn is_lua(&self) -> bool {
+        (self.callstatus & CIST_C) == 0
+    }
+    pub fn is_lua_code(&self) -> bool {
+        self.is_lua()
+    }
     /// Whether the active function is a vararg function.
     ///
     /// Currently returns `false` unconditionally — vararg introspection via
     /// `debug.getinfo` reports no vararg info instead of panicking.
     ///
     /// TODO(port): wire when CallInfo carries proto access for vararg detection.
-    pub fn is_vararg_func(&self) -> bool { false }
+    pub fn is_vararg_func(&self) -> bool {
+        false
+    }
     pub fn saved_pc(&self) -> u32 {
-        if let CallInfoFrame::Lua { savedpc, .. } = self.u { savedpc } else { 0 }
+        if let CallInfoFrame::Lua { savedpc, .. } = self.u {
+            savedpc
+        } else {
+            0
+        }
     }
     pub fn set_saved_pc(&mut self, pc: u32) {
-        if let CallInfoFrame::Lua { ref mut savedpc, .. } = self.u { *savedpc = pc; }
+        if let CallInfoFrame::Lua {
+            ref mut savedpc, ..
+        } = self.u
+        {
+            *savedpc = pc;
+        }
     }
     pub fn nextra_args(&self) -> i32 {
-        if let CallInfoFrame::Lua { nextraargs, .. } = self.u { nextraargs } else { 0 }
+        if let CallInfoFrame::Lua { nextraargs, .. } = self.u {
+            nextraargs
+        } else {
+            0
+        }
     }
-    pub fn transfer_ftransfer(&self) -> u16 { self.u2.ftransfer }
-    pub fn transfer_ntransfer(&self) -> u16 { self.u2.ntransfer }
+    pub fn transfer_ftransfer(&self) -> u16 {
+        self.u2.ftransfer
+    }
+    pub fn transfer_ntransfer(&self) -> u16 {
+        self.u2.ntransfer
+    }
     pub fn set_trap(&mut self, t: bool) {
-        if let CallInfoFrame::Lua { ref mut trap, .. } = self.u { *trap = t; }
+        if let CallInfoFrame::Lua { ref mut trap, .. } = self.u {
+            *trap = t;
+        }
     }
     /// Read the 3-bit recover-status field packed into bits 10-12 of callstatus.
     ///
@@ -547,38 +594,62 @@ impl CallInfo {
         let st = (status.into() & 7) as u16;
         self.callstatus = (self.callstatus & !(7u16 << CIST_RECST)) | (st << CIST_RECST);
     }
-    pub fn get_oah(&self) -> bool { (self.callstatus & CIST_OAH) != 0 }
+    pub fn get_oah(&self) -> bool {
+        (self.callstatus & CIST_OAH) != 0
+    }
     /// Store the current `allowhook` value into callstatus bit 0 (CIST_OAH).
     ///
     pub fn set_oah(&mut self, allow: bool) {
         self.callstatus = (self.callstatus & !CIST_OAH) | (if allow { CIST_OAH } else { 0 });
     }
     pub fn u_c_old_errfunc(&self) -> isize {
-        if let CallInfoFrame::C { old_errfunc, .. } = self.u { old_errfunc } else { 0 }
+        if let CallInfoFrame::C { old_errfunc, .. } = self.u {
+            old_errfunc
+        } else {
+            0
+        }
     }
     pub fn u_c_ctx(&self) -> isize {
-        if let CallInfoFrame::C { ctx, .. } = self.u { ctx } else { 0 }
+        if let CallInfoFrame::C { ctx, .. } = self.u {
+            ctx
+        } else {
+            0
+        }
     }
     pub fn u_c_k(&self) -> Option<LuaKFunction> {
-        if let CallInfoFrame::C { k, .. } = self.u { k } else { None }
+        if let CallInfoFrame::C { k, .. } = self.u {
+            k
+        } else {
+            None
+        }
     }
     /// Set continuation function on a C-call frame.
     ///
     /// Panics if invoked on a Lua frame (callers must check `is_lua()` first).
     pub fn set_u_c_k(&mut self, k: Option<LuaKFunction>) {
-        if let CallInfoFrame::C { k: ref mut slot, .. } = self.u {
+        if let CallInfoFrame::C {
+            k: ref mut slot, ..
+        } = self.u
+        {
             *slot = k;
         }
     }
     /// Set continuation context on a C-call frame.
     pub fn set_u_c_ctx(&mut self, ctx: isize) {
-        if let CallInfoFrame::C { ctx: ref mut slot, .. } = self.u {
+        if let CallInfoFrame::C {
+            ctx: ref mut slot, ..
+        } = self.u
+        {
             *slot = ctx;
         }
     }
     /// Set saved old_errfunc on a C-call frame.
     pub fn set_u_c_old_errfunc(&mut self, old_errfunc: isize) {
-        if let CallInfoFrame::C { old_errfunc: ref mut slot, .. } = self.u {
+        if let CallInfoFrame::C {
+            old_errfunc: ref mut slot,
+            ..
+        } = self.u
+        {
             *slot = old_errfunc;
         }
     }
@@ -604,7 +675,9 @@ pub trait LuaValueExt {
 }
 
 impl LuaValueExt for LuaValue {
-    fn base_type(&self) -> lua_types::LuaType { self.type_tag() }
+    fn base_type(&self) -> lua_types::LuaType {
+        self.type_tag()
+    }
     fn to_number_no_strconv(&self) -> Option<f64> {
         match self {
             LuaValue::Float(f) => Some(*f),
@@ -613,11 +686,15 @@ impl LuaValueExt for LuaValue {
         }
     }
     fn to_number_with_strconv(&self) -> Option<f64> {
-        if let Some(n) = self.to_number_no_strconv() { return Some(n); }
+        if let Some(n) = self.to_number_no_strconv() {
+            return Some(n);
+        }
         if let LuaValue::Str(s) = self {
             let mut tmp = LuaValue::Nil;
             let sz = crate::object::str2num(s.as_bytes(), &mut tmp);
-            if sz == 0 { return None; }
+            if sz == 0 {
+                return None;
+            }
             return match tmp {
                 LuaValue::Int(i) => Some(i as f64),
                 LuaValue::Float(f) => Some(f),
@@ -645,11 +722,15 @@ impl LuaValueExt for LuaValue {
         }
     }
     fn to_integer_with_strconv(&self) -> Option<i64> {
-        if let Some(i) = self.to_integer_no_strconv() { return Some(i); }
+        if let Some(i) = self.to_integer_no_strconv() {
+            return Some(i);
+        }
         if let LuaValue::Str(s) = self {
             let mut tmp = LuaValue::Nil;
             let sz = crate::object::str2num(s.as_bytes(), &mut tmp);
-            if sz == 0 { return None; }
+            if sz == 0 {
+                return None;
+            }
             return tmp.to_integer_no_strconv();
         }
         None
@@ -707,11 +788,17 @@ pub trait StackIdxExt {
 }
 impl StackIdxExt for StackIdx {
     #[inline(always)]
-    fn saturating_sub(self, n: impl Into<StackIdxConv>) -> u32 { self.0.saturating_sub(n.into().0.0) }
+    fn saturating_sub(self, n: impl Into<StackIdxConv>) -> u32 {
+        self.0.saturating_sub(n.into().0 .0)
+    }
     #[inline(always)]
-    fn wrapping_sub(self, n: impl Into<StackIdxConv>) -> u32 { self.0.wrapping_sub(n.into().0.0) }
+    fn wrapping_sub(self, n: impl Into<StackIdxConv>) -> u32 {
+        self.0.wrapping_sub(n.into().0 .0)
+    }
     #[inline(always)]
-    fn raw(self) -> u32 { self.0 }
+    fn raw(self) -> u32 {
+        self.0
+    }
 }
 
 /// `GcRef<LuaTable>` / `GcRef<LuaUserData>` field-access helpers. These
@@ -737,15 +824,25 @@ pub trait LuaTableRefExt {
 }
 impl LuaTableRefExt for GcRef<LuaTable> {
     #[inline]
-    fn metatable(&self) -> Option<GcRef<LuaTable>> { (**self).metatable() }
+    fn metatable(&self) -> Option<GcRef<LuaTable>> {
+        (**self).metatable()
+    }
     #[inline]
-    fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
+    fn as_ptr(&self) -> *const () {
+        GcRef::identity(self) as *const ()
+    }
     #[inline]
-    fn get(&self, k: &LuaValue) -> LuaValue { (**self).get(k) }
+    fn get(&self, k: &LuaValue) -> LuaValue {
+        (**self).get(k)
+    }
     #[inline]
-    fn get_int(&self, k: i64) -> LuaValue { (**self).get_int(k) }
+    fn get_int(&self, k: i64) -> LuaValue {
+        (**self).get_int(k)
+    }
     #[inline]
-    fn get_short_str(&self, k: &GcRef<LuaString>) -> LuaValue { (**self).get_short_str(k) }
+    fn get_short_str(&self, k: &GcRef<LuaString>) -> LuaValue {
+        (**self).get_short_str(k)
+    }
     /// Forwards to [`LuaTable::try_raw_set`], which performs the nil/NaN
     /// key validation internally as part of its integer-fast-path match.
     #[inline]
@@ -799,10 +896,18 @@ pub trait LuaUserDataRefExt {
     fn len(&self) -> usize;
 }
 impl LuaUserDataRefExt for GcRef<LuaUserData> {
-    fn metatable(&self) -> Option<GcRef<LuaTable>> { (**self).metatable() }
-    fn set_metatable(&self, mt: Option<GcRef<LuaTable>>) { (**self).set_metatable(mt); }
-    fn as_ptr(&self) -> *const () { GcRef::identity(self) as *const () }
-    fn len(&self) -> usize { self.0.data.len() }
+    fn metatable(&self) -> Option<GcRef<LuaTable>> {
+        (**self).metatable()
+    }
+    fn set_metatable(&self, mt: Option<GcRef<LuaTable>>) {
+        (**self).set_metatable(mt);
+    }
+    fn as_ptr(&self) -> *const () {
+        GcRef::identity(self) as *const ()
+    }
+    fn len(&self) -> usize {
+        self.0.data.len()
+    }
 }
 
 pub trait LuaStringRefExt {
@@ -811,9 +916,15 @@ pub trait LuaStringRefExt {
     fn as_gc_ref(&self) -> GcRef<LuaString>;
 }
 impl LuaStringRefExt for GcRef<LuaString> {
-    fn is_white(&self) -> bool { false }
-    fn hash(&self) -> u32 { self.0.hash() }
-    fn as_gc_ref(&self) -> GcRef<LuaString> { self.clone() }
+    fn is_white(&self) -> bool {
+        false
+    }
+    fn hash(&self) -> u32 {
+        self.0.hash()
+    }
+    fn as_gc_ref(&self) -> GcRef<LuaString> {
+        self.clone()
+    }
 }
 
 pub trait LuaLClosureRefExt {
@@ -821,8 +932,12 @@ pub trait LuaLClosureRefExt {
     fn nupvalues(&self) -> usize;
 }
 impl LuaLClosureRefExt for GcRef<lua_types::closure::LuaLClosure> {
-    fn proto(&self) -> &GcRef<LuaProto> { &self.0.proto }
-    fn nupvalues(&self) -> usize { self.0.upvals.len() }
+    fn proto(&self) -> &GcRef<LuaProto> {
+        &self.0.proto
+    }
+    fn nupvalues(&self) -> usize {
+        self.0.upvals.len()
+    }
 }
 
 /// `LuaClosure` accessor — `nupvalues()` reports the upvalue count uniformly.
@@ -846,9 +961,14 @@ pub trait LuaProtoExt {
 }
 impl LuaProtoExt for LuaProto {
     fn source_bytes(&self) -> &[u8] {
-        match &self.source { Some(s) => s.0.as_bytes(), None => &[] }
+        match &self.source {
+            Some(s) => s.0.as_bytes(),
+            None => &[],
+        }
     }
-    fn source_string(&self) -> Option<&GcRef<LuaString>> { self.source.as_ref() }
+    fn source_string(&self) -> Option<&GcRef<LuaString>> {
+        self.source.as_ref()
+    }
 }
 
 // ─── Collectable trait (GC interface) ────────────────────────────────────────
@@ -1130,10 +1250,7 @@ impl ExternalRootSet {
     pub fn insert(&mut self, value: LuaValue) -> ExternalRootKey {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index];
-            debug_assert!(
-                slot.value.is_none(),
-                "free external-root slot is occupied"
-            );
+            debug_assert!(slot.value.is_none(), "free external-root slot is occupied");
             slot.generation = slot.generation.wrapping_add(1).max(1);
             slot.value = Some(value);
             self.live += 1;
@@ -1468,6 +1585,10 @@ pub struct GlobalState {
     /// implemented.
     pub current_thread_id: u64,
 
+    /// Thread currently being reset/closed by `coroutine.close`, if any. This is
+    /// used to recognize reentrant closes from that thread's `__close` methods.
+    pub closing_thread_id: Option<u64>,
+
     /// Identity of the main thread. Convention: `0`. Held as a field so
     /// the lookup helpers can read it without hard-coding the constant.
     pub main_thread_id: u64,
@@ -1693,17 +1814,39 @@ impl GlobalState {
     }
 
     // ── Phase-B stubs ─────────────────────────────────────────────────────────
-    pub fn gc_debt(&self) -> isize { self.gc_debt }
-    pub fn set_gc_debt(&mut self, d: isize) { self.gc_debt = d; }
-    pub fn gc_at_pause(&self) -> bool { self.heap.gc_state().is_pause() }
-    fn get_gc_param(p: u8) -> i32 { (p as i32) * 4 }
-    fn set_gc_param_slot(slot: &mut u8, p: i32) { *slot = (p / 4) as u8; }
-    pub fn gc_pause_param(&self) -> i32 { Self::get_gc_param(self.gcpause) }
-    pub fn set_gc_pause_param(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.gcpause, p); }
-    pub fn gc_stepmul_param(&self) -> i32 { Self::get_gc_param(self.gcstepmul) }
-    pub fn set_gc_stepmul_param(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.gcstepmul, p); }
-    pub fn gc_genmajormul_param(&self) -> i32 { Self::get_gc_param(self.genmajormul) }
-    pub fn set_gc_genmajormul(&mut self, p: i32) { Self::set_gc_param_slot(&mut self.genmajormul, p); }
+    pub fn gc_debt(&self) -> isize {
+        self.gc_debt
+    }
+    pub fn set_gc_debt(&mut self, d: isize) {
+        self.gc_debt = d;
+    }
+    pub fn gc_at_pause(&self) -> bool {
+        self.heap.gc_state().is_pause()
+    }
+    fn get_gc_param(p: u8) -> i32 {
+        (p as i32) * 4
+    }
+    fn set_gc_param_slot(slot: &mut u8, p: i32) {
+        *slot = (p / 4) as u8;
+    }
+    pub fn gc_pause_param(&self) -> i32 {
+        Self::get_gc_param(self.gcpause)
+    }
+    pub fn set_gc_pause_param(&mut self, p: i32) {
+        Self::set_gc_param_slot(&mut self.gcpause, p);
+    }
+    pub fn gc_stepmul_param(&self) -> i32 {
+        Self::get_gc_param(self.gcstepmul)
+    }
+    pub fn set_gc_stepmul_param(&mut self, p: i32) {
+        Self::set_gc_param_slot(&mut self.gcstepmul, p);
+    }
+    pub fn gc_genmajormul_param(&self) -> i32 {
+        Self::get_gc_param(self.genmajormul)
+    }
+    pub fn set_gc_genmajormul(&mut self, p: i32) {
+        Self::set_gc_param_slot(&mut self.genmajormul, p);
+    }
     /// Lua 5.5 `collectgarbage("param", name [, value])`. `idx` is the 0-based
     /// param index (`minormul=0 .. stepsize=5`). When `value >= 0` the param is
     /// set; the previous value is always returned.
@@ -1714,8 +1857,12 @@ impl GlobalState {
         }
         old
     }
-    pub fn gc_stop_flags(&self) -> u8 { self.gcstp }
-    pub fn set_gc_stop_flags(&mut self, f: u8) { self.gcstp = f; }
+    pub fn gc_stop_flags(&self) -> u8 {
+        self.gcstp
+    }
+    pub fn set_gc_stop_flags(&mut self, f: u8) {
+        self.gcstp = f;
+    }
     pub fn stop_gc_internal(&mut self) -> u8 {
         let old = self.gcstp;
         self.gcstp |= GCSTPGC;
@@ -1725,13 +1872,19 @@ impl GlobalState {
         // GCSTPUSR (lgc.h:155) = 1 — bit set when GC is stopped by user (lua_gc(L, LUA_GCSTOP)).
         self.gcstp = GCSTPUSR;
     }
-    pub fn clear_gc_stop(&mut self) { self.gcstp = 0; }
-    pub fn is_gc_running(&self) -> bool { self.gcstp == 0 }
+    pub fn clear_gc_stop(&mut self) {
+        self.gcstp = 0;
+    }
+    pub fn is_gc_running(&self) -> bool {
+        self.gcstp == 0
+    }
     /// True when the GC has been disabled internally (state setup, mid-GC,
     /// or while closing); user-stop via `collectgarbage("stop")` does NOT
     /// set this bit, so `lua_gc` continues to honour Count/Step/etc.
     ///
-    pub fn is_gc_stopped_internally(&self) -> bool { (self.gcstp & GCSTPGC) != 0 }
+    pub fn is_gc_stopped_internally(&self) -> bool {
+        (self.gcstp & GCSTPGC) != 0
+    }
 
     /// Returns the interned `__xxx` name string for tag method `tm`, or
     /// `None` if `tmname` has not yet been initialised (early bootstrap).
@@ -1756,16 +1909,24 @@ pub trait TmIndex: Copy {
     fn tm_index(self) -> usize;
 }
 impl TmIndex for lua_types::tagmethod::TagMethod {
-    fn tm_index(self) -> usize { self as u8 as usize }
+    fn tm_index(self) -> usize {
+        self as u8 as usize
+    }
 }
 impl TmIndex for crate::tagmethods::TagMethod {
-    fn tm_index(self) -> usize { self as u8 as usize }
+    fn tm_index(self) -> usize {
+        self as u8 as usize
+    }
 }
 impl TmIndex for usize {
-    fn tm_index(self) -> usize { self }
+    fn tm_index(self) -> usize {
+        self
+    }
 }
 impl TmIndex for u8 {
-    fn tm_index(self) -> usize { self as usize }
+    fn tm_index(self) -> usize {
+        self as usize
+    }
 }
 
 use lua_types::tagmethod::TagMethod;
@@ -1884,7 +2045,6 @@ pub struct LuaState {
     /// Avoids borrowing `GlobalState` on every call edge when GC/finalizers
     /// are not currently due.
     pub gc_check_needed: bool,
-
 }
 
 impl LuaState {
@@ -2348,10 +2508,7 @@ impl LuaState {
     ) -> Option<(i64, i64)> {
         let rb: StackIdx = rb.into().0;
         let rc: StackIdx = rc.into().0;
-        match (
-            self.stack[rb.0 as usize].val,
-            self.stack[rc.0 as usize].val,
-        ) {
+        match (self.stack[rb.0 as usize].val, self.stack[rc.0 as usize].val) {
             (LuaValue::Int(ib), LuaValue::Int(ic)) => Some((ib, ic)),
             _ => None,
         }
@@ -2399,10 +2556,7 @@ impl LuaState {
     ) -> Option<(f64, f64)> {
         let rb: StackIdx = rb.into().0;
         let rc: StackIdx = rc.into().0;
-        match (
-            self.stack[rb.0 as usize].val,
-            self.stack[rc.0 as usize].val,
-        ) {
+        match (self.stack[rb.0 as usize].val, self.stack[rc.0 as usize].val) {
             (LuaValue::Float(nb), LuaValue::Float(nc)) => Some((nb, nc)),
             (LuaValue::Int(ib), LuaValue::Int(ic)) => Some((ib as f64, ic as f64)),
             (LuaValue::Int(ib), LuaValue::Float(nc)) => Some((ib as f64, nc)),
@@ -2534,16 +2688,29 @@ impl LuaState {
     }
 
     #[inline(always)]
-    pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo { &self.call_info[idx.as_usize()] }
+    pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo {
+        &self.call_info[idx.as_usize()]
+    }
     #[inline(always)]
-    pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo { &mut self.call_info[idx.as_usize()] }
+    pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo {
+        &mut self.call_info[idx.as_usize()]
+    }
     #[inline(always)]
-    pub fn current_call_info(&self) -> &CallInfo { &self.call_info[self.ci.as_usize()] }
+    pub fn current_call_info(&self) -> &CallInfo {
+        &self.call_info[self.ci.as_usize()]
+    }
     #[inline(always)]
-    pub fn current_call_info_mut(&mut self) -> &mut CallInfo { let i = self.ci.as_usize(); &mut self.call_info[i] }
+    pub fn current_call_info_mut(&mut self) -> &mut CallInfo {
+        let i = self.ci.as_usize();
+        &mut self.call_info[i]
+    }
     #[inline(always)]
-    pub fn current_ci_idx(&self) -> CallInfoIdx { self.ci }
-    pub fn call_stack_mut(&mut self) -> &mut Vec<CallInfo> { &mut self.call_info }
+    pub fn current_ci_idx(&self) -> CallInfoIdx {
+        self.ci
+    }
+    pub fn call_stack_mut(&mut self) -> &mut Vec<CallInfo> {
+        &mut self.call_info
+    }
     #[inline(always)]
     pub fn next_ci(&mut self) -> Result<CallInfoIdx, LuaError> {
         match self.call_info[self.ci.as_usize()].next {
@@ -2552,16 +2719,22 @@ impl LuaState {
         }
     }
     #[inline(always)]
-    pub fn prev_ci(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
+    pub fn prev_ci(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> {
+        self.call_info[idx.as_usize()].previous
+    }
     pub fn get_prev_ci(&self, idx: CallInfoIdx) -> Option<&CallInfo> {
         self.call_info[idx.as_usize()]
             .previous
             .map(|p| &self.call_info[p.as_usize()])
     }
     #[inline(always)]
-    pub fn is_base_ci(&self, idx: CallInfoIdx) -> bool { idx.as_usize() == 0 }
+    pub fn is_base_ci(&self, idx: CallInfoIdx) -> bool {
+        idx.as_usize() == 0
+    }
     #[inline(always)]
-    pub fn is_current_ci(&self, idx: CallInfoIdx) -> bool { idx == self.ci }
+    pub fn is_current_ci(&self, idx: CallInfoIdx) -> bool {
+        idx == self.ci
+    }
     pub fn ci_next_func(&self, idx: CallInfoIdx) -> StackIdx {
         let next = self.call_info[idx.as_usize()]
             .next
@@ -2569,7 +2742,9 @@ impl LuaState {
         self.call_info[next.as_usize()].func
     }
     #[inline(always)]
-    pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].top }
+    pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx {
+        self.call_info[idx.as_usize()].top
+    }
     #[inline(always)]
     pub fn ci_trap(&mut self, idx: CallInfoIdx) -> bool {
         if let CallInfoFrame::Lua { trap, .. } = self.call_info[idx.as_usize()].u {
@@ -2579,7 +2754,9 @@ impl LuaState {
         }
     }
     #[inline(always)]
-    pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 { self.call_info[idx.as_usize()].saved_pc() }
+    pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 {
+        self.call_info[idx.as_usize()].saved_pc()
+    }
     #[inline(always)]
     pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
         self.call_info[idx.as_usize()].set_saved_pc(pc);
@@ -2591,20 +2768,27 @@ impl LuaState {
             .expect("set_ci_previous: returning frame has no previous CallInfo");
     }
     #[inline(always)]
-    pub fn ci_previous(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> { self.call_info[idx.as_usize()].previous }
+    pub fn ci_previous(&self, idx: CallInfoIdx) -> Option<CallInfoIdx> {
+        self.call_info[idx.as_usize()].previous
+    }
     #[inline(always)]
     pub fn ci_adjust_func(&mut self, idx: CallInfoIdx, delta: i32) {
         let ci = &mut self.call_info[idx.as_usize()];
         ci.func = StackIdx((ci.func.0 as i32 - delta) as u32);
     }
     #[inline(always)]
-    pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx { self.call_info[idx.as_usize()].func + 1 }
+    pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx {
+        self.call_info[idx.as_usize()].func + 1
+    }
     #[inline(always)]
     pub fn ci_is_fresh(&self, idx: CallInfoIdx) -> bool {
         (self.call_info[idx.as_usize()].callstatus & CIST_FRESH) != 0
     }
     #[inline(always)]
-    pub fn ci_lua_closure(&self, idx: CallInfoIdx) -> Option<GcRef<lua_types::closure::LuaLClosure>> {
+    pub fn ci_lua_closure(
+        &self,
+        idx: CallInfoIdx,
+    ) -> Option<GcRef<lua_types::closure::LuaLClosure>> {
         let func_idx = self.call_info[idx.as_usize()].func;
         match self.stack.get(func_idx.0 as usize).map(|slot| slot.val) {
             Some(LuaValue::Function(lua_types::closure::LuaClosure::Lua(cl))) => Some(cl),
@@ -2624,16 +2808,20 @@ impl LuaState {
         self.call_info[idx.as_usize()].u2.value = n;
     }
     #[inline(always)]
-    pub fn ci_nresults(&self, idx: CallInfoIdx) -> i32 { self.call_info[idx.as_usize()].nresults as i32 }
+    pub fn ci_nresults(&self, idx: CallInfoIdx) -> i32 {
+        self.call_info[idx.as_usize()].nresults as i32
+    }
     pub fn ci_prev_instruction(&self, idx: CallInfoIdx) -> lua_types::opcode::Instruction {
         let pc = self.call_info[idx.as_usize()].saved_pc();
-        let cl = self.ci_lua_closure(idx)
+        let cl = self
+            .ci_lua_closure(idx)
             .expect("ci_prev_instruction: CallInfo does not hold a Lua closure");
         cl.proto.code[(pc - 1) as usize]
     }
     pub fn ci_prev2_instruction(&self, idx: CallInfoIdx) -> lua_types::opcode::Instruction {
         let pc = self.call_info[idx.as_usize()].saved_pc();
-        let cl = self.ci_lua_closure(idx)
+        let cl = self
+            .ci_lua_closure(idx)
             .expect("ci_prev2_instruction: CallInfo does not hold a Lua closure");
         cl.proto.code[(pc - 2) as usize]
     }
@@ -2680,25 +2868,53 @@ impl LuaState {
         ci.u2.ftransfer = ftransfer;
         ci.u2.ntransfer = ntransfer;
     }
-    pub fn shrink_ci(&mut self) { shrink_ci(self) }
-    pub fn check_c_stack(&mut self) -> Result<(), LuaError> { check_c_stack(self) }
+    pub fn shrink_ci(&mut self) {
+        shrink_ci(self)
+    }
+    pub fn check_c_stack(&mut self) -> Result<(), LuaError> {
+        check_c_stack(self)
+    }
 
-    pub fn status(&mut self) -> LuaStatus { LuaStatus::from_raw(self.status as i32) }
-    pub fn errfunc(&mut self) -> isize { self.errfunc }
-    pub fn old_pc(&mut self) -> u32 { self.oldpc }
-    pub fn set_old_pc(&mut self, pc: u32) { self.oldpc = pc; }
-    pub fn set_oldpc(&mut self, pc: u32) { self.oldpc = pc; }
+    pub fn status(&mut self) -> LuaStatus {
+        LuaStatus::from_raw(self.status as i32)
+    }
+    pub fn errfunc(&mut self) -> isize {
+        self.errfunc
+    }
+    pub fn old_pc(&mut self) -> u32 {
+        self.oldpc
+    }
+    pub fn set_old_pc(&mut self, pc: u32) {
+        self.oldpc = pc;
+    }
+    pub fn set_oldpc(&mut self, pc: u32) {
+        self.oldpc = pc;
+    }
     pub fn _hook_call_noargs(&mut self) {}
     pub fn hook(&self) -> Option<&Box<dyn FnMut(&mut LuaState, &crate::debug::LuaDebug)>> {
         self.hook.as_ref()
     }
-    pub fn has_hook(&mut self) -> bool { self.hook.is_some() }
-    pub fn hook_count(&mut self) -> i32 { self.hookcount }
-    pub fn set_hook_count(&mut self, n: i32) { self.hookcount = n; }
-    pub fn hook_mask(&self) -> u8 { self.hookmask }
-    pub fn set_hook_mask(&mut self, m: u8) { self.hookmask = m; }
-    pub fn base_hook_count(&self) -> i32 { self.basehookcount }
-    pub fn set_base_hook_count(&mut self, n: i32) { self.basehookcount = n; }
+    pub fn has_hook(&mut self) -> bool {
+        self.hook.is_some()
+    }
+    pub fn hook_count(&mut self) -> i32 {
+        self.hookcount
+    }
+    pub fn set_hook_count(&mut self, n: i32) {
+        self.hookcount = n;
+    }
+    pub fn hook_mask(&self) -> u8 {
+        self.hookmask
+    }
+    pub fn set_hook_mask(&mut self, m: u8) {
+        self.hookmask = m;
+    }
+    pub fn base_hook_count(&self) -> i32 {
+        self.basehookcount
+    }
+    pub fn set_base_hook_count(&mut self, n: i32) {
+        self.basehookcount = n;
+    }
     pub fn set_hook(&mut self, h: Option<Box<dyn FnMut(&mut LuaState, &crate::debug::LuaDebug)>>) {
         self.hook = h;
     }
@@ -2706,7 +2922,9 @@ impl LuaState {
         crate::do_::hook(self, event, line, 0, 0)
     }
 
-    pub fn registry_value(&self) -> LuaValue { self.global().l_registry.clone() }
+    pub fn registry_value(&self) -> LuaValue {
+        self.global().l_registry.clone()
+    }
     pub fn registry_get(&self, key: usize) -> LuaValue {
         let reg = self.global().l_registry.clone();
         match reg {
@@ -2715,7 +2933,9 @@ impl LuaState {
         }
     }
 
-    pub fn new_string(&mut self, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> { self.intern_or_create_str(bytes) }
+    pub fn new_string(&mut self, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
+        self.intern_or_create_str(bytes)
+    }
 
     // ── Phase D-1a: state-owned allocation API ──────────────────────────────
     // These methods are the canonical allocation surface. They wrap
@@ -2765,8 +2985,14 @@ impl LuaState {
     pub fn intern_or_create_str(&mut self, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
         self.intern_str(bytes)
     }
-    pub fn new_userdata(&mut self, _size: usize, _nuvalue: usize) -> Result<GcRef<LuaUserData>, LuaError> {
-        Err(LuaError::runtime(format_args!("new_userdata not implemented in this Phase-B build; use new_userdata_typed instead")))
+    pub fn new_userdata(
+        &mut self,
+        _size: usize,
+        _nuvalue: usize,
+    ) -> Result<GcRef<LuaUserData>, LuaError> {
+        Err(LuaError::runtime(format_args!(
+            "new_userdata not implemented in this Phase-B build; use new_userdata_typed instead"
+        )))
     }
     pub fn new_c_closure(&mut self, _f: LuaCFunction, _n: i32) -> Result<LuaClosure, LuaError> {
         Err(LuaError::runtime(format_args!("new_c_closure not implemented in this Phase-B build; use push_cclosure in lua_vm::api instead")))
@@ -2778,9 +3004,9 @@ impl LuaState {
         base: StackIdx,
         ra: StackIdx,
     ) -> Result<(), LuaError> {
-        let parent_cl = self.ci_lua_closure(ci).expect(
-            "push_closure: current frame is not a Lua closure",
-        );
+        let parent_cl = self
+            .ci_lua_closure(ci)
+            .expect("push_closure: current frame is not a Lua closure");
         let child_proto = parent_cl.proto.p[proto_idx].clone();
         let nup = child_proto.upvalues.len();
         let mut upvals: Vec<std::cell::Cell<GcRef<UpVal>>> = Vec::with_capacity(nup);
@@ -2892,7 +3118,12 @@ impl LuaState {
     /// `GlobalState::cross_thread_upvals` (the active-resume case where
     /// the home thread is borrow-locked further up the call stack).
     #[inline(always)]
-    pub fn upvalue_set(&mut self, cl: &GcRef<LuaClosureLua>, n: usize, val: LuaValue) -> Result<(), LuaError> {
+    pub fn upvalue_set(
+        &mut self,
+        cl: &GcRef<LuaClosureLua>,
+        n: usize,
+        val: LuaValue,
+    ) -> Result<(), LuaError> {
         let uv = cl.upval(n);
         match uv.try_open_payload() {
             Some((thread_id, idx)) => {
@@ -2937,14 +3168,14 @@ impl LuaState {
         Ok(())
     }
 
-    pub fn protected_call_raw(&mut self, func: StackIdx, nresults: i32, errfunc: StackIdx) -> Result<(), LuaError> {
+    pub fn protected_call_raw(
+        &mut self,
+        func: StackIdx,
+        nresults: i32,
+        errfunc: StackIdx,
+    ) -> Result<(), LuaError> {
         let ef = errfunc.0 as isize;
-        let status = crate::do_::pcall(
-            self,
-            |s| s.call_no_yield(func, nresults),
-            func,
-            ef,
-        );
+        let status = crate::do_::pcall(self, |s| s.call_no_yield(func, nresults), func, ef);
         match status {
             LuaStatus::Ok => Ok(()),
             LuaStatus::ErrSyntax => {
@@ -2963,7 +3194,12 @@ impl LuaState {
             }
         }
     }
-    pub fn protected_parser(&mut self, z: crate::zio::ZIO, name: &[u8], mode: Option<&[u8]>) -> LuaStatus {
+    pub fn protected_parser(
+        &mut self,
+        z: crate::zio::ZIO,
+        name: &[u8],
+        mode: Option<&[u8]>,
+    ) -> LuaStatus {
         crate::do_::protected_parser(self, z, name, mode)
     }
     pub fn do_call(&mut self, func: StackIdx, nresults: i32) -> Result<(), LuaError> {
@@ -2979,7 +3215,11 @@ impl LuaState {
         crate::do_::call(self, func, nresults)
     }
     #[inline(always)]
-    pub fn precall(&mut self, func: StackIdx, nresults: i32) -> Result<Option<CallInfoIdx>, LuaError> {
+    pub fn precall(
+        &mut self,
+        func: StackIdx,
+        nresults: i32,
+    ) -> Result<Option<CallInfoIdx>, LuaError> {
         crate::do_::precall(self, func, nresults)
     }
     #[inline(always)]
@@ -3017,12 +3257,7 @@ impl LuaState {
     ) -> Result<(), LuaError> {
         crate::tagmethods::adjust_varargs(self, nfixparams, ci, &cl.0.proto)
     }
-    pub fn get_varargs(
-        &mut self,
-        ci: CallInfoIdx,
-        ra: StackIdx,
-        n: i32,
-    ) -> Result<i32, LuaError> {
+    pub fn get_varargs(&mut self, ci: CallInfoIdx, ra: StackIdx, n: i32) -> Result<i32, LuaError> {
         crate::tagmethods::get_varargs(self, ci, ra, n)?;
         Ok(0)
     }
@@ -3041,23 +3276,28 @@ impl LuaState {
         Ok(())
     }
 
-    pub fn arith_op(&mut self, op: i32, p1: &LuaValue, p2: &LuaValue) -> Result<LuaValue, LuaError> {
+    pub fn arith_op(
+        &mut self,
+        op: i32,
+        p1: &LuaValue,
+        p2: &LuaValue,
+    ) -> Result<LuaValue, LuaError> {
         let arith_op = match op {
-            0  => lua_types::arith::ArithOp::Add,
-            1  => lua_types::arith::ArithOp::Sub,
-            2  => lua_types::arith::ArithOp::Mul,
-            3  => lua_types::arith::ArithOp::Mod,
-            4  => lua_types::arith::ArithOp::Pow,
-            5  => lua_types::arith::ArithOp::Div,
-            6  => lua_types::arith::ArithOp::Idiv,
-            7  => lua_types::arith::ArithOp::Band,
-            8  => lua_types::arith::ArithOp::Bor,
-            9  => lua_types::arith::ArithOp::Bxor,
+            0 => lua_types::arith::ArithOp::Add,
+            1 => lua_types::arith::ArithOp::Sub,
+            2 => lua_types::arith::ArithOp::Mul,
+            3 => lua_types::arith::ArithOp::Mod,
+            4 => lua_types::arith::ArithOp::Pow,
+            5 => lua_types::arith::ArithOp::Div,
+            6 => lua_types::arith::ArithOp::Idiv,
+            7 => lua_types::arith::ArithOp::Band,
+            8 => lua_types::arith::ArithOp::Bor,
+            9 => lua_types::arith::ArithOp::Bxor,
             10 => lua_types::arith::ArithOp::Shl,
             11 => lua_types::arith::ArithOp::Shr,
             12 => lua_types::arith::ArithOp::Unm,
             13 => lua_types::arith::ArithOp::Bnot,
-            _  => return Err(LuaError::runtime(format_args!("invalid arith op {}", op))),
+            _ => return Err(LuaError::runtime(format_args!("invalid arith op {}", op))),
         };
         let mut res = LuaValue::Nil;
         if crate::object::raw_arith(self, arith_op, p1, p2, &mut res)? {
@@ -3105,7 +3345,11 @@ impl LuaState {
             }
             LuaValue::Str(s) => Ok(LuaValue::Int(s.len() as i64)),
             other => {
-                let tm = crate::tagmethods::get_tm_by_obj(self, other, crate::tagmethods::TagMethod::Len);
+                let tm = crate::tagmethods::get_tm_by_obj(
+                    self,
+                    other,
+                    crate::tagmethods::TagMethod::Len,
+                );
                 if matches!(tm, LuaValue::Nil) {
                     let mut msg = b"attempt to get length of a ".to_vec();
                     msg.extend_from_slice(&self.obj_type_name(other));
@@ -3153,31 +3397,61 @@ impl LuaState {
     pub fn str_to_num(&mut self, s: &[u8]) -> Option<(LuaValue, usize)> {
         let mut out = LuaValue::Nil;
         let sz = crate::object::str2num(s, &mut out);
-        if sz == 0 { None } else { Some((out, sz)) }
+        if sz == 0 {
+            None
+        } else {
+            Some((out, sz))
+        }
     }
 
     #[inline(always)]
     pub fn fast_get(&mut self, t: &LuaValue, k: &LuaValue) -> Result<Option<LuaValue>, LuaError> {
-        let LuaValue::Table(tbl) = t else { return Ok(None); };
+        let LuaValue::Table(tbl) = t else {
+            return Ok(None);
+        };
         let v = tbl.get(k);
-        if matches!(v, LuaValue::Nil) { Ok(None) } else { Ok(Some(v)) }
+        if matches!(v, LuaValue::Nil) {
+            Ok(None)
+        } else {
+            Ok(Some(v))
+        }
     }
     #[inline(always)]
     pub fn fast_get_int(&mut self, t: &LuaValue, k: i64) -> Result<Option<LuaValue>, LuaError> {
-        let LuaValue::Table(tbl) = t else { return Ok(None); };
+        let LuaValue::Table(tbl) = t else {
+            return Ok(None);
+        };
         let v = tbl.get_int(k);
-        if matches!(v, LuaValue::Nil) { Ok(None) } else { Ok(Some(v)) }
+        if matches!(v, LuaValue::Nil) {
+            Ok(None)
+        } else {
+            Ok(Some(v))
+        }
     }
     #[inline(always)]
-    pub fn fast_get_short_str(&mut self, t: &LuaValue, k: &LuaValue) -> Result<Option<LuaValue>, LuaError> {
-        let LuaValue::Table(tbl) = t else { return Ok(None); };
-        let LuaValue::Str(s) = k else { return Ok(None); };
+    pub fn fast_get_short_str(
+        &mut self,
+        t: &LuaValue,
+        k: &LuaValue,
+    ) -> Result<Option<LuaValue>, LuaError> {
+        let LuaValue::Table(tbl) = t else {
+            return Ok(None);
+        };
+        let LuaValue::Str(s) = k else {
+            return Ok(None);
+        };
         let v = tbl.get_short_str(s);
-        if matches!(v, LuaValue::Nil) { Ok(None) } else { Ok(Some(v)) }
+        if matches!(v, LuaValue::Nil) {
+            Ok(None)
+        } else {
+            Ok(Some(v))
+        }
     }
     #[inline(always)]
     pub fn fast_tm_table(&mut self, t: Option<&GcRef<LuaTable>>, tm: TagMethod) -> LuaValue {
-        let Some(mt) = t else { return LuaValue::Nil; };
+        let Some(mt) = t else {
+            return LuaValue::Nil;
+        };
         debug_assert!((tm as u8) <= TagMethod::Eq as u8);
         let ename = self.global().tmname[tm as usize].clone();
         mt.get_short_str(&ename)
@@ -3204,7 +3478,7 @@ impl LuaState {
         }
         let res = self.top_idx();
         self.push(LuaValue::Nil);
-        crate::vm::finish_get(self, t.clone(), k.clone(), res, true, None)?;
+        crate::vm::finish_get(self, t.clone(), k.clone(), res, true, None, None)?;
         let value = self.get_at(res);
         self.pop();
         Ok(value)
@@ -3224,7 +3498,12 @@ impl LuaState {
     /// C-Lua and lets us move `v` straight into `table_raw_set` without
     /// the extra `v.clone()` that the post-store ordering forced.
     #[inline]
-    pub fn table_set_with_tm(&mut self, t: &LuaValue, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
+    pub fn table_set_with_tm(
+        &mut self,
+        t: &LuaValue,
+        k: LuaValue,
+        v: LuaValue,
+    ) -> Result<(), LuaError> {
         if let LuaValue::Table(tbl) = t {
             if tbl.metatable().is_none() {
                 self.gc_table_barrier_back(tbl, &v);
@@ -3238,7 +3517,12 @@ impl LuaState {
         crate::vm::finish_set(self, t.clone(), k, v, true, None, None)
     }
     #[inline]
-    pub fn table_raw_set(&mut self, t: &LuaValue, k: LuaValue, v: LuaValue) -> Result<(), LuaError> {
+    pub fn table_raw_set(
+        &mut self,
+        t: &LuaValue,
+        k: LuaValue,
+        v: LuaValue,
+    ) -> Result<(), LuaError> {
         let LuaValue::Table(tbl) = t else {
             return Err(LuaError::type_error(t, "index"));
         };
@@ -3246,7 +3530,12 @@ impl LuaState {
         tbl.raw_set(self, k, v)
     }
     #[inline]
-    pub fn table_array_set(&mut self, t: &LuaValue, idx: usize, v: LuaValue) -> Result<(), LuaError> {
+    pub fn table_array_set(
+        &mut self,
+        t: &LuaValue,
+        idx: usize,
+        v: LuaValue,
+    ) -> Result<(), LuaError> {
         let LuaValue::Table(tbl) = t else {
             return Err(LuaError::type_error(t, "index"));
         };
@@ -3278,7 +3567,12 @@ impl LuaState {
             }
         }
     }
-    pub fn table_resize(&mut self, t: &GcRef<LuaTable>, na: usize, nh: usize) -> Result<(), LuaError> {
+    pub fn table_resize(
+        &mut self,
+        t: &GcRef<LuaTable>,
+        na: usize,
+        nh: usize,
+    ) -> Result<(), LuaError> {
         self.mark_gc_check_needed();
         t.resize(self, na, nh)
     }
@@ -3300,28 +3594,70 @@ impl LuaState {
         }
     }
 
-    pub fn try_bin_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, p2: &LuaValue, p2_idx: Option<StackIdx>, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_tm(
+        &mut self,
+        p1: &LuaValue,
+        p1_idx: Option<StackIdx>,
+        p2: &LuaValue,
+        p2_idx: Option<StackIdx>,
+        res: StackIdx,
+        tm: lua_types::tagmethod::TagMethod,
+    ) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::try_bin_tm(self, p1, p1_idx, p2, p2_idx, res, event)
     }
-    pub fn try_bin_i_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, imm: i64, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_i_tm(
+        &mut self,
+        p1: &LuaValue,
+        p1_idx: Option<StackIdx>,
+        imm: i64,
+        flip: bool,
+        res: StackIdx,
+        tm: lua_types::tagmethod::TagMethod,
+    ) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::try_bini_tm(self, p1, p1_idx, imm, flip, res, event)
     }
-    pub fn try_bin_assoc_tm(&mut self, p1: &LuaValue, p1_idx: Option<StackIdx>, p2: &LuaValue, p2_idx: Option<StackIdx>, flip: bool, res: StackIdx, tm: lua_types::tagmethod::TagMethod) -> Result<(), LuaError> {
+    pub fn try_bin_assoc_tm(
+        &mut self,
+        p1: &LuaValue,
+        p1_idx: Option<StackIdx>,
+        p2: &LuaValue,
+        p2_idx: Option<StackIdx>,
+        flip: bool,
+        res: StackIdx,
+        tm: lua_types::tagmethod::TagMethod,
+    ) -> Result<(), LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::try_bin_assoc_tm(self, p1, p1_idx, p2, p2_idx, flip, res, event)
     }
     pub fn try_concat_tm(&mut self, _p1: &LuaValue, _p2: &LuaValue) -> Result<(), LuaError> {
         crate::tagmethods::try_concat_tm(self)
     }
-    pub fn call_tm(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue, p3: &LuaValue) -> Result<(), LuaError> {
+    pub fn call_tm(
+        &mut self,
+        f: LuaValue,
+        p1: &LuaValue,
+        p2: &LuaValue,
+        p3: &LuaValue,
+    ) -> Result<(), LuaError> {
         crate::tagmethods::call_tm(self, f, p1.clone(), p2.clone(), p3.clone())
     }
-    pub fn call_tm_res(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue, res: StackIdx) -> Result<(), LuaError> {
+    pub fn call_tm_res(
+        &mut self,
+        f: LuaValue,
+        p1: &LuaValue,
+        p2: &LuaValue,
+        res: StackIdx,
+    ) -> Result<(), LuaError> {
         crate::tagmethods::call_tm_res(self, f, p1.clone(), p2.clone(), res)
     }
-    pub fn call_tm_res_bool(&mut self, f: LuaValue, p1: &LuaValue, p2: &LuaValue) -> Result<bool, LuaError> {
+    pub fn call_tm_res_bool(
+        &mut self,
+        f: LuaValue,
+        p1: &LuaValue,
+        p2: &LuaValue,
+    ) -> Result<bool, LuaError> {
         let res = self.top_idx();
         self.push(LuaValue::Nil);
         crate::tagmethods::call_tm_res(self, f, p1.clone(), p2.clone(), res)?;
@@ -3329,17 +3665,33 @@ impl LuaState {
         self.pop();
         Ok(!matches!(result, LuaValue::Nil | LuaValue::Bool(false)))
     }
-    pub fn call_order_tm(&mut self, p1: &LuaValue, p2: &LuaValue, tm: lua_types::tagmethod::TagMethod) -> Result<bool, LuaError> {
+    pub fn call_order_tm(
+        &mut self,
+        p1: &LuaValue,
+        p2: &LuaValue,
+        tm: lua_types::tagmethod::TagMethod,
+    ) -> Result<bool, LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::call_order_tm(self, p1, p2, event)
     }
-    pub fn call_order_i_tm(&mut self, p1: &LuaValue, v2: i64, flip: bool, isfloat: bool, tm: lua_types::tagmethod::TagMethod) -> Result<bool, LuaError> {
+    pub fn call_order_i_tm(
+        &mut self,
+        p1: &LuaValue,
+        v2: i64,
+        flip: bool,
+        isfloat: bool,
+        tm: lua_types::tagmethod::TagMethod,
+    ) -> Result<bool, LuaError> {
         let event = crate::tagmethods::TagMethod::from_u8(tm as u8);
         crate::tagmethods::call_orderi_tm(self, p1, v2 as i32, flip, isfloat, event)
     }
 
     #[inline(always)]
-    pub fn proto_code(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, pc: u32) -> lua_types::opcode::Instruction {
+    pub fn proto_code(
+        &self,
+        cl: &GcRef<lua_types::closure::LuaLClosure>,
+        pc: u32,
+    ) -> lua_types::opcode::Instruction {
         cl.proto.code[pc as usize]
     }
     #[inline(always)]
@@ -3352,7 +3704,11 @@ impl LuaState {
     ///
     /// arithmetic opcode macros (`op_arithK`).
     #[inline(always)]
-    pub fn proto_const_int(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<i64> {
+    pub fn proto_const_int(
+        &self,
+        cl: &GcRef<lua_types::closure::LuaLClosure>,
+        idx: usize,
+    ) -> Option<i64> {
         match &cl.proto.k[idx] {
             LuaValue::Int(v) => Some(*v),
             _ => None,
@@ -3362,7 +3718,11 @@ impl LuaState {
     /// constants. Avoids the full `LuaValue` clone. Used by the float fast
     /// path of `OP_ADDK`/`OP_SUBK`/`OP_MULK`/`OP_DIVK`/`OP_POWK`.
     #[inline(always)]
-    pub fn proto_const_num(&self, cl: &GcRef<lua_types::closure::LuaLClosure>, idx: usize) -> Option<f64> {
+    pub fn proto_const_num(
+        &self,
+        cl: &GcRef<lua_types::closure::LuaLClosure>,
+        idx: usize,
+    ) -> Option<f64> {
         match &cl.proto.k[idx] {
             LuaValue::Float(f) => Some(*f),
             LuaValue::Int(v) => Some(*v as f64),
@@ -3370,7 +3730,8 @@ impl LuaState {
         }
     }
     pub fn get_proto_instr(&self, ci: CallInfoIdx, pc: u32) -> lua_types::opcode::Instruction {
-        let cl = self.ci_lua_closure(ci)
+        let cl = self
+            .ci_lua_closure(ci)
             .expect("get_proto_instr: CallInfo does not hold a Lua closure");
         cl.proto.code[pc as usize]
     }
@@ -3522,7 +3883,9 @@ impl LuaState {
     pub fn full_type_name(&mut self, v: &LuaValue) -> Result<Vec<u8>, LuaError> {
         crate::tagmethods::obj_type_name(self, v)
     }
-    pub fn emit_warning(&mut self, _msg: &[u8], _to_cont: bool) { warning(self, _msg, _to_cont) }
+    pub fn emit_warning(&mut self, _msg: &[u8], _to_cont: bool) {
+        warning(self, _msg, _to_cont)
+    }
 }
 
 // ─── GcHandle — no-op GC facade ───────────────────────────────────────────────
@@ -3571,8 +3934,7 @@ fn barrier_lua_value<P>(
     child: &LuaValue,
     generational: bool,
     kind: BarrierKind,
-)
-where
+) where
     P: lua_gc::Trace + 'static,
 {
     if generational && matches!(kind, BarrierKind::Backward) {
@@ -3581,8 +3943,12 @@ where
     match child {
         LuaValue::Str(c) => barrier_gc_child(heap, parent, *c, generational, kind),
         LuaValue::Table(c) => barrier_gc_child(heap, parent, *c, generational, kind),
-        LuaValue::Function(LuaClosure::Lua(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
-        LuaValue::Function(LuaClosure::C(c)) => barrier_gc_child(heap, parent, *c, generational, kind),
+        LuaValue::Function(LuaClosure::Lua(c)) => {
+            barrier_gc_child(heap, parent, *c, generational, kind)
+        }
+        LuaValue::Function(LuaClosure::C(c)) => {
+            barrier_gc_child(heap, parent, *c, generational, kind)
+        }
         LuaValue::UserData(c) => barrier_gc_child(heap, parent, *c, generational, kind),
         LuaValue::Thread(c) => barrier_gc_child(heap, parent, *c, generational, kind),
         LuaValue::Nil
@@ -3600,8 +3966,7 @@ fn barrier_gc_child<P, C>(
     child: GcRef<C>,
     generational: bool,
     kind: BarrierKind,
-)
-where
+) where
     P: lua_gc::Trace + 'static,
     C: lua_gc::Trace + 'static,
 {
@@ -3620,8 +3985,7 @@ fn barrier_child_any<P>(
     child: &dyn std::any::Any,
     generational: bool,
     kind: BarrierKind,
-)
-where
+) where
     P: lua_gc::Trace + 'static,
 {
     if let Some(v) = child.downcast_ref::<LuaValue>() {
@@ -3656,8 +4020,12 @@ fn barrier_any(
         match v {
             LuaValue::Str(p) => barrier_child_any(heap, *p, child, generational, kind),
             LuaValue::Table(p) => barrier_child_any(heap, *p, child, generational, kind),
-            LuaValue::Function(LuaClosure::Lua(p)) => barrier_child_any(heap, *p, child, generational, kind),
-            LuaValue::Function(LuaClosure::C(p)) => barrier_child_any(heap, *p, child, generational, kind),
+            LuaValue::Function(LuaClosure::Lua(p)) => {
+                barrier_child_any(heap, *p, child, generational, kind)
+            }
+            LuaValue::Function(LuaClosure::C(p)) => {
+                barrier_child_any(heap, *p, child, generational, kind)
+            }
             LuaValue::UserData(p) => barrier_child_any(heap, *p, child, generational, kind),
             LuaValue::Thread(p) => barrier_child_any(heap, *p, child, generational, kind),
             LuaValue::Nil
@@ -3768,10 +4136,7 @@ fn weak_snapshot_tables<'a>(
         .chain(snapshot.all_weak.iter())
 }
 
-fn close_open_upvalues_for_unreachable_threads(
-    global: &GlobalState,
-    marker: &mut lua_gc::Marker,
-) {
+fn close_open_upvalues_for_unreachable_threads(global: &GlobalState, marker: &mut lua_gc::Marker) {
     use lua_gc::Trace;
 
     let mut closed_values = Vec::<LuaValue>::new();
@@ -3820,10 +4185,7 @@ fn record_live_interned_strings(
     }
 }
 
-fn retain_live_interned_strings(
-    global: &mut GlobalState,
-    mut live_ids: Vec<usize>,
-) {
+fn retain_live_interned_strings(global: &mut GlobalState, mut live_ids: Vec<usize>) {
     if live_ids.is_empty() {
         global.interned_lt.clear();
         return;
@@ -4039,14 +4401,16 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
-        let live_interned_ids: std::cell::RefCell<Vec<usize>> =
-            std::cell::RefCell::new(Vec::new());
+        let live_interned_ids: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
         let collect_ran = std::cell::Cell::new(false);
 
         {
             let global = state_ref.global.borrow();
             global.heap.unpause();
-            let roots = CollectRoots { global: &*global, thread: state_ref };
+            let roots = CollectRoots {
+                global: &*global,
+                thread: state_ref,
+            };
             let hook = |marker: &mut lua_gc::Marker| {
                 collect_ran.set(true);
                 alive_ids.borrow_mut().reserve(weak_table_capacity);
@@ -4062,9 +4426,9 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark_with_value(
-                            &|v| lua_value_marked_or_old(marker, v),
-                        );
+                        let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
+                            lua_value_marked_or_old(marker, v)
+                        });
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4088,9 +4452,9 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark_with_value(
-                            &|v| lua_value_marked_or_old(marker, v),
-                        );
+                        let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
+                            lua_value_marked_or_old(marker, v)
+                        });
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4195,9 +4559,8 @@ impl<'a> GcHandle<'a> {
             let majormul = g.gc_genmajormul_param().max(0) as usize;
             let majorinc = (majorbase / 100).saturating_mul(majormul);
             let debt_due = g.gc_debt() > 0 || g.heap.would_collect();
-            let should_major = allow_major
-                && debt_due
-                && g.total_bytes() > majorbase.saturating_add(majorinc);
+            let should_major =
+                allow_major && debt_due && g.total_bytes() > majorbase.saturating_add(majorinc);
             (g.lastatomic, majorbase, majorinc, should_major)
         };
 
@@ -4230,7 +4593,8 @@ impl<'a> GcHandle<'a> {
     }
 
     /// Phase-B stub for `luaC_step(L)`.
-    pub fn step(&self) { /* phase-b no-op */ }
+    pub fn step(&self) { /* phase-b no-op */
+    }
 
     /// Run one budgeted incremental step of the GC.
     ///
@@ -4277,7 +4641,11 @@ impl<'a> GcHandle<'a> {
             usize,
         ) = {
             let g = state_ref.global.borrow();
-            (g.finalizers.pending_snapshot(), g.threads.len(), g.interned_lt.len())
+            (
+                g.finalizers.pending_snapshot(),
+                g.threads.len(),
+                g.interned_lt.len(),
+            )
         };
         let finalizer_capacity = pending_snapshot.len();
 
@@ -4289,8 +4657,7 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
-        let live_interned_ids: std::cell::RefCell<Vec<usize>> =
-            std::cell::RefCell::new(Vec::new());
+        let live_interned_ids: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
         let atomic_ran = std::cell::Cell::new(false);
 
         let stop_target = {
@@ -4305,7 +4672,10 @@ impl<'a> GcHandle<'a> {
         let outcome = {
             let global = state_ref.global.borrow();
             global.heap.unpause();
-            let roots = CollectRoots { global: &*global, thread: state_ref };
+            let roots = CollectRoots {
+                global: &*global,
+                thread: state_ref,
+            };
             let hook = |marker: &mut lua_gc::Marker| {
                 atomic_ran.set(true);
                 alive_ids.borrow_mut().reserve(weak_table_capacity);
@@ -4322,9 +4692,7 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_visited(t_id) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
-                        );
+                        let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4349,9 +4717,7 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_visited(t_id) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
-                        );
+                        let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4366,10 +4732,9 @@ impl<'a> GcHandle<'a> {
                     if marker.is_visited(id) {
                         let to_mark = {
                             let finalizing = finalizing_ids.borrow();
-                            t.prune_weak_dead_with(
-                                &|id| marker.is_visited(id),
-                                &|id| marker.is_visited(id) && !finalizing.contains(&id),
-                            )
+                            t.prune_weak_dead_with(&|id| marker.is_visited(id), &|id| {
+                                marker.is_visited(id) && !finalizing.contains(&id)
+                            })
                         };
                         for v in &to_mark {
                             v.trace(marker);
@@ -4390,14 +4755,13 @@ impl<'a> GcHandle<'a> {
             };
             let budget = StepBudget::from_work(work_units);
             if let Some(target) = stop_target {
-                global.heap.incremental_run_until_state_with_post_mark(
-                    &roots,
-                    target,
-                    work_units,
-                    hook,
-                )
+                global
+                    .heap
+                    .incremental_run_until_state_with_post_mark(&roots, target, work_units, hook)
             } else {
-                global.heap.incremental_step_with_post_mark(&roots, budget, hook)
+                global
+                    .heap
+                    .incremental_step_with_post_mark(&roots, budget, hook)
             }
         };
 
@@ -4451,13 +4815,15 @@ impl<'a> GcHandle<'a> {
             g.interned_lt.len()
         };
 
-        let live_interned_ids: std::cell::RefCell<Vec<usize>> =
-            std::cell::RefCell::new(Vec::new());
+        let live_interned_ids: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
 
         {
             let global = state_ref.global.borrow();
             global.heap.unpause();
-            let roots = CollectRoots { global: &*global, thread: state_ref };
+            let roots = CollectRoots {
+                global: &*global,
+                thread: state_ref,
+            };
             let hook = |marker: &mut lua_gc::Marker| {
                 live_interned_ids.borrow_mut().reserve(interned_capacity);
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
@@ -4468,9 +4834,7 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_visited(t_id) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(
-                            &|id| marker.is_visited(id),
-                        );
+                        let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
                         for v in &to_mark {
                             v.trace(marker);
                         }
@@ -4517,7 +4881,8 @@ impl<'a> GcHandle<'a> {
     }
 
     /// Phase-B stub for `luaC_fix(L, o)` — pin an object so GC won't collect it.
-    pub fn fix_object<T: lua_gc::Trace + 'static>(&self, _o: &GcRef<T>) { /* phase-b no-op */ }
+    pub fn fix_object<T: lua_gc::Trace + 'static>(&self, _o: &GcRef<T>) { /* phase-b no-op */
+    }
 
     /// Free all collectable objects (called during state teardown).
     ///
@@ -4781,11 +5146,7 @@ pub(crate) fn check_c_stack(state: &mut LuaState) -> Result<(), LuaError> {
     }
     // error_sites.tsv: luaD_throw(L, LUA_ERRERR) → return Err(LuaError::with_status(LuaStatus::ErrErr))
     if state.c_calls() >= (LUAI_MAXCCALLS / 10 * 11) {
-        // TODO(port): LuaError::with_status takes a LuaStatus enum, not a raw i32.
-        // The exact constructor shape depends on lua-types/error.rs in Phase B.
-        return Err(LuaError::runtime(format_args!(
-            "error while handling stack overflow (C stack overflow)"
-        )));
+        return Err(LuaError::with_status(LuaStatus::ErrErr));
     }
     Ok(())
 }
@@ -4832,13 +5193,13 @@ fn stack_init(thread: &mut LuaState) {
 
     thread.stack_last = StackIdx(BASIC_STACK_SIZE as u32);
 
-
     let base_ci = CallInfo {
         func: StackIdx(0),
         top: StackIdx(1 + LUA_MINSTACK as u32),
         previous: None,
         next: None,
         callstatus: CIST_C,
+        call_metamethods: 0,
         nresults: 0,
         u: CallInfoFrame::c_default(),
         u2: CallInfoExtra::default(),
@@ -4851,7 +5212,10 @@ fn stack_init(thread: &mut LuaState) {
         thread.call_info.truncate(1);
     }
 
-    thread.stack[0] = StackValue { val: LuaValue::Nil, tbc_delta: 0 };
+    thread.stack[0] = StackValue {
+        val: LuaValue::Nil,
+        tbc_delta: 0,
+    };
 
     thread.top = StackIdx(1);
 
@@ -5082,7 +5446,10 @@ pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Resul
         let value = GcRef::new(lua_types::value::LuaThread::new(id));
         g.threads.insert(
             id,
-            ThreadRegistryEntry { state: thread_ref, value: value.clone() },
+            ThreadRegistryEntry {
+                state: thread_ref,
+                value: value.clone(),
+            },
         );
         value
     };
@@ -5123,6 +5490,7 @@ pub fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
     }
 
     state.call_info[ci_idx].func = StackIdx(0);
+    state.call_info[ci_idx].call_metamethods = 0;
     state.call_info[ci_idx].callstatus = CIST_C;
 
     let mut status = if status == LuaStatus::Yield as i32 {
@@ -5133,11 +5501,7 @@ pub fn reset_thread(state: &mut LuaState, status: i32) -> i32 {
 
     state.status = LuaStatus::Ok as u8;
 
-    let close_status = crate::do_::close_protected(
-        state,
-        StackIdx(1),
-        LuaStatus::from_raw(status),
-    );
+    let close_status = crate::do_::close_protected(state, StackIdx(1), LuaStatus::from_raw(status));
     status = close_status as i32;
 
     if status != LuaStatus::Ok as i32 {
@@ -5307,14 +5671,13 @@ pub fn new_state() -> Option<LuaState> {
         threads: std::collections::HashMap::new(),
         main_thread_value: GcRef::new(lua_types::value::LuaThread::new(0)),
         current_thread_id: 0,
+        closing_thread_id: None,
         main_thread_id: 0,
         next_thread_id: 1,
         memerrmsg: placeholder_str.clone(),
         tmname: Vec::new(),
         mt: std::array::from_fn(|_| None),
-        strcache: std::array::from_fn(|_| {
-            std::array::from_fn(|_| placeholder_str.clone())
-        }),
+        strcache: std::array::from_fn(|_| std::array::from_fn(|_| placeholder_str.clone())),
         interned_lt: InternedStringMap::default(),
         warnf: None,
         warn_mode: WarnMode::Off,
@@ -5755,7 +6118,9 @@ mod tests {
         };
 
         let payload = vec![b'x'; crate::string::MAX_SHORT_LEN + 4096];
-        let string = state.intern_str(&payload).expect("long string should allocate");
+        let string = state
+            .intern_str(&payload)
+            .expect("long string should allocate");
         let key = state.external_root_value(LuaValue::Str(string));
         let allocated_bytes = state.global().heap.bytes_used();
         assert!(
@@ -5852,10 +6217,7 @@ mod tests {
             state.gc().incremental_step(1);
             let g = state.global();
             let heap_state = g.heap.gc_state();
-            assert_eq!(
-                g.keep_invariant(),
-                heap_state.is_invariant()
-            );
+            assert_eq!(g.keep_invariant(), heap_state.is_invariant());
             assert_eq!(g.is_sweep_phase(), heap_state.is_sweep());
             saw_keep |= g.keep_invariant();
             saw_sweep |= g.is_sweep_phase();
@@ -5864,7 +6226,10 @@ mod tests {
             }
         }
 
-        assert!(saw_keep, "incremental cycle should expose an invariant phase");
+        assert!(
+            saw_keep,
+            "incremental cycle should expose an invariant phase"
+        );
         assert!(saw_sweep, "incremental cycle should expose a sweep phase");
 
         for key in roots {
@@ -6007,8 +6372,8 @@ mod tests {
 
         let second = state.new_table();
         state.push(LuaValue::Table(second));
-        let name = crate::api::setup_value(&mut state, -2, 1)
-            .expect("C closure upvalue should exist");
+        let name =
+            crate::api::setup_value(&mut state, -2, 1).expect("C closure upvalue should exist");
 
         assert!(name.is_empty());
         let upvalues = ccl.upvalues.borrow();
@@ -6039,8 +6404,7 @@ mod tests {
 
         let child = state.new_table();
         state.push(LuaValue::Table(child));
-        crate::api::setup_value(&mut state, -2, 1)
-            .expect("C closure upvalue should exist");
+        crate::api::setup_value(&mut state, -2, 1).expect("C closure upvalue should exist");
 
         assert_eq!(child.0.age(), lua_gc::GcAge::Old0);
 
@@ -6154,8 +6518,7 @@ mod tests {
         for i in 1..=64 {
             let child = state.new_table();
             let child_value = LuaValue::Table(child);
-            root
-                .raw_set_int(&mut state, i, child_value.clone())
+            root.raw_set_int(&mut state, i, child_value.clone())
                 .expect("table store should succeed");
             state.gc_barrier_back(&root_value, &child_value);
         }
@@ -6169,7 +6532,10 @@ mod tests {
         assert!(state.gc().generational_step());
         let g = state.global();
         assert!(g.is_gen_mode());
-        assert!(g.lastatomic > 0, "bad major collection should arm stepgenfull");
+        assert!(
+            g.lastatomic > 0,
+            "bad major collection should arm stepgenfull"
+        );
         assert!(g.gc_estimate > 1);
         assert!(g.gc_debt() <= 0);
         assert_eq!(root.0.age(), lua_gc::GcAge::Old);
@@ -6195,8 +6561,7 @@ mod tests {
         for i in 1..=64 {
             let child = state.new_table();
             let child_value = LuaValue::Table(child);
-            root
-                .raw_set_int(&mut state, i, child_value.clone())
+            root.raw_set_int(&mut state, i, child_value.clone())
                 .expect("table store should succeed");
             state.gc_barrier_back(&root_value, &child_value);
         }

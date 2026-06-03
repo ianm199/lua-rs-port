@@ -16,9 +16,9 @@
 //!   4. Skip "intentionally not traced" fields (weak refs)
 //!   5. Reference `reference/lua-5.4.7/src/lgc.c`'s `reallymarkobject`
 
-use lua_gc::{Marker, Trace};
-use crate::state::{FinalizerObject, LuaState, GlobalState};
+use crate::state::{FinalizerObject, GlobalState, LuaState};
 use crate::string::{LuaStringImpl, LuaUserDataImpl};
+use lua_gc::{Marker, Trace};
 use lua_types::{LuaClosure, LuaValue};
 
 /// Phase-B internal richer LuaString. The byte buffer is a Rust `Rc<[u8]>`

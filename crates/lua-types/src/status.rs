@@ -3,14 +3,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum LuaStatus {
-    Ok        = 0,
-    Yield     = 1,
-    ErrRun    = 2,
+    Ok = 0,
+    Yield = 1,
+    ErrRun = 2,
     ErrSyntax = 3,
-    ErrMem    = 4,
-    ErrErr    = 5,
-    ErrFile   = 6,
-    ErrGc     = 7,
+    ErrMem = 4,
+    ErrErr = 5,
+    ErrFile = 6,
+    ErrGc = 7,
 }
 
 impl LuaStatus {

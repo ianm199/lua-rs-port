@@ -19,14 +19,12 @@
 //! loops (`'startfunc`, `'returning`, `'dispatch`) and `continue`/`break`
 //! on those labels.  See inline `PORT NOTE` comments.
 
-
-#[allow(unused_imports)] use crate::prelude::*;
-use lua_types::{
-    CallInfoIdx, GcRef, LuaError, LuaString, LuaValue, StackIdx,
-};
-use lua_types::tagmethod::TagMethod;
-use lua_types::opcode::Instruction;
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::state::LuaState;
+use lua_types::opcode::Instruction;
+use lua_types::tagmethod::TagMethod;
+use lua_types::{CallInfoIdx, GcRef, LuaError, LuaString, LuaValue, StackIdx};
 
 /// TODO(multiversion, Step 0 deferred): this `OpCode` is a DUPLICATE of the
 /// canonical one in `lua-code/src/opcodes.rs:87`. The Step-0 plan wanted them
@@ -155,13 +153,16 @@ pub enum OpCode {
     /// 5.5-only; no other version's parser emits it. Appended after `ErrNNil`
     /// so existing opcode indices are unchanged.
     VarArgPack = 84,
+    /// Lua 5.5 virtual named-vararg indexed read. Reads key register C from the
+    /// named vararg parameter in register B without materializing its table.
+    GetVArg = 85,
 }
 
 /// Number of distinct opcodes (matches C-Lua's `NUM_OPCODES`). Held for
 /// downstream debug/dump callers that count opcodes by name; the dispatch
 /// hot path in `InstructionExt::opcode` does its own per-arm match.
 #[allow(dead_code)]
-const NUM_OPCODES: u8 = 85;
+const NUM_OPCODES: u8 = 86;
 
 impl OpCode {
     /// Legacy alias retained because the prior duplicate enum variant
@@ -267,6 +268,7 @@ impl OpCode {
             82 => Some(Self::ExtraArg),
             83 => Some(Self::ErrNNil),
             84 => Some(Self::VarArgPack),
+            85 => Some(Self::GetVArg),
             _ => None,
         }
     }
@@ -390,20 +392,54 @@ impl InstructionExt for Instruction {
             82 => OpCode::ExtraArg,
             83 => OpCode::ErrNNil,
             84 => OpCode::VarArgPack,
+            85 => OpCode::GetVArg,
             _ => OpCode::ExtraArg,
         }
     }
-    #[inline] fn arg_a(&self) -> i32 { ((self.raw() >> 7) & 0xFF) as i32 }
-    #[inline] fn arg_b(&self) -> i32 { ((self.raw() >> 16) & 0xFF) as i32 }
-    #[inline] fn arg_c(&self) -> i32 { ((self.raw() >> 24) & 0xFF) as i32 }
-    #[inline] fn arg_k(&self) -> i32 { ((self.raw() >> 15) & 0x1) as i32 }
-    #[inline] fn arg_ax(&self) -> i32 { (self.raw() >> 7) as i32 }
-    #[inline] fn arg_bx(&self) -> i32 { (self.raw() >> 15) as i32 }
-    #[inline] fn arg_s_b(&self) -> i32 { self.arg_b() - 0x7F }
-    #[inline] fn arg_s_c(&self) -> i32 { self.arg_c() - 0x7F }
-    #[inline] fn arg_s_j(&self) -> i32 { self.arg_ax() - 0xFFFFFF }
-    #[inline] fn arg_s_bx(&self) -> i32 { self.arg_bx() - 0xFFFF }
-    #[inline] fn test_k(&self) -> bool { (self.raw() & (1 << 15)) != 0 }
+    #[inline]
+    fn arg_a(&self) -> i32 {
+        ((self.raw() >> 7) & 0xFF) as i32
+    }
+    #[inline]
+    fn arg_b(&self) -> i32 {
+        ((self.raw() >> 16) & 0xFF) as i32
+    }
+    #[inline]
+    fn arg_c(&self) -> i32 {
+        ((self.raw() >> 24) & 0xFF) as i32
+    }
+    #[inline]
+    fn arg_k(&self) -> i32 {
+        ((self.raw() >> 15) & 0x1) as i32
+    }
+    #[inline]
+    fn arg_ax(&self) -> i32 {
+        (self.raw() >> 7) as i32
+    }
+    #[inline]
+    fn arg_bx(&self) -> i32 {
+        (self.raw() >> 15) as i32
+    }
+    #[inline]
+    fn arg_s_b(&self) -> i32 {
+        self.arg_b() - 0x7F
+    }
+    #[inline]
+    fn arg_s_c(&self) -> i32 {
+        self.arg_c() - 0x7F
+    }
+    #[inline]
+    fn arg_s_j(&self) -> i32 {
+        self.arg_ax() - 0xFFFFFF
+    }
+    #[inline]
+    fn arg_s_bx(&self) -> i32 {
+        self.arg_bx() - 0xFFFF
+    }
+    #[inline]
+    fn test_k(&self) -> bool {
+        (self.raw() & (1 << 15)) != 0
+    }
     #[inline]
     fn test_a_mode(&self) -> bool {
         (op_mode_byte(self.opcode()) & (1 << 3)) != 0
@@ -520,6 +556,7 @@ const OP_MODE_BYTES: [u8; NUM_OPCODES as usize] = [
     0x03, // ExtraArg
     0x01, // ErrNNil (iABx, no A-write, no test)
     0x08, // VarArgPack (iABC, sets register A)
+    0x08, // GetVArg (iABC, sets register A)
 ];
 
 #[inline(always)]
@@ -577,11 +614,17 @@ fn intop_shl(x: i64, n: u32) -> i64 {
 }
 
 #[inline]
-fn intop_band(a: i64, b: i64) -> i64 { ((a as u64) & (b as u64)) as i64 }
+fn intop_band(a: i64, b: i64) -> i64 {
+    ((a as u64) & (b as u64)) as i64
+}
 #[inline]
-fn intop_bor(a: i64, b: i64) -> i64  { ((a as u64) | (b as u64)) as i64 }
+fn intop_bor(a: i64, b: i64) -> i64 {
+    ((a as u64) | (b as u64)) as i64
+}
 #[inline]
-fn intop_bxor(a: i64, b: i64) -> i64 { ((a as u64) ^ (b as u64)) as i64 }
+fn intop_bxor(a: i64, b: i64) -> i64 {
+    ((a as u64) ^ (b as u64)) as i64
+}
 
 // ─── l_intfitsf ─────────────────────────────────────────────────────────────
 
@@ -617,9 +660,20 @@ fn str_to_number(obj: &LuaValue) -> Option<LuaValue> {
 }
 
 fn trim_whitespace(s: &[u8]) -> &[u8] {
-    let start = s.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(0);
-    if start <= end { &s[start..end] } else { &s[0..0] }
+    let start = s
+        .iter()
+        .position(|&b| !b.is_ascii_whitespace())
+        .unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|&b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if start <= end {
+        &s[start..end]
+    } else {
+        &s[0..0]
+    }
 }
 
 // ─── Number coercion (public API matching lvm.h exports) ────────────────────
@@ -710,7 +764,11 @@ fn forlimit(
     lim: &LuaValue,
     step: i64,
 ) -> Result<(bool, i64), LuaError> {
-    let round = if step < 0 { F2Imod::Ceil } else { F2Imod::Floor };
+    let round = if step < 0 {
+        F2Imod::Ceil
+    } else {
+        F2Imod::Floor
+    };
     if let Some(p) = to_integer(lim, round) {
         let skip = if step > 0 { init > p } else { init < p };
         return Ok((skip, p));
@@ -739,9 +797,9 @@ fn forlimit(
 ///   ra+0: init, ra+1: limit, ra+2: step, ra+3: control variable (written here)
 /// Returns `Ok(true)` to skip the loop body entirely.
 pub(crate) fn forprep(state: &mut LuaState, ra: StackIdx) -> Result<bool, LuaError> {
-    let pinit  = state.get_at(ra);
+    let pinit = state.get_at(ra);
     let plimit = state.get_at(ra + 1);
-    let pstep  = state.get_at(ra + 2);
+    let pstep = state.get_at(ra + 2);
 
     if let (LuaValue::Int(init), LuaValue::Int(step)) = (&pinit, &pstep) {
         let init = *init;
@@ -757,7 +815,11 @@ pub(crate) fn forprep(state: &mut LuaState, ra: StackIdx) -> Result<bool, LuaErr
         }
         let count: u64 = if step > 0 {
             let c = (limit as u64).wrapping_sub(init as u64);
-            if step != 1 { c / (step as u64) } else { c }
+            if step != 1 {
+                c / (step as u64)
+            } else {
+                c
+            }
         } else {
             let c = (init as u64).wrapping_sub(limit as u64);
             c / (((-(step + 1)) as u64).wrapping_add(1))
@@ -780,14 +842,18 @@ pub(crate) fn forprep(state: &mut LuaState, ra: StackIdx) -> Result<bool, LuaErr
         if step_f == 0.0 {
             return Err(LuaError::runtime(format_args!("'for' step is zero")));
         }
-        let skip = if step_f > 0.0 { limit_f < init_f } else { init_f < limit_f };
+        let skip = if step_f > 0.0 {
+            limit_f < init_f
+        } else {
+            init_f < limit_f
+        };
         if skip {
             return Ok(true);
         }
         //    setfltvalue(s2v(ra), init); setfltvalue(s2v(ra+3), init);
         state.set_at(ra + 1, LuaValue::Float(limit_f));
         state.set_at(ra + 2, LuaValue::Float(step_f));
-        state.set_at(ra,     LuaValue::Float(init_f));
+        state.set_at(ra, LuaValue::Float(init_f));
         state.set_at(ra + 3, LuaValue::Float(init_f));
         Ok(false)
     }
@@ -799,7 +865,11 @@ pub(crate) fn forprep(state: &mut LuaState, ra: StackIdx) -> Result<bool, LuaErr
 /// when that means the loop must not run — or `None` when `obj` is not a number
 /// (the caller then falls through to the float path / error).
 fn forlimit_legacy(obj: &LuaValue, step: i64) -> Option<(i64, bool)> {
-    let round = if step < 0 { F2Imod::Ceil } else { F2Imod::Floor };
+    let round = if step < 0 {
+        F2Imod::Ceil
+    } else {
+        F2Imod::Floor
+    };
     if let Some(p) = to_integer(obj, round) {
         return Some((p, false));
     }
@@ -889,7 +959,11 @@ fn forloop_legacy(state: &mut LuaState, ra: StackIdx) -> bool {
             LuaValue::Float(f) => f,
             _ => return false,
         };
-        let cont = if step > 0.0 { idx <= limit } else { limit <= idx };
+        let cont = if step > 0.0 {
+            idx <= limit
+        } else {
+            limit <= idx
+        };
         if cont {
             state.set_at(ra, LuaValue::Float(idx));
             state.set_at(ra + 3, LuaValue::Float(idx));
@@ -914,8 +988,12 @@ fn float_for_loop(state: &mut LuaState, ra: StackIdx) -> bool {
         _ => return false,
     };
     let idx = idx + step;
-    if if step > 0.0 { idx <= limit } else { limit <= idx } {
-        state.set_at(ra,     LuaValue::Float(idx));
+    if if step > 0.0 {
+        idx <= limit
+    } else {
+        limit <= idx
+    } {
+        state.set_at(ra, LuaValue::Float(idx));
         state.set_at(ra + 3, LuaValue::Float(idx));
         true
     } else {
@@ -935,6 +1013,7 @@ pub(crate) fn finish_get(
     result_idx: StackIdx,
     slot_empty: bool,
     t_idx: Option<StackIdx>,
+    var_hint: Option<(&[u8], &[u8])>,
 ) -> Result<(), LuaError> {
     let mut t = t_val;
     let mut t_idx = t_idx;
@@ -943,9 +1022,12 @@ pub(crate) fn finish_get(
         if slot_empty && !matches!(t, LuaValue::Table(_)) {
             tm = state.get_tm_by_obj(&t, TagMethod::Index);
             if matches!(tm, LuaValue::Nil) {
-                return Err(match t_idx {
-                    Some(idx) => crate::debug::type_error(state, &t, idx, b"index"),
-                    None => LuaError::type_error(&t, "index"),
+                return Err(match (t_idx, var_hint) {
+                    (Some(idx), _) => crate::debug::type_error(state, &t, idx, b"index"),
+                    (None, Some((kind, name))) => {
+                        crate::debug::type_error_with_hint(state, &t, b"index", kind, name)
+                    }
+                    (None, None) => LuaError::type_error(&t, "index"),
                 });
             }
         } else {
@@ -968,7 +1050,9 @@ pub(crate) fn finish_get(
         }
         // else: loop — tail-call luaV_finishget
     }
-    Err(LuaError::runtime(format_args!("'__index' chain too long; possible loop")))
+    Err(LuaError::runtime(format_args!(
+        "'__index' chain too long; possible loop"
+    )))
 }
 
 /// TValue *val, const TValue *slot)`
@@ -1024,7 +1108,9 @@ pub(crate) fn finish_set(
             return Ok(());
         }
     }
-    Err(LuaError::runtime(format_args!("'__newindex' chain too long; possible loop")))
+    Err(LuaError::runtime(format_args!(
+        "'__newindex' chain too long; possible loop"
+    )))
 }
 
 // ─── String comparison ───────────────────────────────────────────────────────
@@ -1123,10 +1209,10 @@ fn lt_num(l: &LuaValue, r: &LuaValue) -> bool {
     debug_assert!(matches!(l, LuaValue::Int(_) | LuaValue::Float(_)));
     debug_assert!(matches!(r, LuaValue::Int(_) | LuaValue::Float(_)));
     match (l, r) {
-        (LuaValue::Int(li), LuaValue::Int(ri))     => li < ri,
-        (LuaValue::Int(li), LuaValue::Float(rf))   => lt_int_float(*li, *rf),
+        (LuaValue::Int(li), LuaValue::Int(ri)) => li < ri,
+        (LuaValue::Int(li), LuaValue::Float(rf)) => lt_int_float(*li, *rf),
         (LuaValue::Float(lf), LuaValue::Float(rf)) => lf < rf,
-        (LuaValue::Float(lf), LuaValue::Int(ri))   => lt_float_int(*lf, *ri),
+        (LuaValue::Float(lf), LuaValue::Int(ri)) => lt_float_int(*lf, *ri),
         _ => false,
     }
 }
@@ -1136,18 +1222,20 @@ fn le_num(l: &LuaValue, r: &LuaValue) -> bool {
     debug_assert!(matches!(l, LuaValue::Int(_) | LuaValue::Float(_)));
     debug_assert!(matches!(r, LuaValue::Int(_) | LuaValue::Float(_)));
     match (l, r) {
-        (LuaValue::Int(li), LuaValue::Int(ri))     => li <= ri,
-        (LuaValue::Int(li), LuaValue::Float(rf))   => le_int_float(*li, *rf),
+        (LuaValue::Int(li), LuaValue::Int(ri)) => li <= ri,
+        (LuaValue::Int(li), LuaValue::Float(rf)) => le_int_float(*li, *rf),
         (LuaValue::Float(lf), LuaValue::Float(rf)) => lf <= rf,
-        (LuaValue::Float(lf), LuaValue::Int(ri))   => le_float_int(*lf, *ri),
+        (LuaValue::Float(lf), LuaValue::Int(ri)) => le_float_int(*lf, *ri),
         _ => false,
     }
 }
 
 /// `l < r` for non-numbers (strings or metamethod).
 fn less_than_others(state: &mut LuaState, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
-    debug_assert!(!(matches!(l, LuaValue::Int(_) | LuaValue::Float(_))
-                  && matches!(r, LuaValue::Int(_) | LuaValue::Float(_))));
+    debug_assert!(
+        !(matches!(l, LuaValue::Int(_) | LuaValue::Float(_))
+            && matches!(r, LuaValue::Int(_) | LuaValue::Float(_)))
+    );
     match (l, r) {
         (LuaValue::Str(ts1), LuaValue::Str(ts2)) => {
             Ok(str_cmp(ts1.as_bytes(), ts2.as_bytes()) == std::cmp::Ordering::Less)
@@ -1156,7 +1244,11 @@ fn less_than_others(state: &mut LuaState, l: &LuaValue, r: &LuaValue) -> Result<
     }
 }
 
-pub(crate) fn less_than(state: &mut LuaState, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
+pub(crate) fn less_than(
+    state: &mut LuaState,
+    l: &LuaValue,
+    r: &LuaValue,
+) -> Result<bool, LuaError> {
     if matches!(l, LuaValue::Int(_) | LuaValue::Float(_))
         && matches!(r, LuaValue::Int(_) | LuaValue::Float(_))
     {
@@ -1175,7 +1267,11 @@ fn less_equal_others(state: &mut LuaState, l: &LuaValue, r: &LuaValue) -> Result
     }
 }
 
-pub(crate) fn less_equal(state: &mut LuaState, l: &LuaValue, r: &LuaValue) -> Result<bool, LuaError> {
+pub(crate) fn less_equal(
+    state: &mut LuaState,
+    l: &LuaValue,
+    r: &LuaValue,
+) -> Result<bool, LuaError> {
     if matches!(l, LuaValue::Int(_) | LuaValue::Float(_))
         && matches!(r, LuaValue::Int(_) | LuaValue::Float(_))
     {
@@ -1209,7 +1305,7 @@ pub(crate) fn equal_obj(
     }
 
     match (t1, t2) {
-        (LuaValue::Nil,  LuaValue::Nil)  => Ok(true),
+        (LuaValue::Nil, LuaValue::Nil) => Ok(true),
         (LuaValue::Bool(b1), LuaValue::Bool(b2)) => Ok(b1 == b2),
         (LuaValue::Int(i1), LuaValue::Int(i2)) => Ok(i1 == i2),
         (LuaValue::Float(f1), LuaValue::Float(f2)) => Ok(f1 == f2),
@@ -1235,7 +1331,9 @@ pub(crate) fn equal_obj(
             if std::ptr::eq(u1.as_ptr(), u2.as_ptr()) {
                 return Ok(true);
             }
-            let Some(state) = state else { return Ok(false); };
+            let Some(state) = state else {
+                return Ok(false);
+            };
             let tm1 = state.fast_tm_ud(u1, TagMethod::Eq);
             let tm = if matches!(tm1, LuaValue::Nil) {
                 state.fast_tm_ud(u2, TagMethod::Eq)
@@ -1252,7 +1350,9 @@ pub(crate) fn equal_obj(
             if std::ptr::eq(h1.as_ptr(), h2.as_ptr()) {
                 return Ok(true);
             }
-            let Some(state) = state else { return Ok(false); };
+            let Some(state) = state else {
+                return Ok(false);
+            };
             //    if (tm == NULL) tm = fasttm(L, hvalue(t2)->metatable, TM_EQ);
             let mt1 = h1.metatable();
             let mt2 = h2.metatable();
@@ -1332,9 +1432,8 @@ pub(crate) fn concat(state: &mut LuaState, total: i32) -> Result<(), LuaError> {
             continue;
         }
 
-        let is_empty = |v: &LuaValue| -> bool {
-            matches!(v, LuaValue::Str(s) if s.as_bytes().is_empty())
-        };
+        let is_empty =
+            |v: &LuaValue| -> bool { matches!(v, LuaValue::Str(s) if s.as_bytes().is_empty()) };
 
         let n: u32;
         if is_empty(&v_tm1) {
@@ -1426,9 +1525,9 @@ impl ConcatPiece {
 fn concat_piece(v: LuaValue, version: lua_types::LuaVersion) -> Option<ConcatPiece> {
     match v {
         LuaValue::Str(s) => Some(ConcatPiece::Str(s)),
-        LuaValue::Int(_) | LuaValue::Float(_) => {
-            Some(ConcatPiece::Num(crate::object::number_to_str_buf(&v, version)))
-        }
+        LuaValue::Int(_) | LuaValue::Float(_) => Some(ConcatPiece::Num(
+            crate::object::number_to_str_buf(&v, version),
+        )),
         _ => None,
     }
 }
@@ -1463,17 +1562,19 @@ fn concat_pair_fast(
 // ─── Object length ───────────────────────────────────────────────────────────
 
 /// Main implementation of the `#` operator.
-pub(crate) fn obj_len(state: &mut LuaState, ra: StackIdx, rb: LuaValue, rb_idx: StackIdx) -> Result<(), LuaError> {
+pub(crate) fn obj_len(
+    state: &mut LuaState,
+    ra: StackIdx,
+    rb: LuaValue,
+    rb_idx: StackIdx,
+) -> Result<(), LuaError> {
     match &rb {
         LuaValue::Table(_) => {
             //    if (tm) break; else setivalue(s2v(ra), luaH_getn(h));
             // Lua 5.1 `#t` never consults a table `__len` metamethod (only
             // userdata can intercept `#` there); `__len` on tables was added in
             // 5.2. Under V51 we therefore always take the primitive length.
-            let consult_len_tm = !matches!(
-                state.global().lua_version,
-                lua_types::LuaVersion::V51
-            );
+            let consult_len_tm = !matches!(state.global().lua_version, lua_types::LuaVersion::V51);
             let tm = if consult_len_tm {
                 let mt = state.table_metatable(&rb);
                 state.fast_tm_table(mt.as_ref(), TagMethod::Len)
@@ -1498,7 +1599,12 @@ pub(crate) fn obj_len(state: &mut LuaState, ra: StackIdx, rb: LuaValue, rb_idx: 
             //    if (notm(tm)) luaG_typeerror(L, rb, "get length of");
             let tm = state.get_tm_by_obj(other, TagMethod::Len);
             if matches!(tm, LuaValue::Nil) {
-                return Err(crate::debug::type_error(state, other, rb_idx, b"get length of"));
+                return Err(crate::debug::type_error(
+                    state,
+                    other,
+                    rb_idx,
+                    b"get length of",
+                ));
             }
             state.call_tm_res(tm, &rb, &rb, ra)?;
         }
@@ -1557,10 +1663,30 @@ pub(crate) fn fmodf(m: f64, n: f64) -> f64 {
 pub(crate) fn tagmethod_from_index(i: usize) -> TagMethod {
     use TagMethod::*;
     match i {
-        0 => Index, 1 => NewIndex, 2 => Gc, 3 => Mode, 4 => Len, 5 => Eq,
-        6 => Add, 7 => Sub, 8 => Mul, 9 => Mod, 10 => Pow, 11 => Div,
-        12 => Idiv, 13 => Band, 14 => Bor, 15 => Bxor, 16 => Shl, 17 => Shr,
-        18 => Unm, 19 => Bnot, 20 => Lt, 21 => Le, 22 => Concat, 23 => Call,
+        0 => Index,
+        1 => NewIndex,
+        2 => Gc,
+        3 => Mode,
+        4 => Len,
+        5 => Eq,
+        6 => Add,
+        7 => Sub,
+        8 => Mul,
+        9 => Mod,
+        10 => Pow,
+        11 => Div,
+        12 => Idiv,
+        13 => Band,
+        14 => Bor,
+        15 => Bxor,
+        16 => Shl,
+        17 => Shr,
+        18 => Unm,
+        19 => Bnot,
+        20 => Lt,
+        21 => Le,
+        22 => Concat,
+        23 => Call,
         24 => Close,
         _ => Index,
     }
@@ -1608,7 +1734,7 @@ pub(crate) fn shiftl(x: i64, y: i64) -> i64 {
 /// and push it onto the stack at `ra`.
 fn push_closure(
     state: &mut LuaState,
-    proto_idx: usize,   // index into current closure's proto.p[]
+    proto_idx: usize, // index into current closure's proto.p[]
     ci: CallInfoIdx,
     base: StackIdx,
     ra: StackIdx,
@@ -1643,9 +1769,14 @@ pub(crate) fn finish_op(state: &mut LuaState) -> Result<(), LuaError> {
             state.set_at(base + a, v);
         }
         //    setobjs2s(L, base + GETARG_A(inst), --L->top.p);
-        OpCode::Unm | OpCode::BNot | OpCode::Len
-        | OpCode::GetTabUp | OpCode::GetTable | OpCode::GetI
-        | OpCode::GetField | OpCode::Self_ => {
+        OpCode::Unm
+        | OpCode::BNot
+        | OpCode::Len
+        | OpCode::GetTabUp
+        | OpCode::GetTable
+        | OpCode::GetI
+        | OpCode::GetField
+        | OpCode::Self_ => {
             let a = inst.arg_a();
             state.dec_top();
             let top = state.top_idx();
@@ -1655,8 +1786,13 @@ pub(crate) fn finish_op(state: &mut LuaState) -> Result<(), LuaError> {
         //    case OP_GTI: case OP_GEI: case OP_EQ:
         //    int res = !l_isfalse(s2v(L->top.p - 1)); L->top.p--;
         //    if (res != GETARG_k(inst)) ci->u.l.savedpc++;
-        OpCode::Lt | OpCode::Le | OpCode::LtI | OpCode::LeI
-        | OpCode::GtI | OpCode::GeI | OpCode::Eq => {
+        OpCode::Lt
+        | OpCode::Le
+        | OpCode::LtI
+        | OpCode::LeI
+        | OpCode::GtI
+        | OpCode::GeI
+        | OpCode::Eq => {
             let top_minus1 = state.top_idx() - 1;
             let v = state.get_at(top_minus1);
             let mut res = !matches!(v, LuaValue::Nil | LuaValue::Bool(false));
@@ -1704,8 +1840,13 @@ pub(crate) fn finish_op(state: &mut LuaState) -> Result<(), LuaError> {
             debug_assert!(
                 matches!(
                     other,
-                    OpCode::TForCall | OpCode::Call | OpCode::TailCall
-                    | OpCode::SetTabUp | OpCode::SetTable | OpCode::SetI | OpCode::SetField
+                    OpCode::TForCall
+                        | OpCode::Call
+                        | OpCode::TailCall
+                        | OpCode::SetTabUp
+                        | OpCode::SetTable
+                        | OpCode::SetI
+                        | OpCode::SetField
                 ),
                 "unexpected opcode in finish_op: {:?}",
                 other
@@ -1738,6 +1879,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
         state.global().lua_version,
         lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
     );
+    let tfor_55 = state.global().lua_version == lua_types::LuaVersion::V55;
 
     // PORT NOTE: `startfunc:` is the entry point that (re)sets `trap`.
     'startfunc: loop {
@@ -1855,7 +1997,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let b = i.arg_b() as usize;
                         let uv = cl.upval(b);
                         let v = match uv.try_open_payload() {
-                            Some((thread_id, idx)) if thread_id as u64 == state.cached_thread_id => {
+                            Some((thread_id, idx))
+                                if thread_id as u64 == state.cached_thread_id =>
+                            {
                                 state.stack[idx.0 as usize].val
                             }
                             Some(_) => state.upvalue_get(&cl, b),
@@ -1871,7 +2015,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let v = state.stack[ra.0 as usize].val;
                         let uv = cl.upval(b);
                         match uv.try_open_payload() {
-                            Some((thread_id, idx)) if thread_id as u64 == state.cached_thread_id => {
+                            Some((thread_id, idx))
+                                if thread_id as u64 == state.cached_thread_id =>
+                            {
                                 state.stack[idx.0 as usize].val = v;
                                 if v.is_collectable() {
                                     state.gc_barrier_upval(&uv, &v);
@@ -1902,7 +2048,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, upval, key, ra, true, None)?;
+                                let upval_name: Vec<u8> =
+                                    cl.0.proto
+                                        .upvalues
+                                        .get(b)
+                                        .and_then(|uv| uv.name.as_ref())
+                                        .map(|s| s.as_bytes().to_vec())
+                                        .unwrap_or_else(|| b"?".to_vec());
+                                let hint: Option<(&[u8], &[u8])> = Some((b"upvalue", &upval_name));
+                                finish_get(state, upval, key, ra, true, None, hint)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1924,7 +2078,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, rc_v, ra, true, Some(rb_idx))?;
+                                finish_get(state, rb_v, rc_v, ra, true, Some(rb_idx), None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1943,7 +2097,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                 let key = LuaValue::Int(c);
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx), None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1960,7 +2114,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx), None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -1991,8 +2145,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                     .and_then(|uv| uv.name.as_ref())
                                     .map(|s| s.as_bytes().to_vec())
                                     .unwrap_or_else(|| b"?".to_vec());
-                                let hint: Option<(&[u8], &[u8])> =
-                                    Some((b"upvalue", &upval_name));
+                                let hint: Option<(&[u8], &[u8])> = Some((b"upvalue", &upval_name));
                                 finish_set(state, upval, key, rc_v, false, None, hint)?;
                                 trap = state.ci_trap(ci);
                             }
@@ -2057,14 +2210,30 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                 } else {
                                     state.set_ci_savedpc(ci, pc);
                                     state.set_top(state.ci_top(ci));
-                                    finish_set(state, ra_v, LuaValue::Int(c), rc_v, false, Some(ra_idx), None)?;
+                                    finish_set(
+                                        state,
+                                        ra_v,
+                                        LuaValue::Int(c),
+                                        rc_v,
+                                        false,
+                                        Some(ra_idx),
+                                        None,
+                                    )?;
                                     trap = state.ci_trap(ci);
                                 }
                             }
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            finish_set(state, ra_v, LuaValue::Int(c), rc_v, false, Some(ra_idx), None)?;
+                            finish_set(
+                                state,
+                                ra_v,
+                                LuaValue::Int(c),
+                                rc_v,
+                                false,
+                                Some(ra_idx),
+                                None,
+                            )?;
                             trap = state.ci_trap(ci);
                         }
                     }
@@ -2092,7 +2261,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                                     None => {
                                         state.set_ci_savedpc(ci, pc);
                                         state.set_top(state.ci_top(ci));
-                                        finish_set(state, ra_v, key, rc_v, false, Some(ra_idx), None)?;
+                                        finish_set(
+                                            state,
+                                            ra_v,
+                                            key,
+                                            rc_v,
+                                            false,
+                                            Some(ra_idx),
+                                            None,
+                                        )?;
                                         trap = state.ci_trap(ci);
                                     }
                                 }
@@ -2152,7 +2329,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             None => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                finish_get(state, rb_v, key, ra, true, Some(rb_idx))?;
+                                finish_get(state, rb_v, key, ra, true, Some(rb_idx), None)?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -2180,10 +2357,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         let rb = base + i.arg_b();
                         let kidx = i.arg_c() as usize;
-                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                        if let (Some(i1), Some(i2)) =
+                            (state.get_int_at(rb), state.proto_const_int(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Int(intop_add(i1, i2)));
-                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                        } else if let (Some(n1), Some(n2)) =
+                            (state.get_num_at(rb), state.proto_const_num(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Float(n1 + n2));
                         }
@@ -2192,10 +2373,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         let rb = base + i.arg_b();
                         let kidx = i.arg_c() as usize;
-                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                        if let (Some(i1), Some(i2)) =
+                            (state.get_int_at(rb), state.proto_const_int(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Int(intop_sub(i1, i2)));
-                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                        } else if let (Some(n1), Some(n2)) =
+                            (state.get_num_at(rb), state.proto_const_num(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Float(n1 - n2));
                         }
@@ -2204,10 +2389,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         let rb = base + i.arg_b();
                         let kidx = i.arg_c() as usize;
-                        if let (Some(i1), Some(i2)) = (state.get_int_at(rb), state.proto_const_int(&cl, kidx)) {
+                        if let (Some(i1), Some(i2)) =
+                            (state.get_int_at(rb), state.proto_const_int(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Int(intop_mul(i1, i2)));
-                        } else if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                        } else if let (Some(n1), Some(n2)) =
+                            (state.get_num_at(rb), state.proto_const_num(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Float(n1 * n2));
                         }
@@ -2218,14 +2407,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let v2 = constants[i.arg_c() as usize];
                         state.set_ci_savedpc(ci, pc); // savestate for div-by-zero
                         state.set_top(state.ci_top(ci));
-                        arith_op_checked(state, ra, &v1, &v2, &mut pc,
-                            |a, b| imod(a, b), fmodf)?;
+                        arith_op_checked(state, ra, &v1, &v2, &mut pc, |a, b| imod(a, b), fmodf)?;
                     }
                     OpCode::PowK => {
                         let ra = base + i.arg_a();
                         let rb = base + i.arg_b();
                         let kidx = i.arg_c() as usize;
-                        if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                        if let (Some(n1), Some(n2)) =
+                            (state.get_num_at(rb), state.proto_const_num(&cl, kidx))
+                        {
                             pc += 1;
                             let r = if n2 == 2.0 { n1 * n1 } else { n1.powf(n2) };
                             state.set_at(ra, LuaValue::Float(r));
@@ -2235,7 +2425,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         let rb = base + i.arg_b();
                         let kidx = i.arg_c() as usize;
-                        if let (Some(n1), Some(n2)) = (state.get_num_at(rb), state.proto_const_num(&cl, kidx)) {
+                        if let (Some(n1), Some(n2)) =
+                            (state.get_num_at(rb), state.proto_const_num(&cl, kidx))
+                        {
                             pc += 1;
                             state.set_at(ra, LuaValue::Float(n1 / n2));
                         }
@@ -2246,8 +2438,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let v2 = constants[i.arg_c() as usize];
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        arith_op_checked(state, ra, &v1, &v2, &mut pc,
-                            |a, b| idiv(a, b), |a, b| (a / b).floor())?;
+                        arith_op_checked(
+                            state,
+                            ra,
+                            &v1,
+                            &v2,
+                            &mut pc,
+                            |a, b| idiv(a, b),
+                            |a, b| (a / b).floor(),
+                        )?;
                     }
                     OpCode::BAndK => {
                         let ra = base + i.arg_a();
@@ -2296,7 +2495,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         if let (LuaValue::Int(i1), LuaValue::Int(i2)) = (rb_v, rc_v) {
                             pc += 1;
                             state.stack[ra_u].val = LuaValue::Int(intop_add(i1, i2));
-                        } else if let (Some(n1), Some(n2)) = (number_value(rb_v), number_value(rc_v)) {
+                        } else if let (Some(n1), Some(n2)) =
+                            (number_value(rb_v), number_value(rc_v))
+                        {
                             pc += 1;
                             state.stack[ra_u].val = LuaValue::Float(n1 + n2);
                         }
@@ -2311,7 +2512,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         if let (LuaValue::Int(i1), LuaValue::Int(i2)) = (rb_v, rc_v) {
                             pc += 1;
                             state.stack[ra_u].val = LuaValue::Int(intop_sub(i1, i2));
-                        } else if let (Some(n1), Some(n2)) = (number_value(rb_v), number_value(rc_v)) {
+                        } else if let (Some(n1), Some(n2)) =
+                            (number_value(rb_v), number_value(rc_v))
+                        {
                             pc += 1;
                             state.stack[ra_u].val = LuaValue::Float(n1 - n2);
                         }
@@ -2334,8 +2537,7 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let v2 = state.get_at(base + i.arg_c());
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        arith_op_checked(state, ra, &v1, &v2, &mut pc,
-                            |a, b| imod(a, b), fmodf)?;
+                        arith_op_checked(state, ra, &v1, &v2, &mut pc, |a, b| imod(a, b), fmodf)?;
                     }
                     OpCode::Pow => {
                         let ra = base + i.arg_a();
@@ -2362,8 +2564,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let v2 = state.get_at(base + i.arg_c());
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        arith_op_checked(state, ra, &v1, &v2, &mut pc,
-                            |a, b| idiv(a, b), |a, b| (a / b).floor())?;
+                        arith_op_checked(
+                            state,
+                            ra,
+                            &v1,
+                            &v2,
+                            &mut pc,
+                            |a, b| idiv(a, b),
+                            |a, b| (a / b).floor(),
+                        )?;
                     }
                     // ── Bitwise with register operands ─────────────────────────
                     // if (tointegerns(v1, &i1) && tointegerns(v2, &i2)) { pc++; setivalue... }
@@ -2411,7 +2620,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let result_idx = base + prev_inst.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.try_bin_tm(&ra_v, Some(ra_idx), &rb_v, Some(rb_idx), result_idx, tm)?;
+                        state.try_bin_tm(
+                            &ra_v,
+                            Some(ra_idx),
+                            &rb_v,
+                            Some(rb_idx),
+                            result_idx,
+                            tm,
+                        )?;
                         trap = state.ci_trap(ci);
                     }
                     OpCode::MmBinI => {
@@ -2437,7 +2653,15 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let result_idx = base + prev_inst.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.try_bin_assoc_tm(&ra_v, Some(ra_idx), &imm, None, flip, result_idx, tm)?;
+                        state.try_bin_assoc_tm(
+                            &ra_v,
+                            Some(ra_idx),
+                            &imm,
+                            None,
+                            flip,
+                            result_idx,
+                            tm,
+                        )?;
                         trap = state.ci_trap(ci);
                     }
                     // ── OP_UNM ───────────────────────────────────────────────
@@ -2457,7 +2681,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                             _ => {
                                 state.set_ci_savedpc(ci, pc);
                                 state.set_top(state.ci_top(ci));
-                                state.try_bin_tm(&rb_v, Some(rb_idx), &rb_v, Some(rb_idx), ra, TagMethod::Unm)?;
+                                state.try_bin_tm(
+                                    &rb_v,
+                                    Some(rb_idx),
+                                    &rb_v,
+                                    Some(rb_idx),
+                                    ra,
+                                    TagMethod::Unm,
+                                )?;
                                 trap = state.ci_trap(ci);
                             }
                         }
@@ -2472,7 +2703,14 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         } else {
                             state.set_ci_savedpc(ci, pc);
                             state.set_top(state.ci_top(ci));
-                            state.try_bin_tm(&rb_v, Some(rb_idx), &rb_v, Some(rb_idx), ra, TagMethod::Bnot)?;
+                            state.try_bin_tm(
+                                &rb_v,
+                                Some(rb_idx),
+                                &rb_v,
+                                Some(rb_idx),
+                                ra,
+                                TagMethod::Bnot,
+                            )?;
                             trap = state.ci_trap(ci);
                         }
                     }
@@ -2511,7 +2749,12 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        crate::func::close(state, ra, lua_types::status::LuaStatus::Ok as i32, true)?;
+                        crate::func::close(
+                            state,
+                            ra,
+                            lua_types::status::LuaStatus::Ok as i32,
+                            true,
+                        )?;
                         trap = state.ci_trap(ci);
                     }
                     // ── OP_TBC ────────────────────────────────────────────────
@@ -2548,9 +2791,13 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let rb_v = state.get_at(base + i.arg_b());
                         let cond = if let (LuaValue::Int(ia), LuaValue::Int(ib)) = (&ra_v, &rb_v) {
                             *ia < *ib
-                        } else if matches!((&ra_v, &rb_v),
-                            (LuaValue::Int(_) | LuaValue::Float(_),
-                             LuaValue::Int(_) | LuaValue::Float(_))) {
+                        } else if matches!(
+                            (&ra_v, &rb_v),
+                            (
+                                LuaValue::Int(_) | LuaValue::Float(_),
+                                LuaValue::Int(_) | LuaValue::Float(_)
+                            )
+                        ) {
                             lt_num(&ra_v, &rb_v)
                         } else {
                             state.set_ci_savedpc(ci, pc);
@@ -2573,9 +2820,13 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let rb_v = state.get_at(base + i.arg_b());
                         let cond = if let (LuaValue::Int(ia), LuaValue::Int(ib)) = (&ra_v, &rb_v) {
                             *ia <= *ib
-                        } else if matches!((&ra_v, &rb_v),
-                            (LuaValue::Int(_) | LuaValue::Float(_),
-                             LuaValue::Int(_) | LuaValue::Float(_))) {
+                        } else if matches!(
+                            (&ra_v, &rb_v),
+                            (
+                                LuaValue::Int(_) | LuaValue::Float(_),
+                                LuaValue::Int(_) | LuaValue::Float(_)
+                            )
+                        ) {
                             le_num(&ra_v, &rb_v)
                         } else {
                             state.set_ci_savedpc(ci, pc);
@@ -2637,7 +2888,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         };
                         let cond = match fast_cond {
                             Some(cond) => cond,
-                            None => order_imm_slow(state, ra, pc, &mut trap, ci, i, im, false, TagMethod::Lt)?,
+                            None => order_imm_slow(
+                                state,
+                                ra,
+                                pc,
+                                &mut trap,
+                                ci,
+                                i,
+                                im,
+                                false,
+                                TagMethod::Lt,
+                            )?,
                         };
                         finish_order_imm_jump(state, &cl, &mut pc, &mut trap, ci, i, cond);
                     }
@@ -2651,7 +2912,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         };
                         let cond = match fast_cond {
                             Some(cond) => cond,
-                            None => order_imm_slow(state, ra, pc, &mut trap, ci, i, im, false, TagMethod::Le)?,
+                            None => order_imm_slow(
+                                state,
+                                ra,
+                                pc,
+                                &mut trap,
+                                ci,
+                                i,
+                                im,
+                                false,
+                                TagMethod::Le,
+                            )?,
                         };
                         finish_order_imm_jump(state, &cl, &mut pc, &mut trap, ci, i, cond);
                     }
@@ -2665,7 +2936,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         };
                         let cond = match fast_cond {
                             Some(cond) => cond,
-                            None => order_imm_slow(state, ra, pc, &mut trap, ci, i, im, true, TagMethod::Lt)?,
+                            None => order_imm_slow(
+                                state,
+                                ra,
+                                pc,
+                                &mut trap,
+                                ci,
+                                i,
+                                im,
+                                true,
+                                TagMethod::Lt,
+                            )?,
                         };
                         finish_order_imm_jump(state, &cl, &mut pc, &mut trap, ci, i, cond);
                     }
@@ -2679,7 +2960,17 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         };
                         let cond = match fast_cond {
                             Some(cond) => cond,
-                            None => order_imm_slow(state, ra, pc, &mut trap, ci, i, im, true, TagMethod::Le)?,
+                            None => order_imm_slow(
+                                state,
+                                ra,
+                                pc,
+                                &mut trap,
+                                ci,
+                                i,
+                                im,
+                                true,
+                                TagMethod::Le,
+                            )?,
                         };
                         finish_order_imm_jump(state, &cl, &mut pc, &mut trap, ci, i, cond);
                     }
@@ -2914,20 +3205,40 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         let ra = base + i.arg_a();
                         state.set_ci_savedpc(ci, pc);
                         state.set_top(state.ci_top(ci));
-                        state.new_tbc_upval(ra + 3)?;
+                        if tfor_55 {
+                            let closing = state.get_at(ra + 3);
+                            let control = state.get_at(ra + 2);
+                            state.set_at(ra + 2, closing);
+                            state.set_at(ra + 3, control);
+                            state.new_tbc_upval(ra + 2)?;
+                        } else {
+                            state.new_tbc_upval(ra + 3)?;
+                        }
                         pc = (pc as i64 + i.arg_bx() as i64) as u32;
                         let tfc_i = code[pc as usize];
                         pc += 1;
                         debug_assert!(tfc_i.opcode() == OpCode::TForCall);
                         // inline l_tforcall:
                         let tfc_ra = base + tfc_i.arg_a();
-                        for k in 0..3u32 {
-                            let v = state.get_at(tfc_ra + k as i32);
-                            state.set_at(tfc_ra + 4 + k as i32, v);
+                        if tfor_55 {
+                            let func = state.get_at(tfc_ra);
+                            let state_val = state.get_at(tfc_ra + 1);
+                            let control = state.get_at(tfc_ra + 3);
+                            state.set_at(tfc_ra + 3, func);
+                            state.set_at(tfc_ra + 4, state_val);
+                            state.set_at(tfc_ra + 5, control);
+                            state.set_top(tfc_ra + 6);
+                            state.set_ci_savedpc(ci, pc);
+                            state.call_at(tfc_ra + 3, tfc_i.arg_c() as i32)?;
+                        } else {
+                            for k in 0..3u32 {
+                                let v = state.get_at(tfc_ra + k as i32);
+                                state.set_at(tfc_ra + 4 + k as i32, v);
+                            }
+                            state.set_top(tfc_ra + 4 + 3);
+                            state.set_ci_savedpc(ci, pc);
+                            state.call_at(tfc_ra + 4, tfc_i.arg_c() as i32)?;
                         }
-                        state.set_top(tfc_ra + 4 + 3);
-                        state.set_ci_savedpc(ci, pc);
-                        state.call_at(tfc_ra + 4, tfc_i.arg_c() as i32)?;
                         trap = state.ci_trap(ci);
                         base = state.ci_base(ci); // updatestack
                         let tfl_i = code[pc as usize];
@@ -2935,7 +3246,11 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         debug_assert!(tfl_i.opcode() == OpCode::TForLoop);
                         let tfl_ra = base + tfl_i.arg_a();
                         // inline l_tforloop:
-                        if !matches!(state.get_at(tfl_ra + 4), LuaValue::Nil) {
+                        if tfor_55 {
+                            if !matches!(state.get_at(tfl_ra + 3), LuaValue::Nil) {
+                                pc = (pc as i64 - tfl_i.arg_bx() as i64) as u32;
+                            }
+                        } else if !matches!(state.get_at(tfl_ra + 4), LuaValue::Nil) {
                             let v = state.get_at(tfl_ra + 4);
                             state.set_at(tfl_ra + 2, v);
                             pc = (pc as i64 - tfl_i.arg_bx() as i64) as u32;
@@ -2944,20 +3259,36 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // ── OP_TFORCALL ────────────────────────────────────────────
                     OpCode::TForCall => {
                         let ra = base + i.arg_a();
-                        for k in 0..3u32 {
-                            let v = state.get_at(ra + k as i32);
-                            state.set_at(ra + 4 + k as i32, v);
+                        if tfor_55 {
+                            let func = state.get_at(ra);
+                            let state_val = state.get_at(ra + 1);
+                            let control = state.get_at(ra + 3);
+                            state.set_at(ra + 3, func);
+                            state.set_at(ra + 4, state_val);
+                            state.set_at(ra + 5, control);
+                            state.set_top(ra + 6);
+                            state.set_ci_savedpc(ci, pc);
+                            state.call_at(ra + 3, i.arg_c() as i32)?;
+                        } else {
+                            for k in 0..3u32 {
+                                let v = state.get_at(ra + k as i32);
+                                state.set_at(ra + 4 + k as i32, v);
+                            }
+                            state.set_top(ra + 4 + 3);
+                            state.set_ci_savedpc(ci, pc);
+                            state.call_at(ra + 4, i.arg_c() as i32)?;
                         }
-                        state.set_top(ra + 4 + 3);
-                        state.set_ci_savedpc(ci, pc);
-                        state.call_at(ra + 4, i.arg_c() as i32)?;
                         trap = state.ci_trap(ci);
                         base = state.ci_base(ci); // updatestack
                         let tfl_i = code[pc as usize];
                         pc += 1;
                         debug_assert!(tfl_i.opcode() == OpCode::TForLoop);
                         let tfl_ra = base + tfl_i.arg_a();
-                        if !matches!(state.get_at(tfl_ra + 4), LuaValue::Nil) {
+                        if tfor_55 {
+                            if !matches!(state.get_at(tfl_ra + 3), LuaValue::Nil) {
+                                pc = (pc as i64 - tfl_i.arg_bx() as i64) as u32;
+                            }
+                        } else if !matches!(state.get_at(tfl_ra + 4), LuaValue::Nil) {
                             let v = state.get_at(tfl_ra + 4);
                             state.set_at(tfl_ra + 2, v);
                             pc = (pc as i64 - tfl_i.arg_bx() as i64) as u32;
@@ -2966,7 +3297,11 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     // ── OP_TFORLOOP ────────────────────────────────────────────
                     OpCode::TForLoop => {
                         let ra = base + i.arg_a();
-                        if !matches!(state.get_at(ra + 4), LuaValue::Nil) {
+                        if tfor_55 {
+                            if !matches!(state.get_at(ra + 3), LuaValue::Nil) {
+                                pc = (pc as i64 - i.arg_bx() as i64) as u32;
+                            }
+                        } else if !matches!(state.get_at(ra + 4), LuaValue::Nil) {
                             let v = state.get_at(ra + 4);
                             state.set_at(ra + 2, v);
                             pc = (pc as i64 - i.arg_bx() as i64) as u32;
@@ -3039,6 +3374,37 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                         }
                         base = state.ci_base(ci);
                     }
+                    // ── OP_GETVARG (Lua 5.5 virtual named-vararg read) ────────
+                    OpCode::GetVArg => {
+                        let ra = base + i.arg_a();
+                        let vararg_reg = base + i.arg_b();
+                        let key = state.get_at(base + i.arg_c()).clone();
+                        let val = if let LuaValue::Table(t) = state.get_at(vararg_reg) {
+                            t.get(&key)
+                        } else {
+                            let nextra = state.ci_nextraargs(ci);
+                            match key {
+                                LuaValue::Int(n) if n >= 1 && n <= nextra as i64 => {
+                                    let ci_func = state.ci_base(ci) - 1;
+                                    state.get_at(ci_func - nextra + n as i32 - 1)
+                                }
+                                LuaValue::Float(f)
+                                    if f.is_finite()
+                                        && f.fract() == 0.0
+                                        && f >= 1.0
+                                        && f <= nextra as f64 =>
+                                {
+                                    let ci_func = state.ci_base(ci) - 1;
+                                    state.get_at(ci_func - nextra + f as i32 - 1)
+                                }
+                                LuaValue::Str(s) if s.as_bytes() == b"n" => {
+                                    LuaValue::Int(nextra as i64)
+                                }
+                                _ => LuaValue::Nil,
+                            }
+                        };
+                        state.set_at(ra, val);
+                    }
                     // ── OP_EXTRAARG ────────────────────────────────────────────
                     OpCode::ExtraArg => {
                         debug_assert!(false, "OP_EXTRAARG executed directly");
@@ -3075,6 +3441,10 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
                     //    extra args were moved by VARARGPREP to the slots just
                     //    below `ci->func`, i.e. `ci_func - nextra .. ci_func-1`.
                     OpCode::VarArgPack => {
+                        if !cl.proto.vararg_table_needed && !i.test_k() {
+                            state.set_ci_savedpc(ci, pc);
+                            continue;
+                        }
                         let ra = base + i.arg_a();
                         let nextra = state.ci_nextraargs(ci);
                         let ci_func: StackIdx = state.ci_base(ci) - 1;
@@ -3104,7 +3474,9 @@ pub(crate) fn execute(state: &mut LuaState, mut ci: CallInfoIdx) -> Result<(), L
             if state.ci_is_fresh(ci) {
                 return Ok(());
             } else {
-                ci = state.ci_previous(ci).expect("ci_previous: not fresh frame must have previous");
+                ci = state
+                    .ci_previous(ci)
+                    .expect("ci_previous: not fresh frame must have previous");
                 continue 'returning;
             }
         } // end 'returning loop
@@ -3224,10 +3596,7 @@ fn bitwise_op_rr(
     pc: &mut u32,
     op: fn(i64, i64) -> i64,
 ) {
-    if let (Some(i1), Some(i2)) = (
-        to_integer_ns(v1, F2Imod::Eq),
-        to_integer_ns(v2, F2Imod::Eq),
-    ) {
+    if let (Some(i1), Some(i2)) = (to_integer_ns(v1, F2Imod::Eq), to_integer_ns(v2, F2Imod::Eq)) {
         *pc += 1;
         state.set_at(ra, LuaValue::Int(op(i1, i2)));
     }
@@ -3244,10 +3613,7 @@ fn bitwise_shift_rr(
     pc: &mut u32,
     right: bool,
 ) {
-    if let (Some(i1), Some(i2)) = (
-        to_integer_ns(v1, F2Imod::Eq),
-        to_integer_ns(v2, F2Imod::Eq),
-    ) {
+    if let (Some(i1), Some(i2)) = (to_integer_ns(v1, F2Imod::Eq), to_integer_ns(v2, F2Imod::Eq)) {
         let y = if right { intop_sub(0, i2) } else { i2 };
         *pc += 1;
         state.set_at(ra, LuaValue::Int(shiftl(i1, y)));

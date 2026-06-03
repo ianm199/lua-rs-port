@@ -97,8 +97,8 @@ impl<'lua> Lua<'lua> {
 
     /// Load and run a chunk of Lua source.
     pub fn execute<T: FromExec>(&mut self, code: &str) -> Result<T, LuaError> {
-        let status = load_buffer(&mut self.state, code.as_bytes(), b"=(load)")
-            .map_err(LuaError::from_vm)?;
+        let status =
+            load_buffer(&mut self.state, code.as_bytes(), b"=(load)").map_err(LuaError::from_vm)?;
         if status != 0 {
             let err = self.state.pop();
             return Err(LuaError::from_vm(lua_types::LuaError::from_value(err)));
@@ -166,7 +166,13 @@ fn parser_hook(
     name: &[u8],
     firstchar: i32,
 ) -> Result<GcRef<LuaLClosure>, lua_types::LuaError> {
-    let proto = lua_parse::parse(state, lua_parse::DynData::default(), source, name, firstchar)?;
+    let proto = lua_parse::parse(
+        state,
+        lua_parse::DynData::default(),
+        source,
+        name,
+        firstchar,
+    )?;
     let nupvals = proto.upvalues.len();
     let mut upvals = Vec::with_capacity(nupvals);
     for _ in 0..nupvals {

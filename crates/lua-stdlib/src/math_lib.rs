@@ -14,8 +14,8 @@
 
 // PORT NOTE: All imports below will be unresolved until Phase B lands the
 // lua-types crate. Expected Phase-A errors: E0432, E0412, E0433, E0425.
-use lua_types::{LuaError, LuaType, LuaValue};
 use crate::state_stub::{LuaState, LuaStateStubExt as _};
+use lua_types::{LuaError, LuaType, LuaValue};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -39,7 +39,10 @@ type LuaCFunction = fn(&mut LuaState) -> Result<usize, LuaError>;
 /// `None` is used for placeholder entries whose values are set manually
 /// (e.g. `pi`, `huge`, `maxinteger`, `mininteger`, `random`, `randomseed`).
 /// PORT NOTE: Phase B will unify with `lua_types::LibReg`.
-#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
+#[expect(
+    dead_code,
+    reason = "ported stdlib helper; not yet wired into the runtime"
+)]
 struct LibReg {
     name: &'static [u8],
     func: Option<LuaCFunction>,
@@ -625,21 +628,27 @@ fn math_random(state: &mut LuaState) -> Result<usize, LuaError> {
             (low, up, empty_arg)
         }
         _ => {
-            return Err(LuaError::runtime(format_args!(
-                "wrong number of arguments"
-            )));
+            return Err(LuaError::runtime(format_args!("wrong number of arguments")));
         }
     };
 
     if low > up {
-        return Err(lua_vm::debug::arg_error_impl(state, empty_arg, b"interval is empty"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            empty_arg,
+            b"interval is empty",
+        ));
     }
 
     // 5.3 `math_random` rejects intervals whose width overflows a signed integer
     // (`low >= 0 || up <= LUA_MAXINTEGER + low`). 5.4/5.5 use the `project`
     // bit-mask algorithm, which handles the full range without erroring.
     if is_v53 && !(low >= 0 || up <= i64::MAX.wrapping_add(low)) {
-        return Err(lua_vm::debug::arg_error_impl(state, 1, b"interval too large"));
+        return Err(lua_vm::debug::arg_error_impl(
+            state,
+            1,
+            b"interval too large",
+        ));
     }
 
     let range = (up as u64).wrapping_sub(low as u64);
@@ -665,8 +674,7 @@ fn math_randomseed(state: &mut LuaState) -> Result<usize, LuaError> {
     // seed but its `luaL_checknumber` floors and likewise returns nothing; the
     // modern (5.3+) bodies auto-seed when absent and return the two seed words.
     // See specs/followup/5.1-numbers-prng.md.
-    let float_only =
-        state.global().lua_version.number_model() == lua_types::NumberModel::FloatOnly;
+    let float_only = state.global().lua_version.number_model() == lua_types::NumberModel::FloatOnly;
 
     if matches!(state.type_at(1), LuaType::None) {
         if float_only {
@@ -705,11 +713,7 @@ fn advance_prng(_state: &mut LuaState) -> Result<u64, LuaError> {
 /// Apply rejection sampling for `math.random` using the thread-local PRNG.
 ///
 /// PORT NOTE: see `advance_prng` for the thread-local rationale.
-fn project_from_upvalue(
-    _state: &mut LuaState,
-    ran: u64,
-    n: u64,
-) -> Result<u64, LuaError> {
+fn project_from_upvalue(_state: &mut LuaState, ran: u64, n: u64) -> Result<u64, LuaError> {
     Ok(RAN_STATE.with(|r| project(ran, n, &mut r.borrow_mut().s)))
 }
 
@@ -772,67 +776,151 @@ fn set_rand_func(state: &mut LuaState) -> Result<(), LuaError> {
 /// Placeholder entries (`None`) are filled in manually by `luaopen_math`
 /// (`pi`, `huge`, `maxinteger`, `mininteger`) or by `set_rand_func`
 /// (`random`, `randomseed`).
-#[expect(dead_code, reason = "ported stdlib helper; not yet wired into the runtime")]
+#[expect(
+    dead_code,
+    reason = "ported stdlib helper; not yet wired into the runtime"
+)]
 static MATHLIB: &[LibReg] = &[
-    LibReg { name: b"abs",        func: Some(math_abs)    },
-    LibReg { name: b"acos",       func: Some(math_acos)   },
-    LibReg { name: b"asin",       func: Some(math_asin)   },
-    LibReg { name: b"atan",       func: Some(math_atan)   },
-    LibReg { name: b"ceil",       func: Some(math_ceil)   },
-    LibReg { name: b"cos",        func: Some(math_cos)    },
-    LibReg { name: b"deg",        func: Some(math_deg)    },
-    LibReg { name: b"exp",        func: Some(math_exp)    },
-    LibReg { name: b"tointeger",  func: Some(math_toint)  },
-    LibReg { name: b"floor",      func: Some(math_floor)  },
-    LibReg { name: b"fmod",       func: Some(math_fmod)   },
-    LibReg { name: b"ult",        func: Some(math_ult)    },
-    LibReg { name: b"log",        func: Some(math_log)    },
-    LibReg { name: b"max",        func: Some(math_max)    },
-    LibReg { name: b"min",        func: Some(math_min)    },
-    LibReg { name: b"modf",       func: Some(math_modf)   },
-    LibReg { name: b"rad",        func: Some(math_rad)    },
-    LibReg { name: b"sin",        func: Some(math_sin)    },
-    LibReg { name: b"sqrt",       func: Some(math_sqrt)   },
-    LibReg { name: b"tan",        func: Some(math_tan)    },
-    LibReg { name: b"type",       func: Some(math_type)   },
+    LibReg {
+        name: b"abs",
+        func: Some(math_abs),
+    },
+    LibReg {
+        name: b"acos",
+        func: Some(math_acos),
+    },
+    LibReg {
+        name: b"asin",
+        func: Some(math_asin),
+    },
+    LibReg {
+        name: b"atan",
+        func: Some(math_atan),
+    },
+    LibReg {
+        name: b"ceil",
+        func: Some(math_ceil),
+    },
+    LibReg {
+        name: b"cos",
+        func: Some(math_cos),
+    },
+    LibReg {
+        name: b"deg",
+        func: Some(math_deg),
+    },
+    LibReg {
+        name: b"exp",
+        func: Some(math_exp),
+    },
+    LibReg {
+        name: b"tointeger",
+        func: Some(math_toint),
+    },
+    LibReg {
+        name: b"floor",
+        func: Some(math_floor),
+    },
+    LibReg {
+        name: b"fmod",
+        func: Some(math_fmod),
+    },
+    LibReg {
+        name: b"ult",
+        func: Some(math_ult),
+    },
+    LibReg {
+        name: b"log",
+        func: Some(math_log),
+    },
+    LibReg {
+        name: b"max",
+        func: Some(math_max),
+    },
+    LibReg {
+        name: b"min",
+        func: Some(math_min),
+    },
+    LibReg {
+        name: b"modf",
+        func: Some(math_modf),
+    },
+    LibReg {
+        name: b"rad",
+        func: Some(math_rad),
+    },
+    LibReg {
+        name: b"sin",
+        func: Some(math_sin),
+    },
+    LibReg {
+        name: b"sqrt",
+        func: Some(math_sqrt),
+    },
+    LibReg {
+        name: b"tan",
+        func: Some(math_tan),
+    },
+    LibReg {
+        name: b"type",
+        func: Some(math_type),
+    },
     // Placeholders; values are set manually in luaopen_math / set_rand_func.
-    LibReg { name: b"random",     func: None },
-    LibReg { name: b"randomseed", func: None },
-    LibReg { name: b"pi",         func: None },
-    LibReg { name: b"huge",       func: None },
-    LibReg { name: b"maxinteger", func: None },
-    LibReg { name: b"mininteger", func: None },
+    LibReg {
+        name: b"random",
+        func: None,
+    },
+    LibReg {
+        name: b"randomseed",
+        func: None,
+    },
+    LibReg {
+        name: b"pi",
+        func: None,
+    },
+    LibReg {
+        name: b"huge",
+        func: None,
+    },
+    LibReg {
+        name: b"maxinteger",
+        func: None,
+    },
+    LibReg {
+        name: b"mininteger",
+        func: None,
+    },
 ];
 
 static MATHLIB_FUNCS: &[(&[u8], LuaCFunction)] = &[
-    (b"abs",        math_abs),
-    (b"acos",       math_acos),
-    (b"asin",       math_asin),
-    (b"atan",       math_atan),
-    (b"ceil",       math_ceil),
-    (b"cos",        math_cos),
-    (b"deg",        math_deg),
-    (b"exp",        math_exp),
-    (b"tointeger",  math_toint),
-    (b"floor",      math_floor),
-    (b"fmod",       math_fmod),
-    (b"ult",        math_ult),
-    (b"log",        math_log),
-    (b"max",        math_max),
-    (b"min",        math_min),
-    (b"modf",       math_modf),
-    (b"rad",        math_rad),
-    (b"sin",        math_sin),
-    (b"sqrt",       math_sqrt),
-    (b"tan",        math_tan),
-    (b"type",       math_type),
+    (b"abs", math_abs),
+    (b"acos", math_acos),
+    (b"asin", math_asin),
+    (b"atan", math_atan),
+    (b"ceil", math_ceil),
+    (b"cos", math_cos),
+    (b"deg", math_deg),
+    (b"exp", math_exp),
+    (b"tointeger", math_toint),
+    (b"floor", math_floor),
+    (b"fmod", math_fmod),
+    (b"ult", math_ult),
+    (b"log", math_log),
+    (b"max", math_max),
+    (b"min", math_min),
+    (b"modf", math_modf),
+    (b"rad", math_rad),
+    (b"sin", math_sin),
+    (b"sqrt", math_sqrt),
+    (b"tan", math_tan),
+    (b"type", math_type),
     // `frexp`/`ldexp` are registered unconditionally in lua5.4.7 and lua5.5.0
     // (their `lmathlib.c` places these two outside the `LUA_COMPAT_MATHLIB`
     // `#if`) and are part of the 5.3 compat roster too. Verified against all
     // three reference binaries: `type(math.frexp)`/`type(math.ldexp)` ==
     // "function" on 5.3.6, 5.4.7, and 5.5.0.
-    (b"frexp",      math_frexp),
-    (b"ldexp",      math_ldexp),
+    (b"frexp", math_frexp),
+    (b"ldexp", math_ldexp),
 ];
 
 // ── Module entry point ────────────────────────────────────────────────────
@@ -867,12 +955,12 @@ pub fn luaopen_math(state: &mut LuaState) -> Result<usize, LuaError> {
             | lua_types::LuaVersion::V54
     ) {
         const COMPAT_MATH_FUNCS: &[(&[u8], LuaCFunction)] = &[
-            (b"atan2",  math_atan),
-            (b"cosh",   math_cosh),
-            (b"sinh",   math_sinh),
-            (b"tanh",   math_tanh),
-            (b"pow",    math_pow),
-            (b"log10",  math_log10),
+            (b"atan2", math_atan),
+            (b"cosh", math_cosh),
+            (b"sinh", math_sinh),
+            (b"tanh", math_tanh),
+            (b"pow", math_pow),
+            (b"log10", math_log10),
         ];
         state.set_funcs_with_upvalues(COMPAT_MATH_FUNCS, 0)?;
     }

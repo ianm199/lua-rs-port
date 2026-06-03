@@ -15,8 +15,8 @@ pub mod opcode_profile;
 pub mod state;
 pub mod string;
 pub mod table;
-pub mod trace_impls;
 pub mod tagmethods;
+pub mod trace_impls;
 pub mod undump;
 pub mod vm;
 pub mod zio;
@@ -28,12 +28,11 @@ pub mod zio;
 /// natively, this prelude can shrink to just the LuaState helpers.
 pub mod prelude {
     pub use crate::state::{
-        LuaValueExt, LuaTypeExt, StackIdxExt,
-        LuaTableRefExt, LuaUserDataRefExt, LuaStringRefExt,
-        LuaLClosureRefExt, LuaClosureExt, LuaProtoExt,
+        LuaClosureExt, LuaLClosureRefExt, LuaProtoExt, LuaStringRefExt, LuaTableRefExt, LuaTypeExt,
+        LuaUserDataRefExt, LuaValueExt, StackIdxExt,
     };
-    pub use crate::vm::{InstructionExt, OpCode};
     pub(crate) use crate::tagmethods::TagMethod;
+    pub use crate::vm::{InstructionExt, OpCode};
 }
 
 // ──────────────────────────────────────────────────────────────────────────

@@ -559,13 +559,13 @@ pub extern "C" fn lua_rs_wasm_set_limits(
 /// 0 = none / ordinary error, 1 = instruction budget, 2 = memory ceiling.
 #[no_mangle]
 pub extern "C" fn lua_rs_wasm_last_trip() -> i32 {
-    RUNTIME.with(|cell| {
-        match cell.borrow().as_ref().and_then(LuaRuntime::sandbox_tripped) {
+    RUNTIME.with(
+        |cell| match cell.borrow().as_ref().and_then(LuaRuntime::sandbox_tripped) {
             Some(TripReason::Instructions) => 1,
             Some(TripReason::Memory) => 2,
             None => 0,
-        }
-    })
+        },
+    )
 }
 
 /// Refill the instruction budget and clear the trip flag without recreating the

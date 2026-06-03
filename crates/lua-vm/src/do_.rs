@@ -3,26 +3,25 @@
 //! Translated from `src/ldo.c` (Lua 5.4.7, ~1029 lines, ~37 functions).
 //! Target crate: lua-vm (`crates/lua-vm/src/do_.rs`).
 
-#[allow(unused_imports)] use crate::prelude::*;
+#[allow(unused_imports)]
+use crate::prelude::*;
+use crate::zio::{LexBuffer, ZIO};
 use crate::{
     func,
     state::{CallInfoIdx, LuaState},
     vm,
 };
-use lua_types::{
-    error::LuaError,
-    status::LuaStatus,
-    value::LuaValue,
-};
-use lua_types::StackIdx;
 use lua_types::closure::LuaClosure;
 use lua_types::tagmethod::TagMethod;
-use crate::zio::{ZIO, LexBuffer};
+use lua_types::StackIdx;
+use lua_types::{error::LuaError, status::LuaStatus, value::LuaValue};
 
 /// Stub DynData. TODO(phase-b): real type lives in lua-parse.
 struct DynDataStub;
 impl DynDataStub {
-    fn new() -> Self { DynDataStub }
+    fn new() -> Self {
+        DynDataStub
+    }
 }
 
 /// Text-source parser entry point.
@@ -109,6 +108,50 @@ const CLOSE_K_TOP: i32 = -1;
 #[inline]
 fn error_status(s: LuaStatus) -> bool {
     (s as i32) > (LuaStatus::Yield as i32)
+}
+
+fn run_message_handler(
+    state: &mut LuaState,
+    err_slot: StackIdx,
+    errfunc_idx: StackIdx,
+    original_status: LuaStatus,
+    recover_ci: CallInfoIdx,
+    recover_allowhook: bool,
+) -> LuaStatus {
+    let saved_n_ccalls = state.n_ccalls;
+    // In C this handler runs inside luaG_errormsg before the failing call
+    // long-jumps out, so that call's non-yielding depth is still active.
+    state.n_ccalls += NYCI;
+    loop {
+        let arg = state.get_at(err_slot).clone();
+        state.set_top(err_slot + 1);
+        state.push(arg);
+        let handler = state.get_at(errfunc_idx).clone();
+        let func_idx = state.top_idx() - 2;
+        state.set_at(func_idx, handler);
+
+        match state.call_no_yield(func_idx, 1) {
+            Ok(()) => {
+                state.n_ccalls = saved_n_ccalls;
+                return original_status;
+            }
+            Err(e) => {
+                let status = e.to_status();
+                let value = e.into_value();
+                state.ci = recover_ci;
+                state.allowhook = recover_allowhook;
+                state.set_top(err_slot + 1);
+                state.set_at(err_slot, value);
+
+                if status == LuaStatus::ErrRun {
+                    continue;
+                }
+
+                state.n_ccalls = saved_n_ccalls;
+                return LuaStatus::ErrErr;
+            }
+        }
+    }
 }
 
 // ── lua_longjmp (NOT translated) ─────────────────────────────────────────────
@@ -414,8 +457,7 @@ fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), L
 
         if state.get_ci(ci_idx).is_lua() {
             // TODO(port): ci_func(ci)->p accesses the Proto; needs full closure API.
-            let (is_vararg, nextraargs, numparams) =
-                state.get_ci_vararg_info(ci_idx);
+            let (is_vararg, nextraargs, numparams) = state.get_ci_vararg_info(ci_idx);
             if is_vararg {
                 delta = nextraargs + numparams as i32 + 1;
             }
@@ -456,7 +498,14 @@ fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), L
 /// Returns the (unchanged) `func_idx` on success, or an error if no
 /// `__call` metamethod exists.
 ///
-fn try_func_tm(state: &mut LuaState, func_idx: StackIdx) -> Result<StackIdx, LuaError> {
+fn try_func_tm(
+    state: &mut LuaState,
+    func_idx: StackIdx,
+    call_metamethods: &mut u8,
+) -> Result<StackIdx, LuaError> {
+    if *call_metamethods == 15 {
+        return Err(LuaError::runtime(format_args!("'__call' chain too long")));
+    }
     // checkstackGCp → { state.check_stack(n)?; state.gc().check_step(); }  (macros.tsv)
     // PORT NOTE: func_idx is a StackIdx and survives any stack reallocation.
     state.check_stack(1)?;
@@ -482,6 +531,7 @@ fn try_func_tm(state: &mut LuaState, func_idx: StackIdx) -> Result<StackIdx, Lua
     }
     state.set_top(top + 1);
     state.set_at(func_idx, tm);
+    *call_metamethods += 1;
 
     Ok(func_idx)
 }
@@ -627,6 +677,7 @@ fn prep_call_info(
         ci.func = func_idx;
         ci.nresults = nret as i16;
         ci.callstatus = mask;
+        ci.call_metamethods = 0;
         ci.top = top_idx;
         ci.u = if (mask & crate::state::CIST_C) != 0 {
             crate::state::CallInfoFrame::c_default()
@@ -647,6 +698,7 @@ fn precall_c(
     func_idx: StackIdx,
     nresults: i32,
     f: crate::state::LuaCallable,
+    call_metamethods: u8,
 ) -> Result<i32, LuaError> {
     state.check_stack(LUA_MINSTACK as i32)?;
     if state.gc_check_needed {
@@ -655,6 +707,7 @@ fn precall_c(
 
     let top_idx = state.top_idx();
     let ci_idx = prep_call_info(state, func_idx, nresults, CIST_C, top_idx + LUA_MINSTACK)?;
+    state.get_ci_mut(ci_idx).call_metamethods = call_metamethods;
 
     debug_assert!(true /* TODO(phase-b): state.get_ci(ci_idx).top <= state.stack_last */);
 
@@ -686,16 +739,17 @@ pub(crate) fn pretailcall(
     mut narg1: i32,
     delta: i32,
 ) -> Result<i32, LuaError> {
+    let mut call_metamethods = 0u8;
     loop {
         let func_val = state.get_at(func_idx).clone();
         match func_val {
             LuaValue::Function(LuaClosure::C(ref cl)) => {
                 let cfunc = state.global().c_functions[cl.func].clone();
-                return precall_c(state, func_idx, LUA_MULTRET, cfunc);
+                return precall_c(state, func_idx, LUA_MULTRET, cfunc, call_metamethods);
             }
             LuaValue::Function(LuaClosure::LightC(f)) => {
                 let cfunc = state.global().c_functions[f].clone();
-                return precall_c(state, func_idx, LUA_MULTRET, cfunc);
+                return precall_c(state, func_idx, LUA_MULTRET, cfunc, call_metamethods);
             }
             LuaValue::Function(LuaClosure::Lua(ref cl)) => {
                 let proto = cl.proto.clone();
@@ -731,6 +785,7 @@ pub(crate) fn pretailcall(
                     let stack_last = state.stack_last;
                     let live_top = state.top_idx();
                     let ci = state.get_ci_mut(ci_idx);
+                    ci.call_metamethods = call_metamethods;
                     ci.top = new_ci_top;
                     debug_assert!(ci.top.0 <= stack_last.0);
                     ci.set_saved_pc(0);
@@ -742,7 +797,7 @@ pub(crate) fn pretailcall(
                 return Ok(-1); // Signal: Lua function, VM should continue.
             }
             _ => {
-                func_idx = try_func_tm(state, func_idx)?;
+                func_idx = try_func_tm(state, func_idx, &mut call_metamethods)?;
                 narg1 += 1;
                 // continue the loop — equivalent to goto retry
             }
@@ -765,9 +820,7 @@ pub(crate) fn precall(
     func_idx: StackIdx,
     nresults: i32,
 ) -> Result<Option<CallInfoIdx>, LuaError> {
-    if let LuaValue::Function(LuaClosure::Lua(cl)) =
-        &state.stack[func_idx.0 as usize].val
-    {
+    if let LuaValue::Function(LuaClosure::Lua(cl)) = &state.stack[func_idx.0 as usize].val {
         let nfixparams = cl.proto.numparams as i32;
         let fsize = cl.proto.maxstacksize as i32;
         let narg = (state.top_idx().0 as i32 - func_idx.0 as i32) - 1;
@@ -777,8 +830,7 @@ pub(crate) fn precall(
             state.gc_check_step();
         }
 
-        let ci_idx =
-            prep_call_info(state, func_idx, nresults, 0, func_idx + 1 + fsize as i32)?;
+        let ci_idx = prep_call_info(state, func_idx, nresults, 0, func_idx + 1 + fsize as i32)?;
         state.set_ci_savedpc(ci_idx, 0);
 
         if narg < nfixparams {
@@ -813,12 +865,13 @@ fn precall_slow(
     mut func_idx: StackIdx,
     nresults: i32,
 ) -> Result<Option<CallInfoIdx>, LuaError> {
+    let mut call_metamethods = 0u8;
     loop {
         let func_val = state.get_at(func_idx).clone();
         match func_val {
             LuaValue::Function(LuaClosure::C(ref cl)) => {
                 let cfunc = state.global().c_functions[cl.func].clone();
-                precall_c(state, func_idx, nresults, cfunc)?;
+                precall_c(state, func_idx, nresults, cfunc, call_metamethods)?;
                 return Ok(None);
             }
             LuaValue::Function(LuaClosure::LightC(f)) => {
@@ -830,6 +883,7 @@ fn precall_slow(
                 let top_idx = state.top_idx();
                 let ci_idx =
                     prep_call_info(state, func_idx, nresults, CIST_C, top_idx + LUA_MINSTACK)?;
+                state.get_ci_mut(ci_idx).call_metamethods = call_metamethods;
 
                 if state.hookmask & LUA_MASKCALL != 0 {
                     let narg = (state.top_idx().0 as i32 - func_idx.0 as i32) - 1;
@@ -855,13 +909,9 @@ fn precall_slow(
                     state.gc_check_step();
                 }
 
-                let ci_idx = prep_call_info(
-                    state,
-                    func_idx,
-                    nresults,
-                    0,
-                    func_idx + 1 + fsize as i32,
-                )?;
+                let ci_idx =
+                    prep_call_info(state, func_idx, nresults, 0, func_idx + 1 + fsize as i32)?;
+                state.get_ci_mut(ci_idx).call_metamethods = call_metamethods;
                 state.set_ci_savedpc(ci_idx, 0);
 
                 if narg < nfixparams {
@@ -870,7 +920,7 @@ fn precall_slow(
                 return Ok(Some(ci_idx));
             }
             _ => {
-                func_idx = try_func_tm(state, func_idx)?;
+                func_idx = try_func_tm(state, func_idx, &mut call_metamethods)?;
             }
         }
     }
@@ -965,30 +1015,26 @@ fn finish_pcallk(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<LuaStatus,
         // yield-then-error path (the sync-error path in `pcall_k`/api.rs
         // calls the handler inline and clears CIST_YPCALL before we'd reach
         // this function). Fixes coroutine.lua:319 (xpcall + yield + error).
-        if state.errfunc != 0 && error_status(status) && status != LuaStatus::ErrErr && status != LuaStatus::ErrSyntax {
+        if state.errfunc != 0
+            && error_status(status)
+            && status != LuaStatus::ErrErr
+            && status != LuaStatus::ErrSyntax
+        {
             let errfunc_stk = StackIdx(state.errfunc as u32);
-            // Mirror the stack manipulation lua-c does in luaG_errormsg
-            // (and the inline path in pcall_k api.rs:1944):
-            //   stack: [..., err]  (top = func_idx + 1, err at func_idx)
-            //   -> push duplicate of err -> [..., err, err]
-            //   -> overwrite the first err slot with handler -> [..., handler, err]
-            //   -> call_no_yield(handler_pos, 1 result) -> [..., result]
-            //   -> result lands at func_idx, which is where the error was.
-            let err_val = state.get_at(func_idx);
-            state.push(err_val);
-            let handler = state.get_at(errfunc_stk);
-            state.set_at(state.top_idx() - 2, handler);
-            if let Err(_) = state.call_no_yield(state.top_idx() - 2, 1) {
-                status = LuaStatus::ErrErr;
-                if let Ok(s) = state.intern_str(b"error in error handling") {
-                    state.set_at(func_idx, lua_types::value::LuaValue::Str(s));
-                }
-                state.set_top(func_idx + 1);
-            }
+            status = run_message_handler(
+                state,
+                func_idx,
+                errfunc_stk,
+                status,
+                ci_idx,
+                state.allowhook,
+            );
         }
 
         shrink_stack(state);
-        state.get_ci_mut(ci_idx).set_recover_status(LuaStatus::Ok as i32);
+        state
+            .get_ci_mut(ci_idx)
+            .set_recover_status(LuaStatus::Ok as i32);
     }
 
     state.get_ci_mut(ci_idx).callstatus &= !CIST_YPCALL;
@@ -1030,7 +1076,9 @@ fn finish_ccall(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<(), LuaErro
             n = k_fn(state, status as i32, ctx)? as i32;
         } else {
             // TODO(port): unreachable in correct code; the assert above guards this
-            return Err(LuaError::runtime(format_args!("finishCcall: missing continuation")));
+            return Err(LuaError::runtime(format_args!(
+                "finishCcall: missing continuation"
+            )));
         }
         debug_assert!(
             n <= state.top_idx().0 as i32,
@@ -1082,7 +1130,9 @@ fn resume_error(state: &mut LuaState, msg: &[u8], narg: i32) -> LuaStatus {
     // luaS_new → state.intern_str(s)  (macros.tsv)
     let s = state.intern_str(msg).ok();
     let new_top = state.top_idx();
-    if let Some(s) = s { state.set_at(new_top, LuaValue::Str(s)); }
+    if let Some(s) = s {
+        state.set_at(new_top, LuaValue::Str(s));
+    }
     state.set_top(new_top + 1);
     LuaStatus::ErrRun
 }
@@ -1177,10 +1227,7 @@ pub fn lua_resume(
         return resume_error(state, b"cannot resume dead coroutine", nargs);
     }
 
-    state.n_ccalls = from
-        .as_ref()
-        .map(|f| f.c_calls() as u32)
-        .unwrap_or(0);
+    state.n_ccalls = from.as_ref().map(|f| f.c_calls() as u32).unwrap_or(0);
 
     if state.c_calls() >= LUAI_MAXCCALLS {
         return resume_error(state, b"C stack overflow", nargs);
@@ -1205,7 +1252,11 @@ pub fn lua_resume(
         Ok(()) => (LuaStatus::Ok, None),
         Err(e) => {
             let s = e.to_status();
-            let v = if error_status(s) { Some(e.into_value()) } else { None };
+            let v = if error_status(s) {
+                Some(e.into_value())
+            } else {
+                None
+            };
             (s, v)
         }
     };
@@ -1286,8 +1337,12 @@ pub fn lua_yieldk(
         // Fall through — hook yields return 0 to luaD_hook.
     } else {
         // TODO(phase-b): mutate u_c.k/u_c.ctx fields directly inside CallInfoFrame::C.
-        if let crate::state::CallInfoFrame::C { k: ref mut frame_k, ctx: ref mut frame_ctx, .. } =
-            state.get_ci_mut(ci_idx).u {
+        if let crate::state::CallInfoFrame::C {
+            k: ref mut frame_k,
+            ctx: ref mut frame_ctx,
+            ..
+        } = state.get_ci_mut(ci_idx).u
+        {
             *frame_k = k;
             if k.is_some() {
                 *frame_ctx = ctx;
@@ -1361,12 +1416,7 @@ pub(crate) fn close_protected(
 /// Calls function `func` in protected mode, restoring thread state on error.
 /// Returns `LuaStatus::Ok` on success, or an error status.
 ///
-pub(crate) fn pcall<F>(
-    state: &mut LuaState,
-    func: F,
-    old_top: StackIdx,
-    ef: isize,
-) -> LuaStatus
+pub(crate) fn pcall<F>(state: &mut LuaState, func: F, old_top: StackIdx, ef: isize) -> LuaStatus
 where
     F: FnOnce(&mut LuaState) -> Result<(), LuaError>,
 {
@@ -1392,14 +1442,8 @@ where
             // message with a spurious traceback.
             if ef != 0 && error_status(s) && s != LuaStatus::ErrErr && s != LuaStatus::ErrSyntax {
                 let errfunc_idx = StackIdx(ef as u32);
-                let arg = state.get_at(state.top_idx() - 1).clone();
-                state.push(arg);
-                let handler = state.get_at(errfunc_idx).clone();
-                state.set_at(state.top_idx() - 2, handler);
-                match state.call_no_yield(state.top_idx() - 2, 1) {
-                    Ok(()) => s,
-                    Err(_) => LuaStatus::ErrErr,
-                }
+                let err_slot = state.top_idx() - 1;
+                run_message_handler(state, err_slot, errfunc_idx, s, old_ci, old_allowhook)
             } else {
                 s
             }
@@ -1460,10 +1504,7 @@ struct SParser {
 
 /// Checks that the chunk mode permits loading the given kind ("binary" or "text").
 ///
-fn check_mode(
-    mode: Option<&[u8]>,
-    kind: &[u8],
-) -> Result<(), LuaError> {
+fn check_mode(mode: Option<&[u8]>, kind: &[u8]) -> Result<(), LuaError> {
     if let Some(mode_bytes) = mode {
         let kind_char = kind[0];
         if !mode_bytes.contains(&kind_char) {

@@ -308,8 +308,7 @@ impl ZIO {
 
             let m = remaining.min(self.n);
 
-            buf[dst..dst + m]
-                .copy_from_slice(&self.current_chunk[self.p..self.p + m]);
+            buf[dst..dst + m].copy_from_slice(&self.current_chunk[self.p..self.p + m]);
 
             self.n -= m;
             self.p += m;

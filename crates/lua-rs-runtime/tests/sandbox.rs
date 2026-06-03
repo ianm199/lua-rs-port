@@ -328,9 +328,7 @@ fn huge_string_rep_aborts_at_cap() {
     };
     let (lua, sandbox) = Lua::sandboxed(config).unwrap();
 
-    let result = lua
-        .load("return ('x'):rep(256 * 1024 * 1024)")
-        .exec();
+    let result = lua.load("return ('x'):rep(256 * 1024 * 1024)").exec();
     assert!(result.is_err(), "256 MiB rep under a 32 MiB cap must abort");
     assert_eq!(sandbox.tripped(), Some(TripReason::Memory));
 }
@@ -462,7 +460,7 @@ fn adversarial_sort_is_bounded() {
         check_interval: 1000,
         remove_globals: Vec::new(),
     };
-    let (lua, sandbox) = Lua::sandboxed(config).unwrap();
+    let (lua, _sandbox) = Lua::sandboxed(config).unwrap();
 
     let start = Instant::now();
     let result = lua
@@ -493,7 +491,9 @@ fn recursion_deep_nontail_errors_cleanly() {
         remove_globals: Vec::new(),
     })
     .unwrap();
-    let result = lua.load("local function f(n) return 1 + f(n + 1) end f(0)").exec();
+    let result = lua
+        .load("local function f(n) return 1 + f(n + 1) end f(0)")
+        .exec();
     assert!(result.is_err(), "deep recursion must error, not crash");
 }
 
@@ -516,7 +516,10 @@ fn recursion_infinite_metamethod_errors_cleanly() {
         "#,
         )
         .exec();
-    assert!(result.is_err(), "infinite metamethod recursion must error, not crash");
+    assert!(
+        result.is_err(),
+        "infinite metamethod recursion must error, not crash"
+    );
 }
 
 /// A nested-coroutine `__close` cascade (the historically stack-overflow-prone
@@ -553,5 +556,8 @@ fn plain_runtime_is_unbounded() {
     let result = lua
         .load("local s = 0 for i = 1, 1000000 do s = s + 1 end assert(s == 1000000)")
         .exec();
-    assert!(result.is_ok(), "plain runtime should run freely: {result:?}");
+    assert!(
+        result.is_ok(),
+        "plain runtime should run freely: {result:?}"
+    );
 }
