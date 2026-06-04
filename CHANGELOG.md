@@ -23,6 +23,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   function and removing repeated positive stack-index resolution in
   `ipairs_aux`.
 
+### Fixed
+
+- **conformance**: the expanded perf packet exposed three version-sensitive
+  official-suite edges, now fixed for Lua 5.4 while preserving Lua 5.5 oracle
+  behavior: long `__call` chains no longer hit the 5.5-only cap on 5.4,
+  stripped bytecode errors report `?:-1:` on 5.4, and high-index method calls
+  keep their `method 'name'` attribution on 5.4.
+
 ### Docs
 
 - Documented the final performance matrix, profile artifacts, and next packets

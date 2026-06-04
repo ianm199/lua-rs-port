@@ -503,7 +503,8 @@ fn try_func_tm(
     func_idx: StackIdx,
     call_metamethods: &mut u8,
 ) -> Result<StackIdx, LuaError> {
-    if *call_metamethods == 15 {
+    let count_call_metamethods = state.global().lua_version == lua_types::LuaVersion::V55;
+    if count_call_metamethods && *call_metamethods == 15 {
         return Err(LuaError::runtime(format_args!("'__call' chain too long")));
     }
     // checkstackGCp → { state.check_stack(n)?; state.gc().check_step(); }  (macros.tsv)
@@ -531,7 +532,9 @@ fn try_func_tm(
     }
     state.set_top(top + 1);
     state.set_at(func_idx, tm);
-    *call_metamethods += 1;
+    if count_call_metamethods {
+        *call_metamethods += 1;
+    }
 
     Ok(func_idx)
 }

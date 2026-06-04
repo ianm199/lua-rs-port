@@ -1,8 +1,24 @@
-# Stuck: `reference/lua-c/testes/errors.lua`
+# Resolved: `reference/lua-c/testes/errors.lua`
 
-**Status:** diagnosable now. The earlier doc said "instrument first"; that's been done. We have the exact failing tuple.
+**Status:** resolved for the official Lua 5.4 suite in the v0.0.31 release
+packet. `errors.lua` now passes in the full `harness/run_official_all.sh`
+sweep.
 
-## Current failure — the exact case
+## Resolution
+
+The release gate found and cleared the remaining adjacent diagnostics:
+
+- indirect `table.sort` comparator errors now attribute the C/Rust library
+  function as `table.sort`;
+- stripped-debug bytecode errors report `?:-1:` on Lua 5.4 while preserving
+  Lua 5.5's `?:?:`;
+- high-index method constants keep `method 'bbb'` attribution on Lua 5.4;
+- goto scope diagnostics include `local` on Lua 5.4 and preserve the Lua 5.5
+  wording.
+
+The historical notes below are kept as debugging context, not as current work.
+
+## Historical failure — the exact case
 
 First failing `checkmessage(prog, expected)` call:
 
@@ -14,13 +30,13 @@ actual message     = bad argument #1 to '?' (table expected, got number)
 
 So the runtime is catching the right semantic error: `table.sort` is being passed as the comparator, and when the sort engine invokes it as `cmp(a, b)` with two numbers, arg #1 is wrong (`number`, expected `table`). The bug is **name attribution** — the error says `'?'` instead of `'table.sort'`.
 
-## What's actually wrong
+## What was actually wrong
 
 The comparator is called from `sort_comp` (`crates/lua-stdlib/src/table_lib.rs:525`) via `state.push_value_at(2); state.call(2, 1)`. That call site invokes `table.sort` **as a value, not by name**, so by the time `arg_error_impl` (`crates/lua-vm/src/debug.rs:118`) tries to resolve a name via `get_info(state, b"n", &mut ar)`, `ar.namewhat` is `nil`/empty and the format string falls back to `'?'`.
 
 C-Lua's `lauxlib.c:luaL_argerror` handles this by walking the debug info up one frame and using the C function's registered library name. We need the equivalent: for C/Rust functions that have a registered name in `package.loaded` or a known library table, resolve it.
 
-## Suggested prompt for the next agent (sonnet or opus)
+## Former prompt for the next agent
 
 > Fix function-name attribution for C/Rust library functions invoked
 > indirectly as values, so that `bad argument #1 to '?'` becomes

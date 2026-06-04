@@ -20,36 +20,44 @@ profile-backed explanations where it still is. Some workloads may beat C in a
 microbench shape; that is not the goal. Regressions and unexplained >2× gaps
 are backlog until measured otherwise.
 
-Current selected matrix (best-of-5, Apple M3 Max, latest local telemetry
-`harness/bench/results/20260604T040423Z-837e560-bin-ab.tsv`):
+Current selected matrix (best-of-5, Apple M3 Max, latest release-candidate
+telemetry `harness/bench/results/20260604T043551Z-4866f4c-compare.tsv`;
+total wall-clock ratio 1.49x, unweighted row average 1.57x):
 
 | workload | wall ratio | category |
 |---|---:|---|
 | table_ops | 1.00× | short table insert/remove/iterate, at parity |
-| table_ops_long | 0.996× | long table insert/remove/iterate, at parity |
-| table_hash_pressure | 1.17× | string-key construction + hash insertion, near parity but noisy |
-| table_field_index | 1.44× | GETFIELD/SETFIELD + GETI/SETI throughput |
-| string_ops_long | 1.48× | byte-string pattern/gsub hot paths, around the gate |
-| mandelbrot_long | 1.68× | float arithmetic + branch-heavy loop dispatch |
-| fibonacci | 1.69× | recursive call dispatch + small-int math |
-| loop_variants | 1.71× | numeric/while/repeat/generic loop dispatch |
-| compare_immediates | 1.80× | branch-heavy integer/string constant compares |
-| closure_ops | 1.88× | closure calls + upvalue reads/writes |
-| bitwise_mixed | 1.89× | tight integer bitwise ops with constants |
-| call_return_shapes | 1.93× | Lua call frame + return-shape dispatch |
-| binarytrees | 1.98× | allocation + tree traversal / GC pressure |
+| table_ops_long | 1.00× | long table insert/remove/iterate, at parity |
+| table_hash_pressure | 1.14× | string-key construction + hash insertion, near parity but noisy |
+| table_field_index | 1.41× | GETFIELD/SETFIELD + GETI/SETI throughput |
+| string_ops_long | 1.49× | byte-string pattern/gsub hot paths, around the gate |
+| mandelbrot_long | 1.57× | float arithmetic + branch-heavy loop dispatch |
+| fibonacci | 1.62× | recursive call dispatch + small-int math |
+| mandelbrot | 1.62× | float arithmetic + branch-heavy loop dispatch |
+| loop_variants | 1.66× | numeric/while/repeat/generic loop dispatch |
+| compare_immediates | 1.66× | branch-heavy integer/string constant compares |
+| closure_ops | 1.78× | closure calls + upvalue reads/writes |
+| binarytrees | 1.91× | allocation + tree traversal / GC pressure |
+| numeric_mixed | 1.93× | tight integer add/mul/sub loop (#134 guard) |
+| bitwise_mixed | 1.96× | tight integer bitwise ops with constants |
 | gc_pressure | 2.00× | allocation/collection throughput under churn |
-| numeric_mixed | 2.04× | tight integer add/mul/sub loop (#134 guard) |
+| call_return_shapes | 2.02× | Lua call frame + return-shape dispatch |
 
 The latest kept packet expanded the matrix around issue #134-style bytecode
 specialization and loop/call shapes, then fixed the highest-confidence misses:
 arithmetic/bitwise/compare immediate opcodes are now emitted where Lua 5.4 uses
 them, and generic-for C iterators avoid the full `precall_slow` path. The final
-full-matrix average moved 1.617× -> 1.606× on the same local host; the clearest
-rows were `loop_variants` 1.778× -> 1.714×, `table_field_index` 1.500× ->
-1.443×, `table_ops_long` 1.059× -> 0.996×, and `call_return_shapes` 1.977× ->
-1.933×. `numeric_mixed` remained noisy in the final full run, but opcode
-telemetry confirmed the intended immediate/K opcodes are being executed.
+unweighted full-matrix average moved 1.617× -> 1.606× on the same local host.
+The release-candidate rerun after the conformance fixes had a 1.49× total
+wall-clock ratio and a 1.57× unweighted row average. The clearest rows remain
+`loop_variants`, `table_field_index`, and `table_ops_long`; `numeric_mixed`
+still needs a deeper VM/call-frame pass even though opcode telemetry confirmed
+the intended immediate/K opcodes are being executed.
+
+The release gate also paid for itself: rerunning the official suites after the
+perf packet exposed version-sensitive correctness edges in `__call` chain
+limits, stripped-debug error prefixes, and high-index method-name attribution.
+Those were fixed before release, with Lua 5.4 at 44/44 and Lua 5.5 at 34/34.
 
 The next tall poles are now specific: Lua-call frame setup/return re-entry
 (`call_return_shapes`, `closure_ops`), upvalue traffic (`closure_ops`), table

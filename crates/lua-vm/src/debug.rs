@@ -82,7 +82,15 @@ fn prefixed_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
     let proto = ci_lua_proto(&ci, state);
     let src = proto.source_string();
     let line = get_current_line(&ci, state);
-    let prefixed = add_info(None, &msg, src.map(|s| &**s), line);
+    let unknown_line_as_question =
+        src.is_none() && state.global().lua_version == lua_types::LuaVersion::V55;
+    let prefixed = add_info(
+        None,
+        &msg,
+        src.map(|s| &**s),
+        line,
+        unknown_line_as_question,
+    );
     runtime_bytes(prefixed)
 }
 
@@ -94,7 +102,15 @@ pub fn c_api_runtime(state: &LuaState, msg: Vec<u8>) -> LuaError {
             let proto = ci_lua_proto(&parent_ci, state);
             let src = proto.source_string();
             let line = get_current_line(&parent_ci, state);
-            let prefixed = add_info(None, &msg, src.map(|s| &**s), line);
+            let unknown_line_as_question =
+                src.is_none() && state.global().lua_version == lua_types::LuaVersion::V55;
+            let prefixed = add_info(
+                None,
+                &msg,
+                src.map(|s| &**s),
+                line,
+                unknown_line_as_question,
+            );
             return runtime_bytes(prefixed);
         }
     }
@@ -1542,6 +1558,7 @@ pub(crate) fn add_info(
     msg: &[u8],
     src: Option<&LuaString>,
     line: i32,
+    unknown_line_as_question: bool,
 ) -> Vec<u8> {
     //    else { buff[0] = '?'; buff[1] = '\0'; }
     let mut buff = [0u8; LUA_IDSIZE];
@@ -1549,11 +1566,13 @@ pub(crate) fn add_info(
         // macros.tsv: getstr(ts) → ts.as_bytes(); tsslen(ts) → ts.len()
         // TODO(port): luaO_chunkid lives in crate::object
         chunk_id(&mut buff, src.as_bytes(), src.len());
-    } else {
+    } else if unknown_line_as_question {
         let mut out = Vec::with_capacity(5 + msg.len());
         out.extend_from_slice(b"?:?: ");
         out.extend_from_slice(msg);
         return out;
+    } else {
+        buff[0] = b'?';
     }
     // PORT NOTE: Instead of pushing on the stack, we return the formatted Vec<u8>.
     // Callers that need the result on the stack should push it themselves.

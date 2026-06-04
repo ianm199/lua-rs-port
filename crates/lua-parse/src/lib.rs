@@ -833,47 +833,56 @@ fn cg_posfix_fold(
         BinOpr::Mod | BinOpr::Pow | BinOpr::Div | BinOpr::IDiv => {
             cg_code_arith(fs, op, e1, e2, false, line)
         }
-        BinOpr::BAnd | BinOpr::BOr | BinOpr::BXor => {
-            cg_code_bitwise(fs, op, e1, e2, line)
-        }
+        BinOpr::BAnd | BinOpr::BOr | BinOpr::BXor => cg_code_bitwise(fs, op, e1, e2, line),
         BinOpr::Shl => cg_code_shift_left(fs, e1, e2, line),
         BinOpr::Shr => cg_code_shift_right(fs, e1, e2, line),
-        BinOpr::Concat | BinOpr::Eq | BinOpr::Lt | BinOpr::Le | BinOpr::Ne
-        | BinOpr::Gt | BinOpr::Ge | BinOpr::And | BinOpr::Or | BinOpr::NoBinOpr => {
-            unreachable!("cg_posfix_fold reached opcode match with non-arith op {:?}", op)
+        BinOpr::Concat
+        | BinOpr::Eq
+        | BinOpr::Lt
+        | BinOpr::Le
+        | BinOpr::Ne
+        | BinOpr::Gt
+        | BinOpr::Ge
+        | BinOpr::And
+        | BinOpr::Or
+        | BinOpr::NoBinOpr => {
+            unreachable!(
+                "cg_posfix_fold reached opcode match with non-arith op {:?}",
+                op
+            )
         }
     }
 }
 
 fn cg_binop_reg_opcode(op: BinOpr) -> lua_code::opcodes::OpCode {
     match op {
-        BinOpr::Add  => lua_code::opcodes::OpCode::Add,
-        BinOpr::Sub  => lua_code::opcodes::OpCode::Sub,
-        BinOpr::Mul  => lua_code::opcodes::OpCode::Mul,
-        BinOpr::Mod  => lua_code::opcodes::OpCode::Mod,
-        BinOpr::Pow  => lua_code::opcodes::OpCode::Pow,
-        BinOpr::Div  => lua_code::opcodes::OpCode::Div,
+        BinOpr::Add => lua_code::opcodes::OpCode::Add,
+        BinOpr::Sub => lua_code::opcodes::OpCode::Sub,
+        BinOpr::Mul => lua_code::opcodes::OpCode::Mul,
+        BinOpr::Mod => lua_code::opcodes::OpCode::Mod,
+        BinOpr::Pow => lua_code::opcodes::OpCode::Pow,
+        BinOpr::Div => lua_code::opcodes::OpCode::Div,
         BinOpr::IDiv => lua_code::opcodes::OpCode::IDiv,
         BinOpr::BAnd => lua_code::opcodes::OpCode::BAnd,
-        BinOpr::BOr  => lua_code::opcodes::OpCode::BOr,
+        BinOpr::BOr => lua_code::opcodes::OpCode::BOr,
         BinOpr::BXor => lua_code::opcodes::OpCode::BXOr,
-        BinOpr::Shl  => lua_code::opcodes::OpCode::Shl,
-        BinOpr::Shr  => lua_code::opcodes::OpCode::Shr,
+        BinOpr::Shl => lua_code::opcodes::OpCode::Shl,
+        BinOpr::Shr => lua_code::opcodes::OpCode::Shr,
         _ => unreachable!("non-value binary operator {:?}", op),
     }
 }
 
 fn cg_binop_k_opcode(op: BinOpr) -> lua_code::opcodes::OpCode {
     match op {
-        BinOpr::Add  => lua_code::opcodes::OpCode::AddK,
-        BinOpr::Sub  => lua_code::opcodes::OpCode::SubK,
-        BinOpr::Mul  => lua_code::opcodes::OpCode::MulK,
-        BinOpr::Mod  => lua_code::opcodes::OpCode::ModK,
-        BinOpr::Pow  => lua_code::opcodes::OpCode::PowK,
-        BinOpr::Div  => lua_code::opcodes::OpCode::DivK,
+        BinOpr::Add => lua_code::opcodes::OpCode::AddK,
+        BinOpr::Sub => lua_code::opcodes::OpCode::SubK,
+        BinOpr::Mul => lua_code::opcodes::OpCode::MulK,
+        BinOpr::Mod => lua_code::opcodes::OpCode::ModK,
+        BinOpr::Pow => lua_code::opcodes::OpCode::PowK,
+        BinOpr::Div => lua_code::opcodes::OpCode::DivK,
         BinOpr::IDiv => lua_code::opcodes::OpCode::IDivK,
         BinOpr::BAnd => lua_code::opcodes::OpCode::BAndK,
-        BinOpr::BOr  => lua_code::opcodes::OpCode::BOrK,
+        BinOpr::BOr => lua_code::opcodes::OpCode::BOrK,
         BinOpr::BXor => lua_code::opcodes::OpCode::BXOrK,
         _ => unreachable!("operator has no K opcode {:?}", op),
     }
@@ -881,26 +890,24 @@ fn cg_binop_k_opcode(op: BinOpr) -> lua_code::opcodes::OpCode {
 
 fn cg_binop_event(op: BinOpr) -> lua_types::tagmethod::TagMethod {
     match op {
-        BinOpr::Add  => lua_types::tagmethod::TagMethod::Add,
-        BinOpr::Sub  => lua_types::tagmethod::TagMethod::Sub,
-        BinOpr::Mul  => lua_types::tagmethod::TagMethod::Mul,
-        BinOpr::Mod  => lua_types::tagmethod::TagMethod::Mod,
-        BinOpr::Pow  => lua_types::tagmethod::TagMethod::Pow,
-        BinOpr::Div  => lua_types::tagmethod::TagMethod::Div,
+        BinOpr::Add => lua_types::tagmethod::TagMethod::Add,
+        BinOpr::Sub => lua_types::tagmethod::TagMethod::Sub,
+        BinOpr::Mul => lua_types::tagmethod::TagMethod::Mul,
+        BinOpr::Mod => lua_types::tagmethod::TagMethod::Mod,
+        BinOpr::Pow => lua_types::tagmethod::TagMethod::Pow,
+        BinOpr::Div => lua_types::tagmethod::TagMethod::Div,
         BinOpr::IDiv => lua_types::tagmethod::TagMethod::Idiv,
         BinOpr::BAnd => lua_types::tagmethod::TagMethod::Band,
-        BinOpr::BOr  => lua_types::tagmethod::TagMethod::Bor,
+        BinOpr::BOr => lua_types::tagmethod::TagMethod::Bor,
         BinOpr::BXor => lua_types::tagmethod::TagMethod::Bxor,
-        BinOpr::Shl  => lua_types::tagmethod::TagMethod::Shl,
-        BinOpr::Shr  => lua_types::tagmethod::TagMethod::Shr,
+        BinOpr::Shl => lua_types::tagmethod::TagMethod::Shl,
+        BinOpr::Shr => lua_types::tagmethod::TagMethod::Shr,
         _ => unreachable!("operator has no arithmetic metamethod {:?}", op),
     }
 }
 
 fn cg_is_numeral(e: &ExprDesc) -> bool {
-    e.t == NO_JUMP
-        && e.f == NO_JUMP
-        && matches!(e.k, ExprKind::KInt | ExprKind::KFlt)
+    e.t == NO_JUMP && e.f == NO_JUMP && matches!(e.k, ExprKind::KInt | ExprKind::KFlt)
 }
 
 fn cg_is_integer(e: &ExprDesc) -> bool {
@@ -915,11 +922,7 @@ fn cg_find_k_value(fs: &FuncState, v: &LuaValue) -> Option<i32> {
         .map(|idx| idx as i32)
 }
 
-fn cg_k_value_index_limited(
-    fs: &mut FuncState,
-    value: LuaValue,
-    maxarg: u32,
-) -> Option<i32> {
+fn cg_k_value_index_limited(fs: &mut FuncState, value: LuaValue, maxarg: u32) -> Option<i32> {
     let idx = if let Some(idx) = cg_find_k_value(fs, &value) {
         idx
     } else {
@@ -935,11 +938,7 @@ fn cg_k_value_index_limited(
     }
 }
 
-fn cg_k_string_index_limited(
-    fs: &mut FuncState,
-    s: GcRef<LuaString>,
-    maxarg: u32,
-) -> Option<i32> {
+fn cg_k_string_index_limited(fs: &mut FuncState, s: GcRef<LuaString>, maxarg: u32) -> Option<i32> {
     for (i, k) in fs.f.k.iter().take(fs.nk as usize).enumerate() {
         if let LuaValue::Str(existing) = k {
             if GcRef::ptr_eq(existing, &s) {
@@ -976,11 +975,9 @@ fn cg_exp_to_int_k(fs: &mut FuncState, e: &mut ExprDesc) -> bool {
     if !cg_is_integer(e) {
         return false;
     }
-    let Some(idx) = cg_k_value_index_limited(
-        fs,
-        LuaValue::Int(e.u.ival),
-        lua_code::opcodes::MAXARG_C,
-    ) else {
+    let Some(idx) =
+        cg_k_value_index_limited(fs, LuaValue::Int(e.u.ival), lua_code::opcodes::MAXARG_C)
+    else {
         return false;
     };
     e.k = ExprKind::K;
@@ -1039,13 +1036,8 @@ fn cg_finish_bin_exp_val(
     e1.u.info = pc;
     e1.k = ExprKind::Reloc;
 
-    let mm_inst = lua_code::opcodes::Instruction::abck(
-        mm_opcode,
-        v1 as u32,
-        v2,
-        event as u32,
-        flip as u32,
-    );
+    let mm_inst =
+        lua_code::opcodes::Instruction::abck(mm_opcode, v1 as u32, v2, event as u32, flip as u32);
     emit_inst(fs, line, mm_inst);
     Ok(())
 }
@@ -1270,13 +1262,7 @@ fn cg_finish_bin_exp_neg(
     }
 
     let v1 = cg_exp_to_any_reg(fs, line, e1)?;
-    let inst = lua_code::opcodes::Instruction::abck(
-        opcode,
-        0,
-        v1 as u32,
-        neg_biased as u32,
-        0,
-    );
+    let inst = lua_code::opcodes::Instruction::abck(opcode, 0, v1 as u32, neg_biased as u32, 0);
     let pc = emit_inst(fs, line, inst);
     cg_free_exps(fs, e1, e2);
     e1.u.info = pc;
@@ -3194,6 +3180,7 @@ fn cg_self(
     line: i32,
     e: &mut ExprDesc,
     key: &mut ExprDesc,
+    keep_self_opcode_for_register_key: bool,
 ) -> Result<(), LuaError> {
     cg_exp_to_any_reg(fs, line, e)?;
     let ereg = e.u.info;
@@ -3216,6 +3203,18 @@ fn cg_self(
             ereg as u32,
             k_idx as u32,
             1,
+        );
+        emit_inst(fs, line, inst);
+    } else if keep_self_opcode_for_register_key {
+        key.k = ExprKind::K;
+        key.u.info = k_idx;
+        cg_exp_to_any_reg(fs, line, key)?;
+        let inst = lua_code::opcodes::Instruction::abck(
+            lua_code::opcodes::OpCode::Self_,
+            base as u32,
+            ereg as u32,
+            key.u.info as u32,
+            0,
         );
         emit_inst(fs, line, inst);
     } else {
@@ -3371,29 +3370,42 @@ fn scope_name_at(ls: &LexState, level: u8, label_nactvar: u8) -> Vec<u8> {
     b"*".to_vec()
 }
 
-fn jumpscopeerror(ls: &LexState, gt_idx: usize, label_nactvar: u8) -> LuaError {
+fn jumpscopeerror(
+    ls: &LexState,
+    version: lua_types::LuaVersion,
+    gt_idx: usize,
+    label_nactvar: u8,
+) -> LuaError {
     let gt = &ls.dyd.gt[gt_idx];
     let line = gt.line;
     let gt_name_bytes: &[u8] = gt.name.as_ref().map(|n| n.as_bytes()).unwrap_or(b"");
     let gt_name = String::from_utf8_lossy(gt_name_bytes);
     let varname_bytes = scope_name_at(ls, gt.nactvar, label_nactvar);
     let varname = String::from_utf8_lossy(&varname_bytes);
-    LuaError::syntax(format_args!(
-        "<goto {}> at line {} jumps into the scope of '{}'",
-        gt_name, line, varname
-    ))
+    if version == lua_types::LuaVersion::V55 {
+        LuaError::syntax(format_args!(
+            "<goto {}> at line {} jumps into the scope of '{}'",
+            gt_name, line, varname
+        ))
+    } else {
+        LuaError::syntax(format_args!(
+            "<goto {}> at line {} jumps into the scope of local '{}'",
+            gt_name, line, varname
+        ))
+    }
 }
 
 /// Resolves goto at index `g` to `label`, removing it from pending list.
 fn solvegoto(
     ls: &mut LexState,
-    _state: &mut LuaState,
+    state: &mut LuaState,
     g: usize,
     label_pc: i32,
     label_nactvar: u8,
 ) -> Result<(), LuaError> {
     if ls.dyd.gt[g].nactvar < label_nactvar {
-        return Err(jumpscopeerror(ls, g, label_nactvar));
+        let version = state.global().lua_version;
+        return Err(jumpscopeerror(ls, version, g, label_nactvar));
     }
     let gt_pc = ls.dyd.gt[g].pc;
     cg_patch_list(ls.fs.as_mut().unwrap(), gt_pc, label_pc)?;
@@ -4396,7 +4408,15 @@ fn suffixedexp(ls: &mut LexState, state: &mut LuaState, v: &mut ExprDesc) -> Res
                 lex_next(ls, state)?;
                 codename(ls, state, &mut key)?;
                 let line = ls.lastline;
-                cg_self(ls.fs.as_mut().unwrap(), line, v, &mut key)?;
+                let keep_self_opcode_for_register_key =
+                    state.global().lua_version != lua_types::LuaVersion::V55;
+                cg_self(
+                    ls.fs.as_mut().unwrap(),
+                    line,
+                    v,
+                    &mut key,
+                    keep_self_opcode_for_register_key,
+                )?;
                 funcargs(ls, state, v)?;
             }
             c if c == b'(' as TokenKind || c == TK_STRING || c == b'{' as TokenKind => {

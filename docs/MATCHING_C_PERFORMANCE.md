@@ -1070,6 +1070,45 @@ The simple average moved 1.617x -> 1.606x. Treat the short rows
 repeated; the opcode profiles prove the compiler shape even where the final
 wall-clock row was noisy.
 
+Release-candidate rerun
+(`harness/bench/results/20260604T043551Z-4866f4c-compare.tsv`) after the
+conformance fixes:
+
+| workload | ratio |
+|---|---:|
+| binarytrees | 1.91x |
+| bitwise_mixed | 1.96x |
+| call_return_shapes | 2.02x |
+| closure_ops | 1.78x |
+| compare_immediates | 1.66x |
+| fibonacci | 1.62x |
+| gc_pressure | 2.00x |
+| loop_variants | 1.66x |
+| mandelbrot | 1.62x |
+| mandelbrot_long | 1.57x |
+| numeric_mixed | 1.93x |
+| string_ops | 1.00x |
+| string_ops_long | 1.49x |
+| table_field_index | 1.41x |
+| table_hash_pressure | 1.14x |
+| table_ops | 1.00x |
+| table_ops_long | 1.00x |
+
+That run reported a 1.49x total wall-clock ratio across the matrix, with a
+1.57x unweighted row average. The remaining action items did not change:
+`call_return_shapes`, `closure_ops`, and `numeric_mixed` point at call-frame
+and return re-entry cost; `binarytrees` and `gc_pressure` point at table
+allocation/resize plus collector cadence; `loop_variants` still has a narrow
+iterator/table-lookup tail after the obvious `precall_slow` waste was removed.
+
+Release-gate follow-up exposed correctness work outside the original perf
+hypothesis. The final landed packet kept the Lua 5.5 `__call` counter and
+diagnostic behavior version-gated, restored Lua 5.4's long `__call` chain
+behavior, fixed stripped-debug `?:-1:` source lines for 5.4, and kept
+high-index method calls as `OP_SELF` on 5.4 so error attribution remains
+`method 'bbb'`. Final gates: Rust workspace tests, Lua 5.4 official suite
+44/44, and Lua 5.5 official suite 34/34.
+
 Post-packet profiles:
 
 - `loop_variants_x10`
