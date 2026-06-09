@@ -38,6 +38,22 @@ if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
     exit 0
 fi
 
+# PERF_PUSH_SPEC.md P7.4: while a benchmark or perf experiment is live, do
+# not build, smoke, or auto-commit — a Stop event mid-measurement must not
+# contend with the bench for CPU or sweep unvalidated experiment diffs into
+# a commit (both happened on 2026-06-09: d0dc949 swept an unvalidated vm.rs
+# experiment; the 18:36:48Z hook run contended with a running A/B bench).
+# compare_bins.sh maintains the marker for its lifetime; experiment chains
+# may hold it across builds. Markers older than 2 hours are stale.
+PERF_MARKER="$ROOT/harness/.perf-experiment"
+if [ -f "$PERF_MARKER" ]; then
+    if [ -n "$(find "$PERF_MARKER" -mmin -120 2>/dev/null)" ]; then
+        echo "[stop-hook] perf experiment marker present; skipping build/smoke/auto-commit. Tree left as-is." >&2
+        exit 0
+    fi
+    echo "[stop-hook] stale perf marker (>2h old) ignored: $PERF_MARKER" >&2
+fi
+
 GATING_HOOKS=(
     "$ROOT/.claude/hooks/unsafe-budget.sh"
     "$ROOT/.claude/hooks/forbidden-import.sh"

@@ -94,6 +94,13 @@ if [ "${BENCH_IGNORE_RUNNING:-0}" != "1" ]; then
     fi
 fi
 
+# Hold the perf-experiment marker for the lifetime of the run so a Stop-hook
+# firing mid-measurement neither contends for CPU nor auto-commits
+# (PERF_PUSH_SPEC.md P7.4).
+PERF_MARKER="$ROOT/harness/.perf-experiment"
+touch "$PERF_MARKER"
+trap 'rm -f "$PERF_MARKER"' EXIT
+
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 TSV="$OUT_DIR/${TS}-${COMMIT}-bin-ab.tsv"
