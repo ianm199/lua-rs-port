@@ -1,0 +1,22 @@
+workload	class	iterations	notes
+binarytrees	macro	-	CLBG-style allocation + tree traversal; GC pressure
+bitwise_mixed	vm-parity	20000000	tight integer bitwise ops with constants
+call_return_shapes	vm-parity	8000000	Lua call frame + return-shape dispatch
+closure_ops	vm-parity	-	closure allocation + upvalue reads/writes
+compare_immediates	vm-parity	20000000	branch-heavy integer/string constant compares
+fibonacci	vm-parity	-	recursive call dispatch + small-int math
+gc_pressure	vm-parity	-	allocation/collection throughput under churn
+global_settabup_same	vm-parity	20000000	repeated _ENV/global SETTABUP writes to an existing slot
+loop_variants	vm-parity	12000000	numeric/while/repeat/generic loop dispatch
+mandelbrot	macro	-	float math + nested loops
+mandelbrot_long	macro	-	longer float math profile target
+numeric_mixed	vm-parity	50000000	tight integer add/mul/sub loop (#134 guard)
+string_ops	stdlib	-	concat/find/gsub/byte ops
+string_ops_long	stdlib	-	longer byte-string pattern/gsub target
+table_field_index	vm-parity	12000000	GETFIELD/SETFIELD + GETI/SETI throughput
+table_hash_pressure	vm-parity	-	string-key construction + hash insertion (#38 guard)
+table_ops	stdlib	-	table.insert/remove/iterate; stdlib shift paths diverge from C API layering
+table_ops_long	stdlib	-	longer insert/remove/iterate; 0.43x row is stdlib divergence, not VM parity
+table_setfield_same	vm-parity	20000000	repeated short-string SETFIELD writes to an existing key
+table_seti_same	vm-parity	20000000	repeated integer SETI writes to an existing array slot
+table_settable_string_key	vm-parity	20000000	repeated string-key SETTABLE writes to an existing key
