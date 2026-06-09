@@ -63,19 +63,22 @@ SUMMARY="$OUT_DIR/summary.txt"
 VM_EXECUTE="$OUT_DIR/vm-execute.txt"
 
 # Watchdog: a hung workload must not outlive the profile session
-# (PROFILE_MAX_S, default 600s; perl alarm — macOS has no timeout(1)).
+# (PROFILE_MAX_S, default 600s). The workload is spawned DIRECTLY (not via
+# with-timeout.sh) because /usr/bin/sample needs the interpreter's own PID —
+# a wrapper pid samples as 100% __wait4. A detached sleep+kill subshell
+# provides the bound instead.
 PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
-        "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
+    "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
 else
     echo "==> spawning $RS_BIN $WORKLOAD_FILE" >&2
-    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
-        "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
+    "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
 fi
 PID=$!
-trap 'kill "$PID" 2>/dev/null || true' EXIT
+( sleep "$PROFILE_MAX_S" && kill -KILL "$PID" 2>/dev/null ) &
+KILLER=$!
+trap 'kill "$PID" 2>/dev/null || true; kill "$KILLER" 2>/dev/null || true' EXIT
 
 # Give the workload a moment to leave the startup phase.
 sleep 0.3
