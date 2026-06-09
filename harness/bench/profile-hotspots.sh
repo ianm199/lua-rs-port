@@ -62,12 +62,17 @@ SAMPLE_OUT="$OUT_DIR/sample.txt"
 SUMMARY="$OUT_DIR/summary.txt"
 VM_EXECUTE="$OUT_DIR/vm-execute.txt"
 
+# Watchdog: a hung workload must not outlive the profile session
+# (PROFILE_MAX_S, default 600s; perl alarm — macOS has no timeout(1)).
+PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+        "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
 else
     echo "==> spawning $RS_BIN $WORKLOAD_FILE" >&2
-    "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+        "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
 fi
 PID=$!
 trap 'kill "$PID" 2>/dev/null || true' EXIT

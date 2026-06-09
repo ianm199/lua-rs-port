@@ -52,12 +52,17 @@ RUSTFLAGS="-C force-frame-pointers=yes" \
 
 export LUA_RS_OPCODE_PROFILE="$OUT_DIR/opcodes.tsv"
 
+# Watchdog: a hung workload must not wedge the profile run
+# (PROFILE_MAX_S, default 600s; perl alarm — macOS has no timeout(1)).
+PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> running $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    "$RS_BIN" -e "$PROFILE_LUA_EVAL" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+        "$RS_BIN" -e "$PROFILE_LUA_EVAL" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
 else
     echo "==> running $RS_BIN $WORKLOAD_FILE" >&2
-    "$RS_BIN" "$WORKLOAD_FILE" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+        "$RS_BIN" "$WORKLOAD_FILE" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
 fi
 
 echo "==> opcode report: $LUA_RS_OPCODE_PROFILE" >&2
