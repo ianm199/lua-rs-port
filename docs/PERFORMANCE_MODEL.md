@@ -1,0 +1,371 @@
+# lua-rs Performance Model and Agent Handoff
+
+This is the current "start here" document for performance agents. It connects
+the high-level performance principles, benchmark tools, current evidence, known
+gaps, and packet candidates into one operating model.
+
+Read this alongside:
+
+- `docs/PERFORMANCE_PRINCIPLES.md` for the rules and packet discipline.
+- `docs/MATCHING_C_PERFORMANCE.md` for the longer research journal.
+- `harness/bench/README.md` for exact benchmark/profiler usage.
+
+## Current Position
+
+As of `v0.0.32` / commit `169b868` on the Linux release runner, the largest
+reference-Lua gaps are not broad "table performance" or broad "Rust is slow"
+claims. They are specific bytecode and representation shapes:
+
+| Workload | Linux release ratio | Main bottleneck class |
+|---|---:|---|
+| `table_seti_same` | 3.40x | `SETI` existing integer writes + loop/dispatch |
+| `table_setfield_same` | 3.33x | `SETFIELD` existing short-string writes |
+| `global_settabup_same` | 3.14x | `_ENV`/global `SETTABUP`, upvalue + table write |
+| `table_settable_string_key` | 2.86x | `SETTABLE` string-key writes |
+| `closure_ops` | 2.76x | closure calls + upvalue traffic |
+| `call_return_shapes` | 2.72x | call frame setup + return re-entry |
+| `gc_pressure` | 2.67x | allocation/collector cadence |
+| `binarytrees` | 2.61x | allocation + GC + traversal |
+| `fibonacci` | 2.40x | call/return + upvalues + dispatch |
+
+Local Apple M3 Max telemetry after the release dashboard commit
+`1dee1e5` showed the same shape but different absolute ratios:
+
+- artifact: `harness/bench/results/20260609T163417Z-1dee1e5-bin-ab.tsv`
+- `global_settabup_same`: 2.667x
+- `table_setfield_same`: 2.333x
+- `table_seti_same`: 2.200x
+- `table_settable_string_key`: 2.000x
+- `call_return_shapes`: 2.045x
+- `binarytrees`: 2.093x
+- `closure_ops`: 1.941x
+- `numeric_mixed`: 1.808x
+- `table_ops_long`: 0.430x, faster than reference in that aggregate shape
+
+Important reading: aggregate table workloads are not the problem anymore.
+Specific existing-key setter opcodes are.
+
+## Mental Model
+
+The remaining gap is mostly interpreter overhead, not a single algorithmic
+failure. Use these buckets when classifying profiles:
+
+- **Dispatch and trap checks.** `vm::execute` source-line attribution often
+  shows `DISPATCH_FETCH`, `UNKNOWN_INLINED`, and hook/trap-adjacent lines. Treat
+  broad dispatch edits as high risk because small code-layout changes can move
+  unrelated workloads.
+- **Call frame setup and return re-entry.** Recursive and closure-heavy
+  workloads show time in `OP_CALL`, `FRAME_SETUP`, `OP_RETURN1`, and the ret
+  label that restores the previous `CallInfo`.
+- **Upvalue access.** `_ENV` globals and closure workloads pay `upvalue_get`
+  costs. The current implementation already has a same-thread open-upvalue fast
+  path; remaining cost is still visible in profiles.
+- **Existing-key table writes.** The newest table setter workloads are
+  measuring repeated writes to already-present keys. These should avoid generic
+  insertion/rehash and metamethod work when the VM has already proved a plain
+  table/no-metatable path.
+- **Representation and borrow boundaries.** Look for `RefCell` borrows, cloned
+  `LuaValue`s, helper calls that C-Lua expresses as macros, and type-erased
+  helpers where the VM already knows the concrete type.
+- **GC and allocation.** Use GC counters and allocation-oriented profiles before
+  assuming a VM opcode is the bottleneck in allocation-heavy workloads.
+
+## Tooling Map
+
+Use the cheapest tool that answers the question. Do not run multiple
+performance agents on the same host.
+
+| Question | Tool | Output |
+|---|---|---|
+| Is correctness still valid? | `cargo test ...`, `make conformance`, `make conformance-55` | test/conformance output |
+| How does current lua-rs compare to C-Lua? | `bash harness/bench/compare.sh` | `harness/bench/results/*-compare.{tsv,json}`, ledger rows |
+| Did one local packet improve vs a saved lua-rs binary? | `bash harness/bench/compare_bins.sh --a /tmp/base --b target/release/lua-rs` | `harness/bench/results/*-bin-ab.{tsv,json}` |
+| Is a short workload too noisy? | `compare_bins.sh --repeat-each N` | longer per-sample wall time |
+| What host profilers are available? | `bash harness/bench/profile-inventory.sh` | inventory text |
+| Where is wall time inside `vm::execute`? | `bash harness/bench/profile-hotspots.sh workload seconds` | `harness/bench/profiles/*/summary.txt`, `vm-execute.txt` |
+| Which opcodes execute most often? | `bash harness/bench/opcode-profile.sh workload` | `harness/bench/profiles/opcode-profile/*/opcodes.tsv` |
+| Is GC cadence the problem? | `bash harness/bench/gc-profile.sh workload` | `gc.tsv`, `gc-delta.tsv`, `gc-rates.tsv` |
+| Is layout itself a limit? | `bash harness/bench/value-layout.sh` | value/frame/object size rows |
+| Did complexity regress? | `make scaling` / `harness/bench/scaling-check.py` | scaling report |
+| What changed over commits? | `python3 harness/bench/history.py` | `harness/bench/history/index.html` |
+
+Notes:
+
+- `compare.sh` writes ledger rows and should be used for publishable
+  reference-C history.
+- `compare_bins.sh` is preferred for local packet validation because it does
+  not mutate the ledger.
+- Rebuild a normal release binary after `opcode-profile.sh`; that runner uses
+  an instrumented build.
+- When `vm-execute.txt` is missing useful source-line attribution, rebuild with:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=true \
+RUSTFLAGS="-C force-frame-pointers=yes" \
+  cargo build --release -p lua-cli
+```
+
+## Evidence Vocabulary
+
+Agents should use these labels when reporting:
+
+- **Measured fact:** a concrete number from a TSV/JSON/profile artifact.
+- **Repeated signal:** the same ratio or profile shape across multiple runs.
+- **Hypothesis:** an explanation tied to source anchors and profile artifacts.
+- **Packet candidate:** a bounded change with correctness and benchmark gates.
+- **Rejected experiment:** a tested idea that did not pass the gate.
+- **Risk:** semantic, GC, hook, metatable, unsafe, or benchmark-integrity risk.
+
+Do not present a hypothesis as a measured fact.
+
+## Current Findings
+
+### Table/global setters
+
+Artifacts:
+
+- `harness/bench/profiles/20260609T163726Z-1dee1e5-global_settabup_same_x100/vm-execute.txt`
+- `harness/bench/profiles/20260609T163740Z-1dee1e5-table_setfield_same_x100/vm-execute.txt`
+- `harness/bench/profiles/20260609T163757Z-1dee1e5-table_seti_same_x100/vm-execute.txt`
+
+Measured shape:
+
+- `global_settabup_same`: about 52% of samples in `OP_SETTABUP`, about 18% in
+  `OP_FORLOOP`, about 16% in dispatch fetch. Top visible lines include
+  `tbl.raw_set_short_str`, `state.upvalue_get`, barrier checks, and key/table
+  checks.
+- `table_setfield_same`: about half the samples are in `OP_SETFIELD`; the top
+  line is again `tbl.raw_set_short_str`.
+- `table_seti_same`: less short-string work; more direct integer/array update
+  plus loop/dispatch overhead.
+
+Interpretation:
+
+- The issue is not "LuaTable is globally slow." It is repeated existing-key
+  setter bytecode paying too much helper and representation overhead.
+- `_ENV` writes add upvalue access on top of the table write cost.
+- `SETI` needs its own packet; short-string hash optimizations do not explain
+  the integer case.
+
+### Calls, returns, upvalues
+
+Artifacts:
+
+- `harness/bench/profiles/20260609T164558Z-1dee1e5-fibonacci_x3/vm-execute.txt`
+- `harness/bench/profiles/20260609T164607Z-1dee1e5-numeric_mixed_x20/vm-execute.txt`
+
+Measured shape:
+
+- `fibonacci`: `DISPATCH_FETCH`, `OP_CALL`, `FRAME_SETUP`, `OP_RETURN1`,
+  `OP_GETUPVAL`, `OP_ADDI`, `OP_ADD`, `OP_LTI`, and return re-entry all show up.
+- `numeric_mixed`: dispatch fetch, unknown inlined VM work, `FORLOOP`, `ADDI`,
+  and `MULK` dominate.
+
+Interpretation:
+
+- Call/return and upvalue costs are still concrete, profile-visible targets.
+- Numeric-loop work is sensitive to dispatch-loop layout. Treat broad branch
+  edits skeptically and validate them against `numeric_mixed`.
+
+## Rejected Or Inconclusive Experiments
+
+These are useful because they define the edges of the search space:
+
+- **Hash-node `Cell<LuaValue>` values.** This allowed existing short-string
+  hash updates through a shared table borrow and improved some setters, but it
+  regressed `table_field_index` read-side performance. Do not reintroduce it
+  as a broad table representation change without stronger evidence.
+- **Broad hook/trap guarding across branch/test opcodes.** This improved some
+  table setter rows, but a repeated run regressed `numeric_mixed` by about 11%
+  and `compare_immediates` by about 2%. Broad dispatch-shape edits are not
+  safe by intuition alone.
+- **Arithmetic direct-K rewrites.** Earlier local arithmetic rewrites regressed
+  numeric/fibonacci/bitwise neighbors and were reverted. Keep arithmetic work
+  profile-led and per-opcode.
+
+## Packet Candidates
+
+Each candidate needs correctness first, then a targeted A/B, then at least one
+profile that shows the expected source bucket shrinking.
+
+### 1. Existing short-string table setter fast path
+
+Hypothesis: `SETFIELD`, `SETTABLE` string-key, and `_ENV` `SETTABUP` can avoid
+some helper/boundary overhead on already-present short-string keys while
+preserving barriers and metamethod semantics.
+
+Source anchors:
+
+- `crates/lua-vm/src/vm.rs` `OP_SETTABUP`, `OP_SETTABLE`, `OP_SETFIELD`
+- `crates/lua-vm/src/state.rs` `LuaTableRefExt::raw_set_short_str`
+- `crates/lua-types/src/table.rs` `try_update_short_str`
+
+Gate:
+
+```bash
+cargo test -p lua-types -p lua-vm --lib
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-v0032-base \
+  --b target/release/lua-rs \
+  --runs 10 \
+  --repeat-each 5 \
+  --workloads global_settabup_same,table_setfield_same,table_settable_string_key,table_field_index
+```
+
+Risk: read-side table regressions, skipped GC barrier, skipped metamethod path.
+
+### 2. `SETI` integer existing-key path
+
+Hypothesis: `SETI` is not helped by short-string work; it needs a narrower
+integer/array update audit and loop interaction check.
+
+Source anchors:
+
+- `crates/lua-vm/src/vm.rs` `OP_SETI`, `OP_FORLOOP`
+- `crates/lua-types/src/table.rs` `try_update_int`, `try_raw_set_int_fast`
+
+Gate:
+
+```bash
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-v0032-base \
+  --b target/release/lua-rs \
+  --runs 10 \
+  --repeat-each 5 \
+  --workloads table_seti_same,numeric_mixed,loop_variants
+```
+
+Risk: array growth/accounting, nil delete semantics, code-layout regressions in
+numeric loops.
+
+### 3. Call/return frame re-entry
+
+Hypothesis: `call_return_shapes` and `fibonacci` still pay avoidable frame
+setup and return re-entry work after `RETURN0`/`RETURN1`.
+
+Source anchors:
+
+- `crates/lua-vm/src/vm.rs` `OP_CALL`, `OP_RETURN0`, `OP_RETURN1`, ret label
+- `crates/lua-vm/src/do_.rs` `precall`, `poscall`, `prep_call_info`
+- `crates/lua-vm/src/state.rs` `CallInfo` accessors
+
+Gate:
+
+```bash
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-v0032-base \
+  --b target/release/lua-rs \
+  --runs 7 \
+  --workloads call_return_shapes,fibonacci,closure_ops
+```
+
+Risk: hooks, yields, tail calls, close/TBC return paths.
+
+### 4. Upvalue traffic
+
+Hypothesis: closure/global workloads still pay too much upvalue lookup work in
+same-thread open-upvalue cases.
+
+Source anchors:
+
+- `crates/lua-vm/src/vm.rs` `OP_GETUPVAL`, `OP_SETUPVAL`, `OP_SETTABUP`
+- `crates/lua-vm/src/state.rs` `upvalue_get`, `upvalue_set`
+- `crates/lua-types/src/upvalue.rs`
+
+Gate:
+
+```bash
+bash harness/bench/compare_bins.sh \
+  --a /tmp/lua-rs-v0032-base \
+  --b target/release/lua-rs \
+  --runs 7 \
+  --workloads closure_ops,fibonacci,global_settabup_same
+```
+
+Risk: coroutine-owned open upvalues, cross-thread mirrors, GC barriers on
+closed upvalues.
+
+### 5. Tooling packet: benchmark runner coherence
+
+Hypothesis: performance work is harder to parallelize because `runners.toml`
+only models official correctness runners; benchmark/profile runners are
+documented shell commands but not typed runner entries.
+
+Scope:
+
+- Add typed runner entries for the bench matrix, direct binary A/B, hotspot
+  profile, opcode profile, GC profile, scaling, and history rebuild.
+- Add resource locks: `benchmark-host`, `bench-results`, `profiler`,
+  `opcode-profile-build`.
+- Keep generated `results/` and `profiles/` ignored unless explicitly promoted.
+
+Gate:
+
+```bash
+python3 ../port-harness/loop/check-completion.py --project . --json
+python3 ../port-harness/loop/parallel-plan.py --project . --selector manual --json
+```
+
+Risk: runner metadata drifting from the actual shell harness.
+
+## Agent Workflow
+
+For a new performance agent:
+
+1. Recover state.
+
+```bash
+pwd
+git status --short --branch
+git log --oneline -8
+ls -lt harness/bench/results | head
+ls -lt harness/bench/profiles | head
+```
+
+2. Confirm there is no active benchmark runner.
+
+```bash
+pgrep -fl 'compare_bins|compare.sh|profile-hotspots|target/release/lua-rs'
+```
+
+3. Build a release binary and save a base before editing.
+
+```bash
+cargo build --release -p lua-cli
+cp target/release/lua-rs /tmp/lua-rs-base
+```
+
+4. Choose one packet. Do not mix table representation, dispatch, call/return,
+   and GC changes in one packet.
+
+5. Run correctness first, then targeted A/B. Use `--repeat-each` for subsecond
+   workloads.
+
+6. If the A/B passes, run the matching profile and verify the predicted bucket
+   moved.
+
+7. Run final validation.
+
+```bash
+cargo fmt --check
+git diff --check
+cargo test -p lua-types -p lua-vm --lib
+make conformance
+```
+
+8. Report measured facts, repeated signals, hypotheses, rejected experiments,
+   risks, and exact artifact paths. Avoid conclusions based on one short run.
+
+## Documentation Gaps To Keep Closing
+
+- The current `harness/work-packets.jsonl` contains valuable older perf
+  packets, but some are stale after recent landed work. New packet entries
+  should reference current `v0.0.32` artifacts.
+- `harness/runners.toml` does not yet model benchmark/profile runners.
+- There is no allocation-stack profiler equivalent to Linux `perf` wired into
+  the default macOS workflow.
+- Backfill remains future work for "when did this regress?" questions across
+  older commits.
+- Generated profile and result artifacts are ignored, so durable reports must
+  cite exact local paths or promote selected summaries into committed docs.
+

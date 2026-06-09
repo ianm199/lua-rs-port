@@ -1,5 +1,8 @@
 # Performance principles for lua-rs
 
+For current agent handoff, active bottleneck model, tool map, and packet
+candidates, start with `docs/PERFORMANCE_MODEL.md`.
+
 Adapted from the redis-rs-port hotpath methodology
 (`redis-rs-port/docs/RUNTIME_OWNER_HOTPATH_PUSH.md`,
 `redis-rs-port/docs/BENCHMARKS.md`,

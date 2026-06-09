@@ -148,9 +148,10 @@ filters out scheduling jitter without smearing real performance differences.
 `rss_ratio` is max-RSS lua-rs / max-RSS reference. Memory overhead at peak.
 
 Hardware + commit fingerprint is in the TSV header. **Do not merge runs
-from different machines** — apples to oranges. For the current scorecard and
-running optimization journal, read `docs/PERFORMANCE_PRINCIPLES.md` and
-`docs/MATCHING_C_PERFORMANCE.md`.
+from different machines** — apples to oranges. For the current scorecard,
+active bottleneck model, and agent handoff, read
+`docs/PERFORMANCE_MODEL.md`. For the rules and longer optimization journal,
+read `docs/PERFORMANCE_PRINCIPLES.md` and `docs/MATCHING_C_PERFORMANCE.md`.
 
 ## Probe vs ledgered bench split (when we add probes)
 
