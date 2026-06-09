@@ -3,14 +3,24 @@
 # lua-rs (Rust impl) and the pinned upstream Lua 5.4.7 reference binary.
 #
 # For each workload in harness/bench/workloads/, both binaries run N times
-# (default 5). We record min wall-clock + max RSS for each, then emit a TSV
-# with the ratio (lua-rs / reference). Min wall-clock is the standard
-# "best of N" interpreter benchmark convention (filters out scheduling jitter).
+# (default 5) as INTERLEAVED ref/rs pairs so thermal and clock drift hit both
+# sides symmetrically. We record min wall-clock + max RSS for each plus the
+# median of per-pair ratios, then emit a TSV with the ratio (lua-rs /
+# reference). Min wall-clock stays the headline (dashboard continuity);
+# median_ratio is the robustness check.
+#
+# Short workloads are repeat-calibrated (PERF_PUSH_SPEC P1.3): a calibration
+# run sizes a dofile-repeat factor so every measured sample is >= MIN_SAMPLE_S
+# (default 0.5s), killing centisecond quantization. Calibration is cached in
+# results/.calib-cache.tsv keyed on binary sha256 + workload mtime.
+# Workloads whose manifest notes contain LIVELOCK are skipped unless named
+# via --workloads; a hung sample records status=hang instead of wedging.
 #
 # Usage:
 #   bash harness/bench/compare.sh                       # all workloads, N=5
 #   bash harness/bench/compare.sh --runs 3              # fewer repetitions
 #   bash harness/bench/compare.sh --workloads fib,table # subset
+#   bash harness/bench/compare.sh --min-sample 0.3      # lower repeat floor
 #
 # Output:
 #   harness/bench/results/<UTC-timestamp>-<short-sha>-compare.tsv
@@ -32,11 +42,20 @@ mkdir -p "$OUT_DIR"
 
 RUNS=5
 WORKLOAD_FILTER=""
+MIN_SAMPLE_S="${MIN_SAMPLE_S:-0.5}"
+CALIB_CACHE="$OUT_DIR/.calib-cache.tsv"
+
+# Hold the perf-experiment marker so a Stop-hook firing mid-run neither
+# contends for CPU nor auto-commits (PERF_PUSH_SPEC P7.4).
+PERF_MARKER="$ROOT/harness/.perf-experiment"
+touch "$PERF_MARKER"
+trap 'rm -f "$PERF_MARKER"' EXIT
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --runs)      RUNS="$2";              shift 2 ;;
-        --workloads) WORKLOAD_FILTER="$2";   shift 2 ;;
+        --runs)       RUNS="$2";             shift 2 ;;
+        --workloads)  WORKLOAD_FILTER="$2";  shift 2 ;;
+        --min-sample) MIN_SAMPLE_S="$2";     shift 2 ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# //; s/^#//'
             exit 0 ;;
@@ -55,6 +74,18 @@ JSON="$OUT_DIR/${TS}-${COMMIT}-compare.json"
 OS_NAME="$(uname -sr)"
 ARCH="$(uname -m)"
 CPU="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//' || echo 'unknown')"
+
+sha12() {
+    shasum -a 256 "$1" 2>/dev/null | awk '{print substr($1, 1, 12)}'
+}
+DIRTY="no"
+DIFF_SHA="-"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    DIRTY="yes"
+    DIFF_SHA=$(git diff HEAD 2>/dev/null | shasum -a 256 | awk '{print substr($1, 1, 12)}')
+fi
+REF_SHA=$(sha12 "$REF_BIN")
+RS_SHA=$(sha12 "$RS_BIN")
 
 # macOS (BSD time) and Linux (GNU time) have incompatible flags and output
 # formats, so measure_one branches on the OS:
@@ -75,19 +106,32 @@ COMPARE_MAX_S="${COMPARE_MAX_S:-120}"
 measure_one() {
     local bin="$1"
     local workload="$2"
-    local tmp
+    local repeat="${3:-1}"
+    local tmp eval_src=""
     tmp=$(mktemp)
     local real rss rss_kb parsed
     case "$(uname -s)" in
         Darwin)
-            perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
-                /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
+            if [ "$repeat" -le 1 ]; then
+                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                    /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
+            else
+                eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
+                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                    /usr/bin/time -lp "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
+            fi
             real=$(awk '$1=="real" {print $2}' "$tmp" | head -1)
             rss=$(awk '/maximum resident set size/ {print $1}' "$tmp" | head -1)
             ;;
         *)
-            perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
-                /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
+            if [ "$repeat" -le 1 ]; then
+                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                    /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
+            else
+                eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
+                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                    /usr/bin/time -f '%e %M' "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
+            fi
             parsed=$(awk '/^[0-9.]+ [0-9]+$/ {r=$1; k=$2} END {if (r != "") print r, k}' "$tmp")
             real=$(printf '%s' "$parsed" | awk '{print $1}')
             rss_kb=$(printf '%s' "$parsed" | awk '{print $2}')
@@ -96,30 +140,10 @@ measure_one() {
     esac
     rm -f "$tmp"
     if [ -z "$real" ] || [ -z "$rss" ]; then
-        echo "[err] failed to parse /usr/bin/time output for $bin $workload" >&2
+        echo "[err] sample failed or timed out (>${COMPARE_MAX_S}s) for $bin $workload" >&2
         return 1
     fi
     printf "%s %s\n" "$real" "$rss"
-}
-
-best_of_n() {
-    local bin="$1"
-    local workload="$2"
-    local n="$3"
-    local best_real="" best_rss=""
-    for _ in $(seq 1 "$n"); do
-        local pair real rss
-        pair=$(measure_one "$bin" "$workload") || return 1
-        real=$(echo "$pair" | awk '{print $1}')
-        rss=$(echo "$pair" | awk '{print $2}')
-        if [ -z "$best_real" ] || awk -v a="$real" -v b="$best_real" 'BEGIN{exit !(a < b)}'; then
-            best_real="$real"
-        fi
-        if [ -z "$best_rss" ] || awk -v a="$rss" -v b="$best_rss" 'BEGIN{exit !(a > b)}'; then
-            best_rss="$rss"
-        fi
-    done
-    printf "%s %s\n" "$best_real" "$best_rss"
 }
 
 {
@@ -129,11 +153,14 @@ best_of_n() {
     printf '# os:            %s\n' "$OS_NAME"
     printf '# arch:          %s\n' "$ARCH"
     printf '# cpu:           %s\n' "$CPU"
-    printf '# runs:          %d (reporting best wall-clock, max RSS)\n' "$RUNS"
-    printf '# reference:     %s (Lua 5.4.7)\n' "$REF_BIN"
-    printf '# lua-rs:        %s\n' "$RS_BIN"
+    printf '# runs:          %d interleaved ref/rs pairs (reporting best wall-clock, max RSS, median pair ratio)\n' "$RUNS"
+    printf '# min_sample_s:  %s (auto repeat calibration)\n' "$MIN_SAMPLE_S"
+    printf '# dirty:         %s\n' "$DIRTY"
+    printf '# diff_sha256:   %s\n' "$DIFF_SHA"
+    printf '# reference:     %s (Lua 5.4.7, sha256 %s)\n' "$REF_BIN" "$REF_SHA"
+    printf '# lua-rs:        %s (sha256 %s)\n' "$RS_BIN" "$RS_SHA"
     printf '#\n'
-    printf 'workload\tref_wall_s\trs_wall_s\twall_ratio\tref_rss_kb\trs_rss_kb\trss_ratio\n'
+    printf 'workload\tref_wall_s\trs_wall_s\twall_ratio\tref_rss_kb\trs_rss_kb\trss_ratio\tmedian_ratio\trepeat\tstatus\n'
 } > "$TSV"
 
 JSON_ROWS=""
@@ -144,27 +171,89 @@ for wpath in "$WORKLOAD_DIR"/*.lua; do
     wname=$(basename "$wpath" .lua)
     if [ -n "$WORKLOAD_FILTER" ]; then
         echo ",$WORKLOAD_FILTER," | grep -q ",$wname," || continue
+    else
+        if grep -q "^${wname}	.*LIVELOCK" "$WORKLOAD_DIR/manifest.tsv" 2>/dev/null; then
+            echo "==> $wname SKIPPED: manifest marks LIVELOCK (run via --workloads to retest)" >&2
+            continue
+        fi
     fi
 
     echo "==> $wname" >&2
-    pair_ref=$(best_of_n "$REF_BIN" "$wpath" "$RUNS")
-    pair_rs=$(best_of_n "$RS_BIN" "$wpath" "$RUNS")
-    ref_wall=$(echo "$pair_ref" | awk '{print $1}')
-    ref_rss=$(echo "$pair_ref" | awk '{print $2}')
-    rs_wall=$(echo "$pair_rs" | awk '{print $1}')
-    rs_rss=$(echo "$pair_rs" | awk '{print $2}')
+    wl_mtime=$(stat -f %m "$wpath" 2>/dev/null || stat -c %Y "$wpath" 2>/dev/null)
 
-    wall_ratio=$(awk -v a="$rs_wall" -v b="$ref_wall" 'BEGIN{if (b>0) printf "%.2f", a/b; else print "NaN"}')
-    rss_ratio=$(awk  -v a="$rs_rss"  -v b="$ref_rss"  'BEGIN{if (b>0) printf "%.2f", a/b; else print "NaN"}')
+    hang=0
+    repeat=1
+    cached_repeat=$(awk -F'\t' -v k1="$REF_SHA" -v k2="$wname" -v k3="$wl_mtime" -v k4="$MIN_SAMPLE_S" \
+        '$1==k1 && $2==k2 && $3==k3 && $4==k4 {print $5; exit}' "$CALIB_CACHE" 2>/dev/null || true)
+    if [ -n "$cached_repeat" ]; then
+        repeat="$cached_repeat"
+    elif cal=$(measure_one "$REF_BIN" "$wpath" 1); then
+        cal_wall=$(echo "$cal" | awk '{print $1}')
+        repeat=$(awk -v w="$cal_wall" -v m="$MIN_SAMPLE_S" 'BEGIN{
+            if (w < 0.001) w = 0.001
+            r = (w >= m) ? 1 : int(m / w) + 1
+            if (r > 2000) r = 2000
+            print r
+        }')
+        [ "$repeat" -gt 1 ] && echo "    calibrated repeat_each=$repeat (single run ${cal_wall}s)" >&2
+        printf '%s\t%s\t%s\t%s\t%s\n' "$REF_SHA" "$wname" "$wl_mtime" "$MIN_SAMPLE_S" "$repeat" >> "$CALIB_CACHE"
+    else
+        hang=1
+    fi
 
-    ref_rss_kb=$(awk -v b="$ref_rss" 'BEGIN{printf "%.0f", b/1024}')
-    rs_rss_kb=$(awk  -v b="$rs_rss"  'BEGIN{printf "%.0f", b/1024}')
+    samples=$(mktemp)
+    if [ "$hang" = "0" ]; then
+        for _ in $(seq 1 "$RUNS"); do
+            pr=$(measure_one "$REF_BIN" "$wpath" "$repeat") || { hang=1; break; }
+            ps=$(measure_one "$RS_BIN" "$wpath" "$repeat") || { hang=1; break; }
+            printf '%s %s %s %s\n' \
+                "$(echo "$pr" | awk '{print $1}')" "$(echo "$ps" | awk '{print $1}')" \
+                "$(echo "$pr" | awk '{print $2}')" "$(echo "$ps" | awk '{print $2}')" >> "$samples"
+        done
+    fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$wname" "$ref_wall" "$rs_wall" "$wall_ratio" "$ref_rss_kb" "$rs_rss_kb" "$rss_ratio" >> "$TSV"
+    if [ "$hang" = "1" ]; then
+        rm -f "$samples"
+        echo "    HANG: sample exceeded ${COMPARE_MAX_S}s; recording status=hang" >&2
+        printf '%s\tNaN\tNaN\tNaN\t0\t0\tNaN\tNaN\t%d\thang\n' "$wname" "$repeat" >> "$TSV"
+        if [ -n "$JSON_ROWS" ]; then JSON_ROWS="$JSON_ROWS,"; fi
+        JSON_ROWS="$JSON_ROWS{\"workload\":\"$wname\",\"status\":\"hang\",\"repeat_each\":$repeat}"
+        continue
+    fi
+
+    stats=$(awk '
+        { rw[NR]=$1; sw[NR]=$2; rr[NR]=$3; sr[NR]=$4
+          r[NR] = (rw[NR] > 0) ? sw[NR]/rw[NR] : 1e9
+          if (best_r == "" || rw[NR] < best_r) best_r = rw[NR]
+          if (best_s == "" || sw[NR] < best_s) best_s = sw[NR]
+          if (max_rr == "" || rr[NR] > max_rr) max_rr = rr[NR]
+          if (max_sr == "" || sr[NR] > max_sr) max_sr = sr[NR]
+        }
+        END {
+          n = NR
+          for (i = 1; i <= n; i++)
+            for (j = i + 1; j <= n; j++)
+              if (r[j] < r[i]) { t = r[i]; r[i] = r[j]; r[j] = t }
+          if (n % 2) median = r[(n + 1) / 2]
+          else median = (r[n / 2] + r[n / 2 + 1]) / 2
+          printf "%s %s %.2f %.0f %.0f %.3f\n", best_r, best_s,
+            (best_r > 0) ? best_s / best_r : 0, max_rr / 1024, max_sr / 1024, median
+        }' "$samples")
+    rm -f "$samples"
+
+    ref_wall=$(echo "$stats" | awk '{print $1}')
+    rs_wall=$(echo "$stats" | awk '{print $2}')
+    wall_ratio=$(echo "$stats" | awk '{print $3}')
+    ref_rss_kb=$(echo "$stats" | awk '{print $4}')
+    rs_rss_kb=$(echo "$stats" | awk '{print $5}')
+    median_ratio=$(echo "$stats" | awk '{print $6}')
+    rss_ratio=$(awk -v a="$rs_rss_kb" -v b="$ref_rss_kb" 'BEGIN{if (b>0) printf "%.2f", a/b; else print "NaN"}')
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\tok\n' \
+        "$wname" "$ref_wall" "$rs_wall" "$wall_ratio" "$ref_rss_kb" "$rs_rss_kb" "$rss_ratio" "$median_ratio" "$repeat" >> "$TSV"
 
     if [ -n "$JSON_ROWS" ]; then JSON_ROWS="$JSON_ROWS,"; fi
-    JSON_ROWS="$JSON_ROWS{\"workload\":\"$wname\",\"ref_wall_s\":$ref_wall,\"rs_wall_s\":$rs_wall,\"wall_ratio\":$wall_ratio,\"ref_rss_kb\":$ref_rss_kb,\"rs_rss_kb\":$rs_rss_kb,\"rss_ratio\":$rss_ratio}"
+    JSON_ROWS="$JSON_ROWS{\"workload\":\"$wname\",\"ref_wall_s\":$ref_wall,\"rs_wall_s\":$rs_wall,\"wall_ratio\":$wall_ratio,\"ref_rss_kb\":$ref_rss_kb,\"rs_rss_kb\":$rs_rss_kb,\"rss_ratio\":$rss_ratio,\"median_wall_ratio\":$median_ratio,\"repeat_each\":$repeat,\"status\":\"ok\"}"
 
     TOTAL_REF=$(awk -v t="$TOTAL_REF" -v a="$ref_wall" 'BEGIN{printf "%.4f", t+a}')
     TOTAL_RS=$(awk  -v t="$TOTAL_RS"  -v a="$rs_wall"  'BEGIN{printf "%.4f", t+a}')
@@ -203,6 +292,8 @@ with open(json_path) as f:
 PARITY_THRESHOLD = 1.5
 with open(ledger, "a") as out:
     for row in data["rows"]:
+        if row.get("status", "ok") != "ok":
+            continue
         for metric in ("wall_ratio", "rss_ratio"):
             entry = {
                 "schema_version": 1,
@@ -217,6 +308,7 @@ with open(ledger, "a") as out:
                 "evidence": evidence_rel,
                 "runner": "bench-vs-reference",
                 "runs": int(runs),
+                "repeat_each": int(row.get("repeat_each", 1)),
                 "os": os_name,
                 "arch": arch,
                 "cpu": cpu,
