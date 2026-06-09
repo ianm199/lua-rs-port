@@ -43,7 +43,7 @@ for wpath in "$WORKLOAD_DIR"/*.lua; do
         continue
     fi
     echo "    train: $wname" >&2
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$TRAIN_MAX_S" \
+    "$ROOT/harness/bench/with-timeout.sh" "$TRAIN_MAX_S" \
         "$BIN" "$wpath" >/dev/null 2>&1 || echo "    [warn] $wname training run failed" >&2
 done
 for t in calls.lua nextvar.lua strings.lua closure.lua; do
@@ -51,7 +51,7 @@ for t in calls.lua nextvar.lua strings.lua closure.lua; do
     [ -f "$tp" ] || continue
     echo "    train: official $t" >&2
     (cd "$ROOT/reference/lua-c/testes" && \
-        perl -e 'alarm shift @ARGV; exec @ARGV' "$TRAIN_MAX_S" \
+        "$ROOT/harness/bench/with-timeout.sh" "$TRAIN_MAX_S" \
         "$BIN" -e "_soft=true; _port=true" "$t" >/dev/null 2>&1) \
         || echo "    [warn] official $t training run failed" >&2
 done

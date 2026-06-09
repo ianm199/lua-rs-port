@@ -55,11 +55,11 @@ START_SECONDS="$(python3 -c 'import time; print(f"{time.perf_counter():.9f}")')"
 PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> running $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
         "$RS_BIN" -e "$PROFILE_LUA_EVAL" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
 else
     echo "==> running $RS_BIN $WORKLOAD_FILE" >&2
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
         "$RS_BIN" "$WORKLOAD_FILE" >"$OUT_DIR/stdout.txt" 2>"$OUT_DIR/stderr.txt"
 fi
 END_SECONDS="$(python3 -c 'import time; print(f"{time.perf_counter():.9f}")')"

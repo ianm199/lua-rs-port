@@ -110,9 +110,20 @@ if [ "$REPEAT_EACH" != "auto" ]; then
 fi
 
 # Self-guard: refuse to measure while another measurement process is live
-# (PERF_PUSH_SPEC P1.7). BENCH_IGNORE_RUNNING=1 overrides.
+# (PERF_PUSH_SPEC P1.7). The full ancestor chain is excluded, not just the
+# direct parent — agent harnesses wrap invocations in shells whose command
+# lines contain this script's name. BENCH_IGNORE_RUNNING=1 overrides.
 if [ "${BENCH_IGNORE_RUNNING:-0}" != "1" ]; then
-    others=$(pgrep -f 'compare_bins|harness/bench/compare\.sh|profile-hotspots|callgrind' 2>/dev/null | grep -v -e "^$$\$" -e "^$PPID\$" || true)
+    anc="$$"
+    p="$$"
+    for _ in 1 2 3 4 5 6; do
+        p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+        if [ -z "$p" ] || [ "$p" = "0" ] || [ "$p" = "1" ]; then
+            break
+        fi
+        anc="$anc|$p"
+    done
+    others=$(pgrep -f 'compare_bins|harness/bench/compare\.sh|profile-hotspots|callgrind' 2>/dev/null | grep -Ev "^($anc)\$" || true)
     if [ -n "$others" ]; then
         echo "[err] another measurement process appears to be running (pids: $(echo "$others" | tr '\n' ' '))." >&2
         echo "[err] one measurement process at a time; set BENCH_IGNORE_RUNNING=1 to override." >&2
@@ -152,7 +163,7 @@ B_SHA=$(sha12 "$B_BIN")
 run_out() {
     local bin="$1"
     local workload="$2"
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$MAX_SAMPLE_S" "$bin" "$workload" 2>&1
+    "$ROOT/harness/bench/with-timeout.sh" "$MAX_SAMPLE_S" "$bin" "$workload" 2>&1
 }
 
 # Every sample runs under a hard watchdog (perl alarm — portable on macOS,
@@ -169,11 +180,11 @@ measure_one() {
     case "$(uname -s)" in
         Darwin)
             if [ "$repeat" -le 1 ]; then
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$MAX_SAMPLE_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$MAX_SAMPLE_S" \
                     /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
             else
                 eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$MAX_SAMPLE_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$MAX_SAMPLE_S" \
                     /usr/bin/time -lp "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
             fi
             real=$(awk '$1=="real" {print $2; exit}' "$tmp")
@@ -181,11 +192,11 @@ measure_one() {
             ;;
         *)
             if [ "$repeat" -le 1 ]; then
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$MAX_SAMPLE_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$MAX_SAMPLE_S" \
                     /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
             else
                 eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$MAX_SAMPLE_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$MAX_SAMPLE_S" \
                     /usr/bin/time -f '%e %M' "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
             fi
             parsed=$(awk '/^[0-9.]+ [0-9]+$/ {r=$1; k=$2} END {if (r != "") print r, k}' "$tmp")

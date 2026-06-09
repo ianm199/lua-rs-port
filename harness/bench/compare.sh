@@ -113,11 +113,11 @@ measure_one() {
     case "$(uname -s)" in
         Darwin)
             if [ "$repeat" -le 1 ]; then
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$COMPARE_MAX_S" \
                     /usr/bin/time -lp "$bin" "$workload" >/dev/null 2>"$tmp"
             else
                 eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$COMPARE_MAX_S" \
                     /usr/bin/time -lp "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
             fi
             real=$(awk '$1=="real" {print $2}' "$tmp" | head -1)
@@ -125,11 +125,11 @@ measure_one() {
             ;;
         *)
             if [ "$repeat" -le 1 ]; then
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$COMPARE_MAX_S" \
                     /usr/bin/time -f '%e %M' "$bin" "$workload" >/dev/null 2>"$tmp"
             else
                 eval_src="for __bench_i = 1, $repeat do dofile([[$workload]]) end"
-                perl -e 'alarm shift @ARGV; exec @ARGV' "$COMPARE_MAX_S" \
+                "$ROOT/harness/bench/with-timeout.sh" "$COMPARE_MAX_S" \
                     /usr/bin/time -f '%e %M' "$bin" -e "$eval_src" >/dev/null 2>"$tmp"
             fi
             parsed=$(awk '/^[0-9.]+ [0-9]+$/ {r=$1; k=$2} END {if (r != "") print r, k}' "$tmp")

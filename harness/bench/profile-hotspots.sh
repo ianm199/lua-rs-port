@@ -67,11 +67,11 @@ VM_EXECUTE="$OUT_DIR/vm-execute.txt"
 PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
         "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
 else
     echo "==> spawning $RS_BIN $WORKLOAD_FILE" >&2
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$PROFILE_MAX_S" \
+    "$ROOT/harness/bench/with-timeout.sh" "$PROFILE_MAX_S" \
         "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
 fi
 PID=$!
