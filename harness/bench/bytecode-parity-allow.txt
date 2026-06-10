@@ -1,22 +1,5 @@
-# Known codegen divergences vs luac -l -l, baselined 2026-06-10.
-# Classes: float-immediate compares (LEI/LTI vs LOADF+LE), unfolded
-# negative constants (UNM), extra constant materialization, RETURN
-# specialization differences. Work the counts DOWN; the gate fails
-# on any increase. workload:count
-binarytrees:8
-call_return_shapes:8
-closure_ops:2
-coroutine_pingpong:2
-fibonacci:3
-global_settabup_same:2
-json_roundtrip:18
-mandelbrot_long:2
-metatable_index_chain:4
-method_calls:6
-pcall_error:4
-sort_seeded:4
-table_field_index:6
-table_hash_pressure:1
-table_setfield_same:1
-table_settable_string_key:1
-varargs_spread:2
+# Known codegen divergences vs luac -l -l. EMPTY as of 2026-06-10: all 31
+# bench workloads emit opcode-exact streams (packets: unary const folding,
+# float-immediate compares, RK stores, jumponcond NOT peephole +
+# discharge2anyreg fix; plus the gate's own RETURN0/1 regex truncation
+# fix). Any new entry needs a written justification. workload:count

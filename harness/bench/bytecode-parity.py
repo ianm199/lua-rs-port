@@ -16,7 +16,7 @@ LUAC = ROOT / "reference/lua-5.4.7/src/luac"
 LUARS = ROOT / "target/release/lua-rs"
 ALLOW = Path(__file__).parent / "bytecode-parity-allow.txt"
 
-LUAC_RE = re.compile(r"^\t\d+\t\[\d+\]\t([A-Z]+)")
+LUAC_RE = re.compile(r"^\t\d+\t\[\d+\]\t([A-Z0-9]+)")
 
 
 def luac_stream(path: Path) -> list[str]:
