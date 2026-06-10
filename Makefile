@@ -3,6 +3,9 @@
 #   make test          build + Rust tests + conformance (what CI runs)
 #   make rust          workspace unit/integration tests + embedding doctests
 #   make conformance   official Lua 5.4 suite against the lua-rs binary
+#   make conformance-release  same suite, RELEASE-profile binary (#140: release
+#                      cadence hid a GC use-after-free the debug suite missed)
+#   make rooting-battery      quarantine/stress GC rooting battery (#140 P0)
 #   make conformance-55 official Lua 5.5 suite against the lua-rs binary
 #   make lua55-reference build Lua 5.5 compat-on and compat-off C references
 #   make oracle-55     behavioral diff snippets vs reference C Lua 5.5.0
@@ -20,12 +23,12 @@ CARGO ?= cargo
 TEST_TIMEOUT_S ?= 90
 export TEST_TIMEOUT_S
 
-.PHONY: help test build setup rust conformance conformance-55 lua55-reference oracle-55 parity perf scaling profile clean
+.PHONY: help test build setup rust conformance conformance-release rooting-battery conformance-55 lua55-reference oracle-55 parity perf scaling profile clean
 
 help:
 	@grep -E '^#   make ' Makefile | sed 's/^#   /  /'
 
-test: build rust conformance
+test: build rust conformance conformance-release
 	@echo "== all gates passed =="
 
 build:
@@ -44,6 +47,22 @@ rust:
 
 conformance: build setup
 	./harness/run_official_all.sh
+
+# Release-profile suite run. Optimized code changes allocation sizes and GC
+# cadence, which re-rolls whether a rooting bug bites: #140 bug A segfaulted
+# EVERY release run of db.lua while the debug suite stayed green. This gate
+# would have caught it on day one.
+conformance-release: setup
+	$(CARGO) build --release --bin lua-rs
+	LUA_RS_BIN=$(CURDIR)/target/release/lua-rs ./harness/run_official_all.sh
+
+# GC exact-rooting battery (docs/EXACT_ROOTING_SPEC.md P0): quarantine +
+# stress instruments over canaries and the repro set. Findings exit 1 with
+# evidence saved. Stress-config findings are expected until #140 bug B is
+# fixed (P4); the quarantine configs must stay clean and gate CI
+# (asan-stress.sh --quarantine-only).
+rooting-battery: build
+	bash harness/asan-stress.sh
 
 conformance-55: build
 	./harness/run_official_all.sh --version 5.5 --tests-dir reference/lua-5.5.0-tests

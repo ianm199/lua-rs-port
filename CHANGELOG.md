@@ -4,6 +4,41 @@ All notable changes to `lua-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **gc** (#140): the exact-rooting audit closed a family of latent
+  use-after-free bugs where objects the VM still used were swept because the
+  root trace did not cover them. Four instances fixed: dead-key tombstones on
+  nil'd entries (0.0.32-era, `9c5125c`), debug-API thread borrows silently
+  un-rooting coroutines during collection (`debug.traceback(co)` segfaulted
+  every release-profile run of db.lua), weak-table pruning skipping manually
+  erased entries (freed keys stayed dereferenceable), and the stack tracer
+  walking stale slots because C's atomic dead-slice clear was never ported.
+  Stack rooting is now C-faithful: trace exactly `[0..top)`, nil the dead
+  slice before every collect, `savestate` top fixups at Protect-origin
+  checkpoints.
+
+### Changed
+
+- **vm/table** (W2.3 R2): table representation diet — the metatable slot is a
+  single `Cell<Option<GcRef>>` (no borrow flag, no cached bool) and
+  `TableInner.lastfree` packs to a `u32` sentinel, shrinking the table box
+  144 → 128 bytes. binarytrees 0.928 vs pre-change; tracked regressed-minor:
+  `table_field_index` 1.017 (RSS 0.856).
+
+### Added
+
+- **gc/harness** (#140): `LUA_RS_GC_QUARANTINE=1` — sweep parks dead objects
+  with poisoned headers so any use-after-sweep dereference panics with a
+  backtrace in a plain debug build; `harness/asan-stress.sh` — the rooting
+  battery (quarantine, stress+quarantine, and ASAN configs) with CI gating on
+  the quarantine configs; the official suite now also runs against the
+  RELEASE-profile binary in `make test` (optimized cadence is how the
+  traceback bug hid from the debug suite); debug builds assert that a
+  coroutine mutably borrowed at collect time is covered by a parent snapshot.
+
 ## [0.0.32] - 2026-06-09
 
 ### Added

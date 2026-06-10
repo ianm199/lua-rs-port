@@ -9,7 +9,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
-BIN="$ROOT/target/debug/lua-rs"
+BIN="${LUA_RS_BIN:-$ROOT/target/debug/lua-rs}"
 DIR="$ROOT/harness/canaries/gc"
 TSV="$DIR/results.tsv"
 : > "$TSV"

@@ -282,7 +282,7 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
     // Build the effective options string, prepending '>' when the subject is a function.
     let options: Vec<u8>;
     let info_target_owner: Option<Rc<RefCell<LuaState>>>;
-    let mut info_target: Option<std::cell::RefMut<'_, LuaState>> = None;
+    let mut info_target: Option<crate::coro_lib::RootedThreadBorrow<'_>> = None;
     let mut info_target_is_self = target_is_self;
 
     if state.type_at(arg + 1) == LuaType::Function {
@@ -330,10 +330,12 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
             }
             DebugThreadTarget::Other(target_state) => {
                 info_target_owner = Some(target_state);
-                let mut target = info_target_owner
-                    .as_ref()
-                    .expect("target owner just stored")
-                    .borrow_mut();
+                let mut target = crate::coro_lib::borrow_thread_rooted(
+                    state,
+                    info_target_owner
+                        .as_ref()
+                        .expect("target owner just stored"),
+                );
                 if !target.get_stack_level(level, &mut ar) {
                     state.push_fail()?;
                     return Ok(1);
@@ -345,6 +347,7 @@ pub(crate) fn get_info(state: &mut LuaState) -> Result<usize, LuaError> {
                         b"invalid option",
                     ));
                 }
+                target.resnapshot();
                 info_target = Some(target);
             }
         }
@@ -464,7 +467,7 @@ pub(crate) fn get_local(state: &mut LuaState) -> Result<usize, LuaError> {
             state.get_local_at(&ar, nvar)?
         }
         DebugThreadTarget::Other(target_state) => {
-            let mut target = target_state.borrow_mut();
+            let mut target = crate::coro_lib::borrow_thread_rooted(state, &target_state);
             if !target.get_stack_level(level, &mut ar) {
                 return Err(lua_vm::debug::arg_error_impl(
                     state,
@@ -528,7 +531,7 @@ pub(crate) fn set_local(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         DebugThreadTarget::Other(target_state) => {
             let new_val = state.get_at(state.top_idx() - 1);
-            let mut target = target_state.borrow_mut();
+            let mut target = crate::coro_lib::borrow_thread_rooted(state, &target_state);
             if !target.get_stack_level(level, &mut ar) {
                 return Err(lua_vm::debug::arg_error_impl(
                     state,
@@ -977,7 +980,7 @@ pub(crate) fn traceback(state: &mut LuaState) -> Result<usize, LuaError> {
                 crate::auxlib::traceback(state, None, msg_owned.as_deref(), level)?;
             }
             DebugThreadTarget::Other(target_state) => {
-                let mut target_state = target_state.borrow_mut();
+                let mut target_state = crate::coro_lib::borrow_thread_rooted(state, &target_state);
                 crate::auxlib::traceback(
                     state,
                     Some(&mut *target_state),

@@ -41,6 +41,17 @@ subsystem tester" pattern) — run them on **any** GC, metamethod, or table chan
 before the slow `gc.lua` oracle. Then `harness/run_official_test.sh
 reference/lua-c/testes/gc.lua` and `gengc` for the full oracle.
 
+## Rooting bugs: quarantine mode is the inner loop
+
+`LUA_RS_GC_QUARANTINE=1` (debug build) makes any use-after-sweep dereference
+panic with a backtrace instead of silently reading freed memory: sweep parks
+dead boxes on a poisoned quarantine list, `Gc::as_box`/`Marker::mark_box`
+assert. Cadence is identical to a normal run. Pair with `LUA_RS_GC_STRESS=1`
+to make cadence-dependent anchoring bugs deterministic. The full battery is
+`harness/asan-stress.sh` (issue #140, `docs/EXACT_ROOTING_SPEC.md`); debug
+builds also assert that a coroutine mutably borrowed at collect time is
+covered by a parent snapshot (`trace_reachable_threads`).
+
 ## Plan
 `specs/followup/issue-93-generational-gc-plan.md` is the living design for the
 generational work.

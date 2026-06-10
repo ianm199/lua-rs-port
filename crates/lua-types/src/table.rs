@@ -283,8 +283,15 @@ pub struct TableInner {
     pub alimit: u32,
     pub array: Vec<LuaValue>,
     pub node: Vec<TableNode>,
-    pub lastfree: Option<usize>,
+    /// Free-slot search cursor for `get_free_pos`; [`NO_LASTFREE`] means the
+    /// table has no allocated hash part (`isdummy` in C). Stored as a `u32`
+    /// sentinel rather than `Option<usize>` to keep the struct at 64 bytes
+    /// (W2.3 representation diet); hash parts are capped well below 2^32.
+    pub lastfree: u32,
 }
+
+/// Sentinel for [`TableInner::lastfree`]: no allocated hash part.
+pub const NO_LASTFREE: u32 = u32::MAX;
 
 impl TableInner {
     fn new() -> Self {
@@ -294,14 +301,14 @@ impl TableInner {
             alimit: 0,
             array: Vec::new(),
             node: Vec::new(),
-            lastfree: None,
+            lastfree: NO_LASTFREE,
         }
     }
 
     /// `isdummy(t)` — true when the table has no allocated hash part.
     #[inline]
     fn is_dummy(&self) -> bool {
-        self.lastfree.is_none()
+        self.lastfree == NO_LASTFREE
     }
 
     /// `sizenode(t)` — nominal hash-part capacity (`1 << lsizenode`).
@@ -677,7 +684,7 @@ impl TableInner {
         if size == 0 {
             self.node = Vec::new();
             self.lsizenode = 0;
-            self.lastfree = None;
+            self.lastfree = NO_LASTFREE;
         } else {
             let lsize = ceil_log2(size);
             if lsize as u32 > MAXHBITS || (1u32 << lsize) > MAXHSIZE {
@@ -690,7 +697,7 @@ impl TableInner {
             }
             self.node = nodes;
             self.lsizenode = lsize as u8;
-            self.lastfree = Some(actual_size as usize);
+            self.lastfree = actual_size;
         }
         Ok(())
     }
@@ -781,13 +788,15 @@ impl TableInner {
             return None;
         }
         loop {
-            let lf = self.lastfree?;
-            if lf == 0 {
-                self.lastfree = None;
+            if self.lastfree == NO_LASTFREE {
                 return None;
             }
-            let idx = lf - 1;
-            self.lastfree = Some(idx);
+            if self.lastfree == 0 {
+                self.lastfree = NO_LASTFREE;
+                return None;
+            }
+            let idx = (self.lastfree - 1) as usize;
+            self.lastfree = idx as u32;
             if self.node[idx].key_is_nil() {
                 return Some(idx);
             }
@@ -1424,8 +1433,10 @@ impl TableInner {
 #[derive(Debug)]
 pub struct LuaTable {
     inner: RefCell<TableInner>,
-    metatable: RefCell<Option<GcRef<LuaTable>>>,
-    has_metatable: Cell<bool>,
+    /// `Cell`, not `RefCell`: `GcRef` is `Copy`, so get/set need no borrow
+    /// flag — 8 bytes instead of 16, and `has_metatable` is just an
+    /// `is_some()` on the loaded value rather than a separate cached bool.
+    metatable: Cell<Option<GcRef<LuaTable>>>,
     weak_mode: Cell<u8>,
 }
 
@@ -1443,8 +1454,7 @@ impl Default for LuaTable {
     fn default() -> Self {
         LuaTable {
             inner: RefCell::new(TableInner::new()),
-            metatable: RefCell::new(None),
-            has_metatable: Cell::new(false),
+            metatable: Cell::new(None),
             weak_mode: Cell::new(0),
         }
     }
@@ -1685,22 +1695,21 @@ impl LuaTable {
     }
 
     pub fn metatable(&self) -> Option<GcRef<LuaTable>> {
-        self.metatable.borrow().clone()
+        self.metatable.get()
     }
 
     #[inline(always)]
     pub fn has_metatable(&self) -> bool {
-        self.has_metatable.get()
+        self.metatable.get().is_some()
     }
 
     /// Install a metatable. Inspects its `__mode` field eagerly so the
-    /// GC trace impl can read [`weak_mode`] without re-entering the
-    /// metatable RefCell.
+    /// GC trace impl can read [`weak_mode`] without touching the metatable
+    /// cell again.
     pub fn set_metatable(&self, mt: Option<GcRef<LuaTable>>) {
         let mode = mt.as_ref().map(|t| extract_weak_mode(t)).unwrap_or(0);
         self.weak_mode.set(mode);
-        self.has_metatable.set(mt.is_some());
-        *self.metatable.borrow_mut() = mt;
+        self.metatable.set(mt);
     }
 
     pub fn weak_mode(&self) -> u8 {
@@ -1790,6 +1799,13 @@ impl LuaTable {
     /// Value-aware weak cleanup. Generational minor collection uses this to
     /// treat unmarked old values as live, because young sweep will not free
     /// them even when the minor marker skipped their subgraph.
+    ///
+    /// Hash nodes whose value is already nil (manually erased entries) get
+    /// their collectable key TOMBSTONED, mirroring C's unconditional
+    /// `clearkey` of empty entries in `clearbykeys`/`clearbyvalues`
+    /// (`lgc.c`). Skipping them leaves a never-again-traced key ref in the
+    /// node; once the key object is swept, a later probe content-compares
+    /// freed memory (found by the rooting battery on gc.lua, 2026-06-10).
     pub fn prune_weak_dead_with_value(
         &self,
         is_key_reachable: &dyn Fn(&LuaValue) -> bool,
@@ -1822,6 +1838,9 @@ impl LuaTable {
         while i < inner.node.len() {
             let v = inner.node[i].value.clone();
             if matches!(v, LuaValue::Nil) {
+                if !inner.node[i].dead && gc_identity_bits(&inner.node[i].key).is_some() {
+                    inner.node[i].dead = true;
+                }
                 i += 1;
                 continue;
             }

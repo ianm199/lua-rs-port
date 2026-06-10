@@ -33,6 +33,31 @@ The in-process equivalent (no binary) is
 `harness/canaries/gc/run_canaries.sh` — fast, deterministic in-memory GC testers
 (incremental + generational). Run on any GC/metamethod/table change *before* the
 slow `gc.lua` oracle. This is the "build a custom subsystem tester" pattern.
+Honors `LUA_RS_BIN`.
+
+## GC rooting battery (`harness/asan-stress.sh`, issue #140)
+
+Hunts use-after-sweep rooting bugs with three layered instruments:
+
+- `LUA_RS_GC_QUARANTINE=1` (debug build) — sweep parks dead boxes instead of
+  freeing; any later dereference is a deterministic Rust panic with a
+  backtrace. Cadence-identical to a normal run, milliseconds to trip. **The
+  inner loop for this bug class** — reach for it before ASAN.
+- `+ LUA_RS_GC_STRESS=1` — collect at every checkpoint. Behavioral failures
+  are expected under stress (cadence-sensitive asserts); only panic
+  signatures count as findings.
+- `--asan` — nightly AddressSanitizer build (commit-keyed cache), the
+  truth-teller for reads that bypass the poisoned headers.
+
+`harness/asan-stress.sh` runs quick by default (canaries + repro set);
+`--full` adds the whole official suite under quarantine; `--quarantine-only`
+is the CI gate (must stay clean). Stress-config findings are expected until
+#140 bug B (frame-range stale slots) is fixed. Evidence lands in
+`harness/evidence/rooting-battery/<stamp>/`.
+
+**Release-profile suite** (`make conformance-release`) is part of `make test`:
+optimized code re-rolls GC cadence, which is how #140 bug A segfaulted every
+release run while the debug suite stayed green.
 
 ## Benchmarks (`harness/bench/`)
 

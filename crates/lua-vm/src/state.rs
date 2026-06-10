@@ -3942,6 +3942,62 @@ impl LuaState {
         self.gc_check_needed = true;
     }
 
+    /// The stack prefix the GC must treat as live: `[0 .. gc_trace_bound())`.
+    ///
+    /// C's `traversethread` walks exactly `[stack .. top)` (`lgc.c`). The
+    /// companion invariant is that `top` covers every live slot at every
+    /// point a collect can run: C functions keep `top` exact at all times,
+    /// and lvm.c's Protect sites raise it (`savestate`: `top = ci->top`)
+    /// before any mid-opcode operation that can collect. Checkpoints whose
+    /// C original runs under Protect must therefore do the same top fixup
+    /// at the call site (e.g. `get_varargs`). Widening the bound here to
+    /// `ci.top` instead was tried and rejected: every suspended frame's
+    /// reserved slice stays traced forever, and the over-retention drives
+    /// the generational pacer into permanent re-collection (db.lua's
+    /// line-hook section went from seconds to timeout).
+    pub fn gc_trace_bound(&self) -> usize {
+        (self.top.0 as usize).min(self.stack.len())
+    }
+
+    /// Nil this thread's dead stack slice `[gc_trace_bound() ..
+    /// stack.len())`. C clears the equivalent slice in `traversethread`'s
+    /// atomic phase (`lgc.c`: `setnilvalue` from `top` to `stack_last +
+    /// EXTRA_STACK`). Without the clear, a slot that was above the bound at
+    /// one collect (its object swept) and drifts back under a raised bound
+    /// later feeds a dangling GcRef to the marker — #140 bug B.
+    pub fn clear_dead_stack_tail(&mut self) {
+        let bound = self.gc_trace_bound();
+        for slot in &mut self.stack[bound..] {
+            slot.val = LuaValue::Nil;
+        }
+    }
+
+    /// Clear the dead stack slice of this thread and of every registered
+    /// coroutine whose state is borrowable. Threads held by a resume chain
+    /// or a debug-API guard are rooted via `suspended_parent_stacks`
+    /// snapshots and skipped here; their tails are cleared at their next
+    /// reachable collect. Call before any collection runs (C parity:
+    /// `traversethread`'s atomic clear).
+    pub fn gc_clear_dead_stack_tails(&mut self) {
+        self.clear_dead_stack_tail();
+        let global = self.global.clone();
+        let g = global.borrow();
+        for entry in g.threads.values() {
+            if let Ok(mut t) = entry.state.try_borrow_mut() {
+                t.clear_dead_stack_tail();
+            }
+        }
+    }
+
+    /// `gc_clear_dead_stack_tails` gated on `would_collect` — the one-line
+    /// companion for call sites that invoke `gc().check_step()` directly.
+    /// Zero cost when no collection is due.
+    pub fn gc_pre_collect_clear(&mut self) {
+        if self.global().heap.would_collect() {
+            self.gc_clear_dead_stack_tails();
+        }
+    }
+
     #[inline(always)]
     pub fn gc_check_step(&mut self) {
         if !self.allowhook {
@@ -3956,6 +4012,7 @@ impl LuaState {
         };
         if should_collect || has_finalizers {
             if should_collect {
+                self.gc_clear_dead_stack_tails();
                 self.gc().check_step();
             }
             crate::api::run_pending_finalizers(self);
@@ -3981,6 +4038,7 @@ impl LuaState {
         };
         if should_collect || has_finalizers {
             if should_collect {
+                self.gc_clear_dead_stack_tails();
                 self.gc().check_step();
             }
             crate::api::run_pending_finalizers(self);
@@ -4225,6 +4283,17 @@ fn barrier_any(
     }
 }
 
+/// Fixed-point trace of every registered coroutine whose thread handle was
+/// reached from a real root.
+///
+/// A thread whose `RefCell` is mutably borrowed at collect time CANNOT be
+/// traced — its stack is silently invisible to the marker. Exactly two
+/// borrow-holders are legitimate: the currently-running thread (rooted
+/// directly via `CollectRoots.thread`) and resume-chain parents (rooted via
+/// the `suspended_parent_stacks` snapshots, one per nesting level). Any
+/// other borrow held across a collect point un-roots that coroutine for the
+/// whole cycle — the bug-A root-loss class from issue #140 — so debug builds
+/// assert the failure count stays within snapshot coverage.
 fn trace_reachable_threads(
     global: &GlobalState,
     _current_thread_id: u64,
@@ -4232,12 +4301,21 @@ fn trace_reachable_threads(
 ) {
     use lua_gc::Trace;
 
+    #[cfg(debug_assertions)]
+    let mut uncovered_borrowed: Vec<u64> = Vec::new();
+
     loop {
         let visited_before = marker.visited_count();
         for (id, entry) in global.threads.iter() {
             if thread_entry_marked_alive(marker, *id, entry) {
-                if let Ok(thread) = entry.state.try_borrow() {
-                    thread.trace(marker);
+                match entry.state.try_borrow() {
+                    Ok(thread) => thread.trace(marker),
+                    Err(_) => {
+                        #[cfg(debug_assertions)]
+                        if *id != _current_thread_id && !uncovered_borrowed.contains(id) {
+                            uncovered_borrowed.push(*id);
+                        }
+                    }
                 }
             }
         }
@@ -4246,6 +4324,20 @@ fn trace_reachable_threads(
             break;
         }
     }
+
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        uncovered_borrowed.len() <= global.suspended_parent_stacks.len(),
+        "GC root loss: {} marked-alive coroutine(s) (ids {:?}) were mutably \
+         borrowed at collect time with only {} parent snapshot(s) covering \
+         them — their stacks were NOT traced this cycle, so anything only \
+         reachable from them will be swept (issue #140 bug-A class). A borrow \
+         of a coroutine's state must not be held across an allocation \
+         checkpoint without pushing a parent GC snapshot.",
+        uncovered_borrowed.len(),
+        uncovered_borrowed,
+        global.suspended_parent_stacks.len()
+    );
 }
 
 fn thread_entry_marked_alive(
@@ -5543,6 +5635,7 @@ fn close_state(state: &mut LuaState) {
 /// coroutine arrives in slice 02b; `co_create` uses `initial_body` to
 /// stage the body without needing a real `xmove`.
 pub fn new_thread(state: &mut LuaState, initial_body: Option<LuaValue>) -> Result<(), LuaError> {
+    state.gc_pre_collect_clear();
     state.gc().check_step();
 
     // PORT NOTE: In C, the new thread is GC-allocated as part of the allgc list.
