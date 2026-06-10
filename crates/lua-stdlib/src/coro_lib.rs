@@ -346,6 +346,99 @@ fn pop_parent_gc_snapshot(state: &mut LuaState) {
     }
 }
 
+/// RAII borrow of another thread's `LuaState` that keeps the thread's stack
+/// rooted while the borrow is held.
+///
+/// A coroutine whose `RefCell` is mutably borrowed at collect time cannot be
+/// traced by `trace_reachable_threads` — its stack is invisible to the
+/// marker for that whole cycle, so any object only it references is swept
+/// while still live (issue #140 bug A: `debug.traceback(co)` held the borrow
+/// across `push_vfstring`'s GC checkpoint). This guard rides the same
+/// rooting structure as `coroutine.resume`: it pushes a snapshot of the
+/// target's live stack and open upvalues onto `suspended_parent_stacks` for
+/// the lifetime of the borrow and pops it on drop. Snapshots are strictly
+/// LIFO — callers must not resume a coroutine while a guard is alive.
+///
+/// If the guarded section pushes new values onto the *target's* stack and
+/// then allocates before consuming them (`lua_getinfo`'s 'L'/'f' pushes),
+/// call [`RootedThreadBorrow::resnapshot`] after the pushes so the snapshot
+/// covers them too.
+pub(crate) struct RootedThreadBorrow<'a> {
+    inner: std::cell::RefMut<'a, LuaState>,
+}
+
+impl RootedThreadBorrow<'_> {
+    /// Re-copy the target's current live stack and open upvalues into the
+    /// snapshot pushed at borrow time, covering values pushed onto the
+    /// target since then.
+    pub(crate) fn resnapshot(&mut self) {
+        let top = (self.inner.top_idx().0 as usize).min(self.inner.stack.len());
+        let stack_copy: Vec<LuaValue> = self.inner.stack[..top].iter().map(|sv| sv.val).collect();
+        let upval_copy: Vec<GcRef<lua_types::UpVal>> = self.inner.openupval.to_vec();
+        let mut g = self.inner.global_mut();
+        if let Some(slot) = g.suspended_parent_stacks.last_mut() {
+            slot.clear();
+            slot.extend(stack_copy);
+        }
+        if let Some(slot) = g.suspended_parent_open_upvals.last_mut() {
+            slot.clear();
+            slot.extend(upval_copy);
+        }
+    }
+}
+
+impl std::ops::Deref for RootedThreadBorrow<'_> {
+    type Target = LuaState;
+    fn deref(&self) -> &LuaState {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for RootedThreadBorrow<'_> {
+    fn deref_mut(&mut self) -> &mut LuaState {
+        &mut self.inner
+    }
+}
+
+impl Drop for RootedThreadBorrow<'_> {
+    fn drop(&mut self) {
+        let mut g = self.inner.global_mut();
+        if let Some(mut v) = g.suspended_parent_open_upvals.pop() {
+            v.clear();
+            g.snapshot_upval_pool.push(v);
+        }
+        if let Some(mut v) = g.suspended_parent_stacks.pop() {
+            v.clear();
+            g.snapshot_stack_pool.push(v);
+        }
+    }
+}
+
+/// Borrow `cell`'s thread state mutably with its stack rooted for the
+/// duration (see [`RootedThreadBorrow`]). Panics if the cell is already
+/// borrowed, matching the bare `borrow_mut()` call sites this replaces.
+pub(crate) fn borrow_thread_rooted<'a>(
+    state: &mut LuaState,
+    cell: &'a std::cell::RefCell<LuaState>,
+) -> RootedThreadBorrow<'a> {
+    let inner = cell.borrow_mut();
+    let top = (inner.top_idx().0 as usize).min(inner.stack.len());
+    let (mut stack_snapshot, mut upval_snapshot) = {
+        let mut g = state.global_mut();
+        (
+            g.snapshot_stack_pool.pop().unwrap_or_default(),
+            g.snapshot_upval_pool.pop().unwrap_or_default(),
+        )
+    };
+    stack_snapshot.extend(inner.stack[..top].iter().map(|sv| sv.val));
+    upval_snapshot.extend(inner.openupval.iter().cloned());
+    let mut g = state.global_mut();
+    g.suspended_parent_stacks.push(stack_snapshot);
+    g.suspended_parent_open_upvals.push(upval_snapshot);
+    drop(g);
+    RootedThreadBorrow { inner }
+}
+
 /// Helper: push a string literal or fall back to Nil on intern failure.
 fn push_lit_or_nil(state: &mut LuaState, bytes: &[u8]) {
     match state.intern_str(bytes) {
