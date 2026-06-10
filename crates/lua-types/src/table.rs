@@ -1790,6 +1790,13 @@ impl LuaTable {
     /// Value-aware weak cleanup. Generational minor collection uses this to
     /// treat unmarked old values as live, because young sweep will not free
     /// them even when the minor marker skipped their subgraph.
+    ///
+    /// Hash nodes whose value is already nil (manually erased entries) get
+    /// their collectable key TOMBSTONED, mirroring C's unconditional
+    /// `clearkey` of empty entries in `clearbykeys`/`clearbyvalues`
+    /// (`lgc.c`). Skipping them leaves a never-again-traced key ref in the
+    /// node; once the key object is swept, a later probe content-compares
+    /// freed memory (found by the rooting battery on gc.lua, 2026-06-10).
     pub fn prune_weak_dead_with_value(
         &self,
         is_key_reachable: &dyn Fn(&LuaValue) -> bool,
@@ -1822,6 +1829,9 @@ impl LuaTable {
         while i < inner.node.len() {
             let v = inner.node[i].value.clone();
             if matches!(v, LuaValue::Nil) {
+                if !inner.node[i].dead && gc_identity_bits(&inner.node[i].key).is_some() {
+                    inner.node[i].dead = true;
+                }
                 i += 1;
                 continue;
             }

@@ -37,4 +37,4 @@ end
 
 assert(coroutine.resume(co))
 assert(coroutine.status(co) == "dead")
-print("OK")
+print("PASS canary_q_coro_traceback_root")
