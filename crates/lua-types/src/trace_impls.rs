@@ -129,14 +129,18 @@ impl Trace for LuaTable {
         let mode = self.weak_mode();
         let trace_keys = (mode & WEAK_KEYS) == 0;
         let trace_values = (mode & WEAK_VALUES) == 0 && trace_keys;
-        self.for_each_entry(|k, v| {
-            if trace_keys {
-                k.trace(m);
-            }
-            if trace_values {
-                v.trace(m);
-            }
-        });
+        if trace_keys && trace_values {
+            self.trace_entries_with_clearkey(|v| v.trace(m));
+        } else {
+            self.for_each_entry(|k, v| {
+                if trace_keys {
+                    k.trace(m);
+                }
+                if trace_values {
+                    v.trace(m);
+                }
+            });
+        }
         if let Some(mt) = self.metatable() {
             mt.trace(m);
         }

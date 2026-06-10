@@ -1361,6 +1361,13 @@ pub struct Heap {
     next_allocation_token: Cell<usize>,
     /// Threshold above which `step` triggers a collection.
     threshold: Cell<usize>,
+    /// HARDMEMTESTS-style stress mode (env `LUA_RS_GC_STRESS=1`, read once
+    /// at construction): `would_collect` fires at every checkpoint, so a
+    /// collection happens at essentially every allocation boundary. Turns
+    /// GC-cadence-dependent anchoring bugs (objects reachable from Rust
+    /// locals but not from roots) into deterministic failures — pair with
+    /// an ASAN build. Debug instrument only; never set in benchmarks.
+    stress: bool,
     /// Multiplier on bytes_used to set next threshold after collection.
     pause_multiplier: Cell<usize>,
     /// State machine for the incremental collector.
@@ -1423,6 +1430,7 @@ impl Heap {
             allocation_tokens: RefCell::new(IdentityHashMap::default()),
             next_allocation_token: Cell::new(1),
             threshold: Cell::new(64 * 1024), // initial threshold: 64 KB
+            stress: std::env::var_os("LUA_RS_GC_STRESS").is_some_and(|v| v == "1"),
             pause_multiplier: Cell::new(200), // 200% = collect when bytes 2x threshold
             state: Cell::new(GcState::Pause),
             paused: Cell::new(true), // start paused; caller enables when world is consistent
@@ -1511,6 +1519,9 @@ impl Heap {
     /// `!paused && bytes_used() >= threshold_bytes()`. Callers that build
     /// snapshot state before invoking the heap should gate on this.
     pub fn would_collect(&self) -> bool {
+        if self.stress {
+            return !self.paused.get();
+        }
         !self.paused.get() && self.bytes.get() >= self.threshold.get()
     }
 
@@ -1947,7 +1958,7 @@ impl Heap {
         if self.paused.get() {
             return;
         }
-        if self.bytes.get() < self.threshold.get() {
+        if !self.stress && self.bytes.get() < self.threshold.get() {
             return;
         }
         self.full_collect_with_post_mark(roots, post_mark);

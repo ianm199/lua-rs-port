@@ -124,6 +124,15 @@ pub struct TableNode {
     pub key: LuaValue,
     /// Collision-chain offset (positive or negative; zero means end of chain).
     pub next: i32,
+    /// Dead-key tombstone, mirroring C's `LUA_TDEADKEY` (`lgc.c clearkey`).
+    /// Set by the GC traversal when this node's value is nil: the key
+    /// object becomes collectible, so the `key` field may DANGLE from this
+    /// point on. Probes must never dereference a dead key — normal
+    /// get/set equality treats dead nodes as no-match (C: the tt check
+    /// fails), and only the `next`-position lookup matches them, by raw
+    /// pointer bits (C: `equalkey` with `deadok`). `set_key` resurrects
+    /// the node. Lives in the struct's padding; size stays 40 bytes.
+    pub dead: bool,
 }
 
 impl TableNode {
@@ -132,6 +141,7 @@ impl TableNode {
             value: LuaValue::Nil,
             key: LuaValue::Nil,
             next: 0,
+            dead: false,
         }
     }
 
@@ -149,6 +159,9 @@ impl TableNode {
         }
     }
     fn key_is_short_str(&self) -> bool {
+        if self.dead {
+            return false;
+        }
         if let LuaValue::Str(s) = &self.key {
             s.is_short()
         } else {
@@ -167,6 +180,7 @@ impl TableNode {
     }
     fn set_key(&mut self, k: &LuaValue) {
         self.key = k.clone();
+        self.dead = false;
     }
 }
 
@@ -425,6 +439,9 @@ impl TableInner {
     // ── Key equality ───────────────────────────────────────────────────────
 
     fn equal_key(k1: &LuaValue, n2: &TableNode) -> bool {
+        if n2.dead {
+            return false;
+        }
         let types_match = std::mem::discriminant(k1) == std::mem::discriminant(&n2.key);
         if !types_match {
             return false;
@@ -484,6 +501,38 @@ impl TableInner {
         }
     }
 
+    /// `get_generic_slot` for the `next`-position lookup only: dead-key
+    /// tombstones match by raw pointer bits without dereferencing (C's
+    /// `equalkey` with `deadok` in `luaH_next`), so iteration can continue
+    /// past a key whose object died mid-loop. Never used by get/set —
+    /// matching a dead node there would store a live value behind a
+    /// dangling key.
+    fn get_generic_slot_deadok(&self, key: &LuaValue) -> TableSlotRef {
+        if self.is_dummy() {
+            return TableSlotRef::Absent;
+        }
+        let mut n = self.main_position(key);
+        loop {
+            let node = &self.node[n];
+            let matched = if node.dead {
+                match (gc_identity_bits(key), gc_identity_bits(&node.key)) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                }
+            } else {
+                Self::equal_key(key, node)
+            };
+            if matched {
+                return TableSlotRef::Hash(n);
+            }
+            let nx = node.next;
+            if nx == 0 {
+                return TableSlotRef::Absent;
+            }
+            n = (n as isize + nx as isize) as usize;
+        }
+    }
+
     // ── arrayindex / findindex ─────────────────────────────────────────────
 
     fn array_index(k: i64) -> u32 {
@@ -510,7 +559,7 @@ impl TableInner {
         if i.wrapping_sub(1) < asize {
             return Ok(i);
         }
-        let slot = self.get_generic_slot(key);
+        let slot = self.get_generic_slot_deadok(key);
         match slot {
             TableSlotRef::Absent => Err(LuaError::runtime(format_args!("invalid key to 'next'"))),
             TableSlotRef::Hash(node_idx) => Ok((node_idx as u32 + 1) + asize),
@@ -1674,6 +1723,33 @@ impl LuaTable {
     /// Walk every live (key, value) pair via the given closure.
     /// Used by the GC trace impl to avoid the overhead of repeatedly
     /// re-entering `find_index` from `next_pair`.
+    /// GC traversal of a STRONG (non-weak) table, mirroring C's
+    /// `traversehashpart` (`lgc.c`): live entries get key and value
+    /// traced; an entry whose value is nil gets its collectable key
+    /// TOMBSTONED (`clearkey`) so the collector may free the key object.
+    /// The tombstone keeps the raw pointer bits for `next`-position
+    /// matching but is never dereferenced again. Takes the inner borrow
+    /// mutably; safe because the marker queues children instead of
+    /// recursing, so a table's own trace never re-enters it.
+    pub fn trace_entries_with_clearkey(&self, mut f: impl FnMut(&LuaValue)) {
+        let mut inner = self.inner.borrow_mut();
+        for v in inner.array.iter() {
+            if !matches!(v, LuaValue::Nil) {
+                f(v);
+            }
+        }
+        for node in inner.node.iter_mut() {
+            if matches!(node.value, LuaValue::Nil) {
+                if !node.dead && gc_identity_bits(&node.key).is_some() {
+                    node.dead = true;
+                }
+            } else {
+                f(&node.key);
+                f(&node.value);
+            }
+        }
+    }
+
     pub fn for_each_entry(&self, mut f: impl FnMut(&LuaValue, &LuaValue)) {
         let inner = self.inner.borrow();
         for (i, v) in inner.array.iter().enumerate() {
@@ -1821,6 +1897,25 @@ fn value_is_dead_collectable(v: &LuaValue, is_reachable: &dyn Fn(&LuaValue) -> b
     collectable_identity(v).is_some() && !is_reachable(v)
 }
 
+/// Raw pointer bits of any collectable value, WITHOUT dereferencing the
+/// target — safe to call on a dead-key tombstone whose object was freed.
+fn gc_identity_bits(v: &LuaValue) -> Option<usize> {
+    match v {
+        LuaValue::Str(x) => Some(x.identity()),
+        LuaValue::Table(x) => Some(x.identity()),
+        LuaValue::UserData(x) => Some(x.identity()),
+        LuaValue::Thread(x) => Some(x.identity()),
+        LuaValue::Function(LuaClosure::Lua(x)) => Some(x.identity()),
+        LuaValue::Function(LuaClosure::C(x)) => Some(x.identity()),
+        LuaValue::Function(LuaClosure::LightC(_))
+        | LuaValue::Nil
+        | LuaValue::Bool(_)
+        | LuaValue::Int(_)
+        | LuaValue::Float(_)
+        | LuaValue::LightUserData(_) => None,
+    }
+}
+
 fn collectable_identity(v: &LuaValue) -> Option<usize> {
     match v {
         LuaValue::Table(t) => Some(t.identity()),
@@ -1846,6 +1941,9 @@ fn collectable_identity(v: &LuaValue) -> Option<usize> {
 fn extract_weak_mode(mt: &LuaTable) -> u8 {
     let inner = mt.inner.borrow();
     for node in inner.node.iter() {
+        if node.dead {
+            continue;
+        }
         if let LuaValue::Str(ks) = &node.key {
             if ks.as_bytes() == b"__mode" {
                 if let LuaValue::Str(vs) = &node.value {

@@ -1,0 +1,2 @@
+PASS deadkey tombstone
+METRIC probes=50 pairs=1
