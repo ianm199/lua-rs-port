@@ -39,8 +39,9 @@ stacks; no `unsafe` additions.
 | # | Bug | State | Repro | ASAN signature |
 |---|---|---|---|---|
 | 1 | Dead-key tombstones: nil'd table entries left dereferenceable freed keys | FIXED `9c5125c` | `canary_p_deadkey_tombstone` (11 lines, deterministic) | READ 1 in `TableNode::key_is_short_str`, freed by sweep, alloc'd by lexer `intern_str` |
-| 2 | Coroutine traceback reads swept `LuaLClosure` (#140 bug A) | OPEN | `target/release/lua-rs harness/impl/official/db.wrap.lua` → exit 139 EVERY run; ASAN debug build trips without stress | READ 8 in `debug::funcname_from_call` → `ci_lua_proto` (`get_at(ci.func)` → `cl.proto`); freed by `sweep_young_range` (minor); alloc'd by `OP_CLOSURE`/`push_closure`; call path `debug.traceback(co)` ← db.lua ~734-806 |
-| 3 | Root tracer derefs stale debug-local slots (#140 bug B) | OPEN | `LUA_RS_GC_STRESS=1` + ASAN on full db.lua | READ in `Marker::mark_box` ← `LuaState::trace` — the `trace_debug_locals` pass feeds a stale slot's GcRef into the marker |
+| 2 | Coroutine traceback reads swept `LuaLClosure` (#140 bug A) | FIXED `0677646` | was: release db.wrap exit 139 every run; now `canary_q_coro_traceback_root` under stress+quarantine | Mechanism: debug-API thread borrows (`traceback`/`getinfo`/`getlocal`/`setlocal`) held the target's RefCell across allocations; `trace_reachable_threads` silently skipped the borrowed thread (the §1 try_borrow suspect, confirmed by the P0.b assert). Fix: `RootedThreadBorrow` snapshot guard |
+| 3 | Root tracer derefs stale slots fed from the FRAME-RANGE walk (#140 bug B) | OPEN | stress+quarantine on db.lua / db.wrap / coroutine.lua (battery config 2, deterministic panic) | quarantine panic in `Gc::as_box` ← `LuaValue::trace` ← `LuaState::trace` `trace_impls.rs:87` — the per-frame range walk itself traces stale slots, NOT just the debug-local heuristic #140 guessed. Strengthens option (d) |
+| 4 | Weak prune skipped erased entries — dead key never tombstoned (`equal_key` derefs swept long-string key) | FIXED `1a04425` | `canary_r_weak_erased_deadkey`; was: gc.lua under quarantine | Found by the battery's first run. C parity: `clearbykeys`/`clearbyvalues` unconditionally `clearkey` empty entries; our `prune_weak_dead_with_value` skipped value-nil nodes |
 
 Named suspects from the code audit (2026-06-10, this spec's revision):
 
@@ -350,13 +351,18 @@ numbers.
 
 ## 6. Acceptance checklist
 
-- [ ] P0 quarantine/poison mode exists; stress+quarantine reproduces the
-      open bugs as deterministic Rust panics
-- [ ] P0 try_borrow coverage assert lands (debug builds)
-- [ ] P0 battery exists, wired, documented; release-profile suite in PR gate
+- [x] P0 quarantine/poison mode exists; stress+quarantine reproduces the
+      open bugs as deterministic Rust panics (`4d9a4f0`)
+- [x] P0 try_borrow coverage assert lands (debug builds) (`d3ca272`)
+- [x] P0 battery exists (`harness/asan-stress.sh`), wired (`make
+      rooting-battery`, CI `--quarantine-only` gate), documented
+      (`harness/CLAUDE.md`, `crates/lua-gc/CLAUDE.md`); release-profile
+      suite in PR gate (`make test` → `conformance-release`, 44/44 green)
 - [ ] `ANALYSES/GC_ROOTS.md` complete with per-row canaries
 - [ ] P2 strategy decision recorded with spike numbers
-- [ ] Bug A fixed: canary + ASAN clean + release db.wrap green ×10
+- [x] Bug A fixed: canary_q (fails on parent, passes at fix) + release
+      db.wrap green ×10 (`0677646`); ASAN confirmation rides the next
+      battery `--asan` run
 - [ ] Bug B fixed: canary + stress+ASAN clean on db.lua
 - [ ] Full suite + canaries clean under stress+ASAN, both modes, both profiles
 - [ ] Perf gates green (or tracked regressed-minor) on exactness changes
