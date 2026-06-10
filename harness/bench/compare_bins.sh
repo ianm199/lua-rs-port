@@ -143,8 +143,13 @@ fi
 # firing mid-measurement neither contends for CPU nor auto-commits
 # (PERF_PUSH_SPEC.md P7.4).
 PERF_MARKER="$ROOT/harness/.perf-experiment"
-touch "$PERF_MARKER"
-trap 'rm -f "$PERF_MARKER"' EXIT
+if [ -f "$PERF_MARKER" ]; then
+    PERF_MARKER_OWNED=0
+else
+    PERF_MARKER_OWNED=1
+    touch "$PERF_MARKER"
+fi
+trap '[ "$PERF_MARKER_OWNED" = "1" ] && rm -f "$PERF_MARKER"' EXIT
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")

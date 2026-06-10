@@ -37,6 +37,18 @@ done
 
 command -v docker >/dev/null || { echo "[err] docker required" >&2; exit 2; }
 
+# Hold the perf-experiment marker (ownership-aware) so a Stop event during a
+# long container run cannot auto-commit a dirty experiment tree — the exact
+# incident that swept the gate-blocked intern fix on 2026-06-09 (73ef169).
+PERF_MARKER="$ROOT/harness/.perf-experiment"
+if [ -f "$PERF_MARKER" ]; then
+    PERF_MARKER_OWNED=0
+else
+    PERF_MARKER_OWNED=1
+    touch "$PERF_MARKER"
+fi
+trap '[ "$PERF_MARKER_OWNED" = "1" ] && rm -f "$PERF_MARKER"' EXIT
+
 IMG=lua-rs-instr
 VOL=lua-rs-instr-cache
 OUT_DIR="$ROOT/harness/bench/results"

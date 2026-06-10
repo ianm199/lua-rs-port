@@ -49,8 +49,13 @@ BENCH_VARIANT="${BENCH_VARIANT:-stock}"
 # Hold the perf-experiment marker so a Stop-hook firing mid-run neither
 # contends for CPU nor auto-commits (PERF_PUSH_SPEC P7.4).
 PERF_MARKER="$ROOT/harness/.perf-experiment"
-touch "$PERF_MARKER"
-trap 'rm -f "$PERF_MARKER"' EXIT
+if [ -f "$PERF_MARKER" ]; then
+    PERF_MARKER_OWNED=0
+else
+    PERF_MARKER_OWNED=1
+    touch "$PERF_MARKER"
+fi
+trap '[ "$PERF_MARKER_OWNED" = "1" ] && rm -f "$PERF_MARKER"' EXIT
 
 while [ $# -gt 0 ]; do
     case "$1" in
