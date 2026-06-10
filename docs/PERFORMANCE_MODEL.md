@@ -49,7 +49,9 @@ Reading rules for this table:
   not to be added work by Ir recounts (fibonacci flat to 4e-7). Judge
   packets by their gated interleaved A/Bs and recounts; judge releases by
   the PGO column, where layout is profile-driven and the drift collapses.
-- RSS is unsolved: binarytrees 4.2x / closure_ops 5.2x memory (spec W2.3).
+- RSS is DECOMPOSED (W2.3, 2026-06-10): allocation counts are at parity
+  with C; our objects are ~3x bigger. See "RSS decomposition" under
+  Current Findings.
 
 ### Prior snapshot — re-baselined 2026-06-09 (P1.6)
 
@@ -303,6 +305,30 @@ Do not present a hypothesis as a measured fact.
 | PGO shipped (P4.1) | `967b801` | release CI publishes conformance-gated, variant-labeled PGO ratios; median -11%, and it erases layout-displacement noise |
 | bytecode-parity gate (P2.3) | `f20bdfb` | 31 rows EXACT opcode parity vs luac; 19 baselined divergences in 4 classes (see candidates) |
 
+### RSS decomposition (W2.3, 2026-06-10): object size, not churn
+
+Method: dhat-heap build (`--features dhat-heap`) vs a counting `l_alloc`
+patched into a /tmp copy of the reference (never `reference/` itself).
+Result table (total = lifetime allocation traffic):
+
+| workload | allocs C / rs | bytes-per-block C / rs | peak C / rs |
+|---|---|---|---|
+| binarytrees | 6.31M / 6.32M (parity) | 58 / 185 (3.2x) | 15.3M / 43.8M (2.9x) |
+| closure_ops | 200k / 301k (1.5x) | 50 / 166 (3.3x) | 10.1M / 31.4M (3.1x) |
+| gc_pressure | 600k / 618k (parity) | 51 / 222 (4.4x) | 27K / 97K (3.6x) |
+
+The "we allocate too often" hypothesis is dead: counts match C almost
+exactly (binarytrees structurally two blocks per table on both sides).
+The whole RSS gap is REPRESENTATION SIZE: a table object allocation
+averages 176 B vs C's ~56 B `Table`, and the hash-part vector 99 B vs
+C's right-sized node array. dhat per-callsite attribution
+(`new_table_with_sizes` 555 MB, `set_node_vector` 314 MB of 1.17 GB
+binarytrees traffic) plus two pure-churn offenders now fixed: the GC
+mark phase allocated a fresh visited-set + gray-queue per cycle (396
+buffers, 249 MB — pooled on the Heap, churn -23%), and
+`sweep_young_range` temporaries (~15 MB, still open, same pooling
+pattern). Remaining lever: the table representation diet (candidate 9).
+
 ### Table/global setters (HISTORICAL — pre-stringtable/window; kept for the method)
 
 Artifacts:
@@ -468,13 +494,22 @@ exceeds 8GB (it OOMs locally), or finer probes. Do NOT hand-guess here —
 the rejected direct-operand-reads experiment shows micro-edits in the
 dispatch match move unrelated arms.
 
-### 8. RSS / allocation parity (spec W2.3, unstarted)
+### 8. RSS / allocation parity (spec W2.3) — DECOMPOSED 2026-06-10
 
-binarytrees 4.2x and closure_ops 5.2x memory vs C are the largest
-unexplained numbers on the board. dhat-heap build + a counting-allocator
-patched C copy in /tmp decompose it into alloc count vs object size vs
-retention. LuaTable is 104 B vs C's 56 (measured); start there if the
-decomposition blames object size.
+Done: see "RSS decomposition" finding. The answer is object size, and the
+follow-on packet is candidate 9. The mark-buffer pool landed; the
+`sweep_young` scratch buffers (next_revisit Vec + IdentityHashSet,
+~15 MB/run churn) are a small remaining pooling packet.
+
+### 9. Table representation diet (from the W2.3 decomposition)
+
+A table allocation averages 176 B vs C's 56 B `Table` struct, and the
+hash-part vector 99 B vs C's right-sized power-of-2 node array. Both
+feed RSS ratios of 2.9-3.6x at alloc-count parity. Inventory the bytes:
+GcBox header, RefCell/Cell flags, separate array/hash Vec headers
+(ptr+cap+len x2), node layout vs C's 24 B `Node`. High-risk,
+high-reward; any layout change must keep `value-layout.sh` and the GC
+canaries green and re-run the full A/B matrix.
 
 ### 0. Delete the dead `StackValue.tbc_delta` field — APPLIED 2026-06-09
 

@@ -1077,14 +1077,6 @@ impl Marker {
         }
     }
 
-    fn new_reserving(capacity: usize) -> Self {
-        Self::new_with_capacity(MarkerMode::Full, capacity)
-    }
-
-    fn new_minor_reserving(capacity: usize) -> Self {
-        Self::new_with_capacity(MarkerMode::Minor, capacity)
-    }
-
     fn should_trace_age(&self, age: GcAge) -> bool {
         match self.mode {
             MarkerMode::Full => true,
@@ -1353,6 +1345,12 @@ pub struct Heap {
     /// In-progress marker state for incremental cycles. `Some` between
     /// `Propagate` start and `Sweep` start; `None` otherwise.
     marker: RefCell<Option<Marker>>,
+    /// Recycled mark-phase buffers (gray queue + visited set). A mark phase
+    /// sizes its visited set to the live-object count (hundreds of KB);
+    /// without pooling, binarytrees churned 396 such buffers for 249 MB of
+    /// allocator traffic (dhat, 2026-06-10). One buffer pair is kept and
+    /// reused across cycles; capacity follows the heap's high-water mark.
+    marker_pool: RefCell<Option<(Vec<NonNull<GcBox<dyn Trace>>>, IdentityHashSet)>>,
     /// Sweep cursor. Points at the `Cell` whose `Option<NonNull>` is the
     /// "current" link being inspected during the sweep phase. Encoded as a
     /// raw pointer because the cell lives inside a `GcHeader` (Cell, not Cell<Cell>).
@@ -1395,6 +1393,7 @@ impl Heap {
             last_sweep_stats: Cell::new(SweepStats::default()),
             grayagain: Cell::new(None),
             marker: RefCell::new(None),
+            marker_pool: RefCell::new(None),
             sweep_prev_next: Cell::new(None),
         }
     }
@@ -1933,12 +1932,13 @@ impl Heap {
         if self.paused.get() {
             return;
         }
-        let mut marker = Marker::new_reserving(self.objects.get());
+        let mut marker = self.marker_from_pool(MarkerMode::Full);
         roots.trace(&mut marker);
         marker.drain_gray_queue();
         post_mark(&mut marker);
         marker.drain_gray_queue();
         self.last_mark_stats.set(marker.stats());
+        self.recycle_marker(marker);
     }
 
     /// Metadata transition used when entering generational mode after a full
@@ -1981,7 +1981,7 @@ impl Heap {
         }
 
         self.state.set(GcState::Propagate);
-        let mut marker = Marker::new_minor_reserving(self.objects.get());
+        let mut marker = self.marker_from_pool(MarkerMode::Minor);
         self.last_sweep_stats.set(SweepStats::default());
         self.mark_minor_revisit_objects(&mut marker);
         roots.trace(&mut marker);
@@ -1992,10 +1992,11 @@ impl Heap {
         post_mark(&mut marker);
         marker.drain_gray_queue();
         self.last_mark_stats.set(marker.stats());
+        self.recycle_marker(marker);
 
         self.state.set(GcState::SweepAllGc);
         self.sweep_young();
-        *self.marker.borrow_mut() = None;
+        self.recycle_marker_cell();
         self.sweep_prev_next.set(None);
         self.state.set(GcState::Pause);
         self.collections.set(self.collections.get() + 1);
@@ -2219,13 +2220,44 @@ impl Heap {
         }
     }
 
+    /// Take the pooled mark buffers (or build fresh ones sized to the live
+    /// set). Pair with [`Heap::recycle_marker`] when the mark phase ends.
+    fn marker_from_pool(&self, mode: MarkerMode) -> Marker {
+        match self.marker_pool.borrow_mut().take() {
+            Some((gray_queue, visited)) => Marker {
+                gray_queue,
+                visited,
+                stats: MarkerStats::default(),
+                mode,
+            },
+            None => Marker::new_with_capacity(mode, self.objects.get()),
+        }
+    }
+
+    fn recycle_marker(&self, marker: Marker) {
+        let Marker {
+            mut gray_queue,
+            mut visited,
+            ..
+        } = marker;
+        gray_queue.clear();
+        visited.clear();
+        *self.marker_pool.borrow_mut() = Some((gray_queue, visited));
+    }
+
+    fn recycle_marker_cell(&self) {
+        if let Some(marker) = self.marker.borrow_mut().take() {
+            self.recycle_marker(marker);
+        }
+    }
+
     fn start_cycle(&self, roots: &dyn Trace) {
         self.flip_current_white();
         let dead_white = self.other_white();
         self.for_each_header(|header| {
             header.color.set(dead_white);
         });
-        let mut marker = Marker::new_reserving(self.objects.get());
+        let mut marker = self.marker_from_pool(MarkerMode::Full);
         roots.trace(&mut marker);
         *self.marker.borrow_mut() = Some(marker);
         self.sweep_prev_next.set(None);
@@ -2529,7 +2561,7 @@ impl Heap {
             .map(|marker| marker.stats())
             .unwrap_or_default();
         self.last_mark_stats.set(stats);
-        *self.marker.borrow_mut() = None;
+        self.recycle_marker_cell();
         self.sweep_prev_next.set(None);
         let next = self.bytes.get().saturating_mul(self.pause_multiplier.get()) / 100;
         self.threshold.set(next.max(GC_MIN_THRESHOLD));
@@ -2549,7 +2581,7 @@ impl Heap {
 
     fn abort_cycle(&self) {
         if !self.state.get().is_pause() {
-            *self.marker.borrow_mut() = None;
+            self.recycle_marker_cell();
             self.sweep_prev_next.set(None);
             let current_white = self.current_white();
             self.for_each_header(|header| {
@@ -2586,7 +2618,7 @@ impl Heap {
     /// After this returns, every outstanding `Gc<T>` is dangling — callers
     /// must ensure no `Gc<T>` outlives the `Heap`.
     pub fn drop_all(&self) {
-        *self.marker.borrow_mut() = None;
+        self.recycle_marker_cell();
         self.sweep_prev_next.set(None);
         self.clear_generation_cursors();
         self.state.set(GcState::Pause);
