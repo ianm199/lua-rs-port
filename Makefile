@@ -84,10 +84,13 @@ perf:
 	$(CARGO) build --release --bin lua-rs
 	bash harness/bench/compare.sh
 
+# The conformance gate must run the PGO binary it just built — the script's
+# default is target/debug/lua-rs, which silently gated a stale debug binary
+# locally and is absent entirely on CI runners (0.0.33 dashboard job failure).
 perf-pgo: setup
 	@[ -x reference/lua-5.4.7/src/lua ] || $(MAKE) -C reference/lua-5.4.7 guess
 	bash harness/bench/build-pgo.sh
-	./harness/run_official_all.sh
+	LUA_RS_BIN=$(CURDIR)/target/release/lua-rs ./harness/run_official_all.sh
 	BENCH_VARIANT=pgo bash harness/bench/compare.sh
 	$(CARGO) build --release --bin lua-rs
 
