@@ -20,6 +20,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   slice before every collect, `savestate` top fixups at Protect-origin
   checkpoints.
 
+### Changed
+
+- **vm/table** (W2.3 R2): table representation diet — the metatable slot is a
+  single `Cell<Option<GcRef>>` (no borrow flag, no cached bool) and
+  `TableInner.lastfree` packs to a `u32` sentinel, shrinking the table box
+  144 → 128 bytes. binarytrees 0.928 vs pre-change; tracked regressed-minor:
+  `table_field_index` 1.017 (RSS 0.856).
+
 ### Added
 
 - **gc/harness** (#140): `LUA_RS_GC_QUARANTINE=1` — sweep parks dead objects
