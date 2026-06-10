@@ -1,0 +1,24 @@
+# Known codegen divergences vs luac -l -l, baselined 2026-06-10.
+# Classes: float-immediate compares (LEI/LTI vs LOADF+LE), unfolded
+# negative constants (UNM), extra constant materialization, RETURN
+# specialization differences. Work the counts DOWN; the gate fails
+# on any increase. workload:count
+binarytrees:8
+call_return_shapes:11
+closure_ops:2
+coroutine_pingpong:6
+fibonacci:3
+global_settabup_same:3
+json_roundtrip:18
+mandelbrot:2
+mandelbrot_long:4
+metatable_index_chain:4
+method_calls:6
+pcall_error:4
+sort_seeded:4
+table_field_index:6
+table_hash_pressure:1
+table_setfield_same:2
+table_seti_same:1
+table_settable_string_key:2
+varargs_spread:2

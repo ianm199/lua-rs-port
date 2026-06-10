@@ -72,6 +72,10 @@ perf-pgo: setup
 	BENCH_VARIANT=pgo bash harness/bench/compare.sh
 	$(CARGO) build --release --bin lua-rs
 
+bytecode-parity:
+	$(CARGO) build --release --bin lua-rs -q
+	python3 harness/bench/bytecode-parity.py
+
 scaling:
 	$(CARGO) build --release --bin lua-rs
 	python3 harness/bench/scaling-check.py

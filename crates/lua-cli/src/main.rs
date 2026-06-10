@@ -841,6 +841,28 @@ fn dynlib_symbol(
 /// shutdown is platform-dependent and best deferred to OS-level cleanup.
 fn dynlib_unload(_handle: DynLibId) {}
 
+/// `LUA_RS_LIST_BYTECODE=1 lua-rs file.lua` prints one uppercase mnemonic per
+/// emitted instruction, per function (depth-first), then exits before
+/// execution. Consumed by `harness/bench/bytecode-parity.py`, which diffs the
+/// stream against `luac -l -l` to gate codegen parity with C-Lua
+/// (PERF_PUSH_SPEC W2.4 / P2.3).
+fn list_bytecode(proto: &lua_types::proto::LuaProto, path: &mut Vec<usize>) {
+    let label: Vec<String> = path.iter().map(|i| i.to_string()).collect();
+    println!("function {}", label.join("."));
+    for ins in &proto.code {
+        let raw = ins.0 & 0x7f;
+        match lua_vm::vm::OpCode::from_u32(raw) {
+            Some(op) => println!("{}", format!("{op:?}").to_uppercase()),
+            None => println!("UNKNOWN_{raw}"),
+        }
+    }
+    for (i, sub) in proto.p.iter().enumerate() {
+        path.push(i);
+        list_bytecode(sub, path);
+        path.pop();
+    }
+}
+
 fn parser_hook(
     state: &mut LuaState,
     source: &[u8],
@@ -854,6 +876,10 @@ fn parser_hook(
         name,
         firstchar,
     )?;
+    if std::env::var_os("LUA_RS_LIST_BYTECODE").is_some() {
+        list_bytecode(&proto, &mut vec![0]);
+        std::process::exit(0);
+    }
     let nupvals = proto.upvalues.len();
     let mut upvals = Vec::with_capacity(nupvals);
     for _ in 0..nupvals {
