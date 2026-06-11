@@ -403,4 +403,6 @@ numbers.
       documented stress exclusions)
 - [x] Perf gates green: interleaved A/B vs `9807995` zero regressed
       (3 improved, 4 inconclusive; no tracked line items)
-- [ ] R2 landed; fresh matrices; release shipped per RELEASING.md
+- [x] R2 landed (`902e0a6`); fresh matrices (stock 1.58, PGO 1.38,
+      dashboard rebuilt); v0.0.33 shipped per RELEASING.md (PRs #142/#143,
+      crates.io + npm + GitHub release live; #140 closed)
