@@ -15,8 +15,8 @@ Status checklist (tick only with evidence paths):
       byte-for-byte ref matrix vs /tmp/lua-refs/bin/lua5.1.5)
 - [ ] T2-B: coroutine resume/yield allocator-traffic diet landed
       (`coroutine_pingpong` improves, canaries + official coroutine tests green)
-- [ ] T2-A: pretailcall `clear_stack_range` verdict recorded (keep / remove /
-      narrow) with rooting-safety evidence
+- [x] T2-A: pretailcall `clear_stack_range` verdict recorded: KEEP +
+      document (see T2-A section; full analysis 2026-06-11)
 - [ ] T2-C: frame re-entry / `prep_call_info` diet landed (`call_return_shapes`
       improves)
 - [ ] T2-D: `finish_get` method-lookup diet landed (`method_calls` improves)
@@ -159,14 +159,34 @@ re-measures quiet before PR).
 ### T2-A — pretailcall `clear_stack_range` verdict (investigate, do NOT land without sign-off)
 
 do_.rs:796 clears `[live_top, new_ci_top)` on every tailcall; C leaves the
-reserved tail dirty. BUT: post-#140 exact rooting traces `[0..top)` and the
-VM sets `top = ci_top` on several slow paths, so dirty slots in that range
-could be traced — stale `GcRef`s there are exactly the UAF class #140 just
-fixed. The clear may be load-bearing. Deliverable is a verdict memo, not a
-diff: `git log -S clear_stack_range` provenance, whether traced range can see
-the dirty slice (read the current trace bound logic), and if removal is safe,
-what evidence proves it (GC canaries in quarantine mode + an ASAN battery run
-of calls/coroutine official tests). Fable signs off before any removal lands.
+reserved tail dirty.
+
+**VERDICT (2026-06-11): KEEP, and document.** Investigation findings:
+
+- Provenance: added in `11dfb50` (2026-05-24, generic test-greening commit, no
+  root-cause link); its sibling `prep_call_info` clear was removed the same
+  day in `97b3c4c`. Predates the abe2b52 exact-rooting rewrite, whose design
+  ("the return hot path clears nothing", EXACT_ROOTING_SPEC.md:263-273) makes
+  it redundant *in the common case*.
+- BUT a real residual window exists: the ci_top-raising slow paths
+  (OP_LT/OP_LE → order metamethod, vm.rs:2851/2880 → frame pushed at ci_top →
+  collect) run the per-collect dead-tail clear and the trace off the SAME
+  raised top within one collect, so an uncleared `[live_top, new_ci_top)` gap
+  WOULD be traced there — stale GcRefs in it are the #140 UAF class, and no
+  standing assertion guards the window.
+- Cost of the clear: `fsize - narg1` slots ≈ 16-32 B per tailcall via a scalar
+  nil loop (state.rs:2631-2633) — single-digit percent of the 6.9% OP_TAILCALL
+  region at most; the abe2b52-era A/B on call_return_shapes was inconclusive.
+- Decision: expected win is within noise; proof-of-safety requires a new
+  targeted canary (collect inside an order-TM called from a fresh tail-called
+  frame with polluted reserved tail) + quarantine/ASAN battery. Cost/benefit
+  says keep. Reopen only if a future profile shows the clear itself as a
+  measured pole, and then only with that battery.
+- Follow-up folded into T2-C (same files): fix the stale `clear_stack_range`
+  docstring (state.rs:2620-2622 still describes the pre-abe2b52 conservative
+  trace model) and add a doc-comment at the do_.rs:796 callsite recording this
+  verdict so the divergence from C's luaD_pretailcall is no longer
+  undocumented.
 
 ### T2-C — frame re-entry + `prep_call_info` diet (after T2-B, design review required)
 
