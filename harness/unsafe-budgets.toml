@@ -2,13 +2,29 @@
 #
 # Default ceiling outside this list: 0. Raising a ceiling requires editing
 # this file in a commit that explains why. See HARNESS_DESIGN.md §3.
+#
+# ⚠️ THIS FILE IS ON THE NEVER-MERGES ABLATION BRANCH `ablation/unchecked-stack`
+# (perf sprint 2 T4, docs/PERF_SPRINT_2_GOAL.md §T4). The `lua-vm` and
+# `lua-types` ceilings below were RAISED FROM 0 to host the measurement-only
+# `unsafe` blocks behind the `perf-ablation-unchecked-stack` /
+# `perf-ablation-unchecked-table` cargo features. Those blocks are ALL
+# `#[cfg(feature = ...)]`-gated, so the DEFAULT build contains zero `unsafe` in
+# both crates and the grep-based hook count below reflects the gated-source
+# total, not what ships. This raise must NEVER reach main; on main both ceilings
+# stay 0. The branch exists only to produce the safety-tax number for
+# docs/PERFORMANCE_MODEL.md.
 
 [crates]
-"lua-types"  = 0
+"lua-types"  = 20  # ablation/unchecked-stack ONLY: `perf-ablation-unchecked-table`
+                   #   unchecked array/node Vec access + RefCell::as_ptr deref in
+                   #   try_update_int / try_update_short_str / get_str_value and
+                   #   their public RefCell wrappers. On main this is 0.
 "lua-lex"    = 0
 "lua-parse"  = 0
 "lua-code"   = 0
-"lua-vm"     = 0
+"lua-vm"     = 30  # ablation/unchecked-stack ONLY: `perf-ablation-unchecked-stack`
+                   #   get_unchecked/get_unchecked_mut stack + call_info accessors.
+                   #   On main this is 0.
 "lua-stdlib" = 0
 "lua-rs-runtime" = 5 # Re-entrant embedding boundary + scope API.
                      # 1 block: dereferences the active LuaState pointer while
