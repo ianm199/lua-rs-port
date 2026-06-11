@@ -25,6 +25,9 @@ path = "src/main.rs"
 dhat-heap = ["dep:dhat"]
 fast-alloc = ["dep:mimalloc"]
 opcode-profile = ["lua-vm/opcode-profile"]
+# T4 safety-tax ablation pass-throughs (NEVER merge; measurement only).
+perf-ablation-unchecked-stack = ["lua-vm/perf-ablation-unchecked-stack"]
+perf-ablation-unchecked-table = ["lua-vm/perf-ablation-unchecked-table"]
 
 [dependencies]
 lua-gc.workspace = true

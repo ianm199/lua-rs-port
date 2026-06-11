@@ -2673,6 +2673,7 @@ impl LuaState {
 // and should be treated as Phase-B-grade approximations.
 
 impl LuaState {
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_at(&self, idx: impl Into<StackIdxConv>) -> LuaValue {
         let i: StackIdx = idx.into().0;
@@ -2681,10 +2682,30 @@ impl LuaState {
             None => LuaValue::Nil,
         }
     }
+    /// T4 ablation: unchecked read. Drops the `.get()` bounds branch and the
+    /// out-of-bounds `Nil` arm; reads the slot directly.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_at(&self, idx: impl Into<StackIdxConv>) -> LuaValue {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.stack.get_unchecked(i.0 as usize).val.clone() }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
         let i: StackIdx = idx.into().0;
         self.stack[i.0 as usize].val = v;
+    }
+    /// T4 ablation: unchecked write. Drops the `Index` panic-bounds check.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn set_at(&mut self, idx: impl Into<StackIdxConv>, v: LuaValue) {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe {
+            self.stack.get_unchecked_mut(i.0 as usize).val = v;
+        }
     }
 
     /// Clear stack slots in `[start, end)` without changing `top`.
@@ -2719,6 +2740,7 @@ impl LuaState {
     /// `ttisinteger` predicate that gates the integer arithmetic fast path in
     /// `lvm.c`'s `op_arith_aux` macro. Avoids the full `LuaValue` clone that
     /// `get_at` performs — the operand is only needed for its `i64` payload.
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_int_at(&self, idx: impl Into<StackIdxConv>) -> Option<i64> {
         let i: StackIdx = idx.into().0;
@@ -2730,12 +2752,24 @@ impl LuaState {
             None => None,
         }
     }
+    /// T4 ablation: unchecked read of the integer fast-path operand.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_int_at(&self, idx: impl Into<StackIdxConv>) -> Option<i64> {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        match unsafe { &self.stack.get_unchecked(i.0 as usize).val } {
+            LuaValue::Int(v) => Some(*v),
+            _ => None,
+        }
+    }
     /// Hot-path accessor: returns `Some((a, b))` only when both stack slots
     /// at `rb` and `rc` hold integers. Equivalent to two `get_int_at` calls
     /// but is shaped so the arithmetic opcode dispatch arms can pattern-match
     /// the common case with a single `if let`.
     ///
     /// the `op_arith_aux` macro.
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_int_pair_at(
         &self,
@@ -2749,10 +2783,33 @@ impl LuaState {
             _ => None,
         }
     }
+    /// T4 ablation: unchecked read of both integer operands.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_int_pair_at(
+        &self,
+        rb: impl Into<StackIdxConv>,
+        rc: impl Into<StackIdxConv>,
+    ) -> Option<(i64, i64)> {
+        let rb: StackIdx = rb.into().0;
+        let rc: StackIdx = rc.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        let (vb, vc) = unsafe {
+            (
+                self.stack.get_unchecked(rb.0 as usize).val,
+                self.stack.get_unchecked(rc.0 as usize).val,
+            )
+        };
+        match (vb, vc) {
+            (LuaValue::Int(ib), LuaValue::Int(ic)) => Some((ib, ic)),
+            _ => None,
+        }
+    }
     /// Hot-path accessor: returns `Some(f)` when the slot holds a `Float(f)`
     /// or coerces an `Int(i)` to `f64`. Returns `None` for any other tag.
     /// No `LuaValue` clone — only the primitive payload travels back.
     ///
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_num_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
         let i: StackIdx = idx.into().0;
@@ -2765,10 +2822,23 @@ impl LuaState {
             None => None,
         }
     }
+    /// T4 ablation: unchecked read of the coercing-number fast-path operand.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_num_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        match unsafe { &self.stack.get_unchecked(i.0 as usize).val } {
+            LuaValue::Float(f) => Some(*f),
+            LuaValue::Int(v) => Some(*v as f64),
+            _ => None,
+        }
+    }
     /// Hot-path accessor: returns `Some(f)` only when the slot holds a
     /// `LuaValue::Float(f)`. Does NOT coerce integers; the integer branch is
     /// the caller's responsibility. Used by opcode arms that have already
     /// ruled out the integer fast path.
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_float_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
         let i: StackIdx = idx.into().0;
@@ -2780,10 +2850,22 @@ impl LuaState {
             None => None,
         }
     }
+    /// T4 ablation: unchecked read of the float-only fast-path operand.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_float_at(&self, idx: impl Into<StackIdxConv>) -> Option<f64> {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        match unsafe { &self.stack.get_unchecked(i.0 as usize).val } {
+            LuaValue::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
     /// Hot-path accessor: pair version of `get_num_at` — returns `Some((a,b))`
     /// when both slots coerce to `f64` (Float or Int), `None` if either does
     /// not. Used by the float fast path of the arith opcodes.
     ///
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_num_pair_at(
         &self,
@@ -2793,6 +2875,31 @@ impl LuaState {
         let rb: StackIdx = rb.into().0;
         let rc: StackIdx = rc.into().0;
         match (self.stack[rb.0 as usize].val, self.stack[rc.0 as usize].val) {
+            (LuaValue::Float(nb), LuaValue::Float(nc)) => Some((nb, nc)),
+            (LuaValue::Int(ib), LuaValue::Int(ic)) => Some((ib as f64, ic as f64)),
+            (LuaValue::Int(ib), LuaValue::Float(nc)) => Some((ib as f64, nc)),
+            (LuaValue::Float(nb), LuaValue::Int(ic)) => Some((nb, ic as f64)),
+            _ => None,
+        }
+    }
+    /// T4 ablation: unchecked read of both number operands.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_num_pair_at(
+        &self,
+        rb: impl Into<StackIdxConv>,
+        rc: impl Into<StackIdxConv>,
+    ) -> Option<(f64, f64)> {
+        let rb: StackIdx = rb.into().0;
+        let rc: StackIdx = rc.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        let (vb, vc) = unsafe {
+            (
+                self.stack.get_unchecked(rb.0 as usize).val,
+                self.stack.get_unchecked(rc.0 as usize).val,
+            )
+        };
+        match (vb, vc) {
             (LuaValue::Float(nb), LuaValue::Float(nc)) => Some((nb, nc)),
             (LuaValue::Int(ib), LuaValue::Int(ic)) => Some((ib as f64, ic as f64)),
             (LuaValue::Int(ib), LuaValue::Float(nc)) => Some((ib as f64, nc)),
@@ -2847,6 +2954,7 @@ impl LuaState {
     }
     /// Returns the value at the given stack index without removing it.
     ///
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn peek_at(&mut self, idx: impl Into<StackIdxConv>) -> LuaValue {
         let i: StackIdx = idx.into().0;
@@ -2855,15 +2963,40 @@ impl LuaState {
             None => LuaValue::Nil,
         }
     }
+    /// T4 ablation: unchecked peek.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn peek_at(&mut self, idx: impl Into<StackIdxConv>) -> LuaValue {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.stack.get_unchecked(i.0 as usize).val.clone() }
+    }
     /// Returns the value just below `top` (the topmost live slot) without
     /// removing it.
     ///
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn peek_top(&mut self) -> LuaValue {
         if self.top.0 == 0 {
             return LuaValue::Nil;
         }
         self.stack[(self.top.0 - 1) as usize].val.clone()
+    }
+    /// T4 ablation: unchecked read of the slot below `top` (the empty-stack
+    /// guard is retained — it selects the value, it is not a bounds check).
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn peek_top(&mut self) -> LuaValue {
+        if self.top.0 == 0 {
+            return LuaValue::Nil;
+        }
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe {
+            self.stack
+                .get_unchecked((self.top.0 - 1) as usize)
+                .val
+                .clone()
+        }
     }
     /// Returns the topmost slot interpreted as a string. Panics if the slot
     /// is not a `LuaValue::Str`. Callers (e.g. `luaO_pushvfstring`) guarantee
@@ -2877,9 +3010,17 @@ impl LuaState {
     }
     /// Mutable reference to the value at the given stack slot.
     ///
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     pub fn stack_at(&mut self, idx: impl Into<StackIdxConv>) -> &mut LuaValue {
         let i: StackIdx = idx.into().0;
         &mut self.stack[i.0 as usize].val
+    }
+    /// T4 ablation: unchecked mutable slot reference.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    pub fn stack_at(&mut self, idx: impl Into<StackIdxConv>) -> &mut LuaValue {
+        let i: StackIdx = idx.into().0;
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { &mut self.stack.get_unchecked_mut(i.0 as usize).val }
     }
     /// Writes `Nil` to the given stack slot.
     ///
@@ -2923,22 +3064,55 @@ impl LuaState {
         crate::do_::grow_stack(self, n, raise_error).map(|_| ())
     }
 
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo {
         &self.call_info[idx.as_usize()]
     }
+    /// T4 ablation: unchecked call_info read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_ci(&self, idx: CallInfoIdx) -> &CallInfo {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(idx.as_usize()) }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo {
         &mut self.call_info[idx.as_usize()]
     }
+    /// T4 ablation: unchecked call_info mutable read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn get_ci_mut(&mut self, idx: CallInfoIdx) -> &mut CallInfo {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked_mut(idx.as_usize()) }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn current_call_info(&self) -> &CallInfo {
         &self.call_info[self.ci.as_usize()]
     }
+    /// T4 ablation: unchecked current-frame read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn current_call_info(&self) -> &CallInfo {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(self.ci.as_usize()) }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn current_call_info_mut(&mut self) -> &mut CallInfo {
         let i = self.ci.as_usize();
         &mut self.call_info[i]
+    }
+    /// T4 ablation: unchecked current-frame mutable read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn current_call_info_mut(&mut self) -> &mut CallInfo {
+        let i = self.ci.as_usize();
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked_mut(i) }
     }
     #[inline(always)]
     pub fn current_ci_idx(&self) -> CallInfoIdx {
@@ -2977,25 +3151,61 @@ impl LuaState {
             .expect("ci_next_func: no next CallInfo");
         self.call_info[next.as_usize()].func
     }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx {
         self.call_info[idx.as_usize()].top
+    }
+    /// T4 ablation: unchecked ci.top read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_top(&self, idx: CallInfoIdx) -> StackIdx {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(idx.as_usize()).top }
     }
     /// Hot-loop trap read: `(callstatus & CIST_TRAP) != 0`, one mask with no
     /// enum-discriminant branch. A C frame never has `CIST_TRAP` set, so this
     /// returns `false` for C frames identically to the pre-flatten fallback,
     /// without needing a frame-kind branch — that is the whole point of T2-C2.
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_trap(&mut self, idx: CallInfoIdx) -> bool {
         self.call_info[idx.as_usize()].trap()
     }
+    /// T4 ablation: unchecked trap read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_trap(&mut self, idx: CallInfoIdx) -> bool {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(idx.as_usize()).trap() }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 {
         self.call_info[idx.as_usize()].saved_pc()
     }
+    /// T4 ablation: unchecked savedpc read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_savedpc(&self, idx: CallInfoIdx) -> u32 {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(idx.as_usize()).saved_pc() }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
         self.call_info[idx.as_usize()].set_saved_pc(pc);
+    }
+    /// T4 ablation: unchecked savedpc write.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn set_ci_savedpc(&mut self, idx: CallInfoIdx, pc: u32) {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe {
+            self.call_info
+                .get_unchecked_mut(idx.as_usize())
+                .set_saved_pc(pc);
+        }
     }
     #[inline(always)]
     pub fn set_ci_previous(&mut self, idx: CallInfoIdx) {
@@ -3012,14 +3222,31 @@ impl LuaState {
         let ci = &mut self.call_info[idx.as_usize()];
         ci.func = StackIdx((ci.func.0 as i32 - delta) as u32);
     }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx {
         self.call_info[idx.as_usize()].func + 1
     }
+    /// T4 ablation: unchecked frame-base computation.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_base(&self, idx: CallInfoIdx) -> StackIdx {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { self.call_info.get_unchecked(idx.as_usize()).func + 1 }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_is_fresh(&self, idx: CallInfoIdx) -> bool {
         (self.call_info[idx.as_usize()].callstatus & CIST_FRESH) != 0
     }
+    /// T4 ablation: unchecked CIST_FRESH read.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_is_fresh(&self, idx: CallInfoIdx) -> bool {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        unsafe { (self.call_info.get_unchecked(idx.as_usize()).callstatus & CIST_FRESH) != 0 }
+    }
+    #[cfg(not(feature = "perf-ablation-unchecked-stack"))]
     #[inline(always)]
     pub fn ci_lua_closure(
         &self,
@@ -3028,6 +3255,24 @@ impl LuaState {
         let func_idx = self.call_info[idx.as_usize()].func;
         match self.stack.get(func_idx.0 as usize).map(|slot| slot.val) {
             Some(LuaValue::Function(lua_types::closure::LuaClosure::Lua(cl))) => Some(cl),
+            _ => None,
+        }
+    }
+    /// T4 ablation: unchecked call_info + stack reads. The `Lua`-closure match
+    /// arm is preserved — it selects the closure variant, it is not a bound.
+    #[cfg(feature = "perf-ablation-unchecked-stack")]
+    #[inline(always)]
+    pub fn ci_lua_closure(
+        &self,
+        idx: CallInfoIdx,
+    ) -> Option<GcRef<lua_types::closure::LuaLClosure>> {
+        // SAFETY: ablation-only — index validity is the production bound's job; this build never ships
+        let val = unsafe {
+            let func_idx = self.call_info.get_unchecked(idx.as_usize()).func;
+            self.stack.get_unchecked(func_idx.0 as usize).val
+        };
+        match val {
+            LuaValue::Function(lua_types::closure::LuaClosure::Lua(cl)) => Some(cl),
             _ => None,
         }
     }
