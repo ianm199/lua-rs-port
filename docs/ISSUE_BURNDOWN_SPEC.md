@@ -19,7 +19,17 @@ Status checklist (tick only with evidence paths):
       on main by 04cd144 (2026-06-09); the four remaining per-resume Vec
       buffers are now pooled (canaries 36/0, quarantine clean). Discovered
       follow-up: T2-B2 below.
-- [ ] T2-B2: per-resume panic-hook machinery diet (design-gated; see below)
+- [x] T2-B2: per-resume panic-hook diet landed (commit d587485):
+      install-once OnceLock chaining hook + thread_local suppress counter
+      replaces the per-resume take/Arc/Mutex/Box/set/restore dance.
+      coroutine_pingpong wall min-ratio 0.674 (supervisor re-verified
+      interleaved under load: 1.32→1.03s, 1.34→0.90s), fibonacci control
+      1.002, Ir flat (CPI win — removed global RwLock hook ops + allocs, not
+      instructions). Gates: oracle 165/0, workspace 378/0, canaries 36/0,
+      official coroutine.lua PASS, new panic_hook_chaining integration test
+      (own process) proves non-LuaThreadClose panics still chain to a
+      pre-installed hook. Tradeoff documented: embedder hooks installed
+      after first resume displace the chained hook permanently.
 - [x] T2-A: pretailcall `clear_stack_range` verdict recorded: KEEP +
       document (see T2-A section; full analysis 2026-06-11)
 - [x] T2-C: frame re-entry / `prep_call_info` diet RESOLVED-NEGATIVE with
