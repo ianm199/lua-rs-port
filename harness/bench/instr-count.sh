@@ -110,7 +110,7 @@ fi
 docker run --rm \
     -v "$ROOT":/src:ro \
     -v "$VOL":/cache \
-    "${EXTRA_MOUNT[@]}" \
+    ${EXTRA_MOUNT[@]+"${EXTRA_MOUNT[@]}"} \
     "$IMG" bash /src/harness/bench/instr/run-inside.sh "$WORKLOADS" "$BRANCH_SIM" >> "$TSV"
 
 echo "==> $TSV" >&2
