@@ -68,7 +68,10 @@ oracle scripts use `/tmp/lua-refs/bin/lua5.x` (all five versions), pinned in
 
 ### Benchmarks
 `harness/bench/` measures the **lua-rs / reference-C ratio** (wall + RSS), not
-absolute throughput — the ratio is the only fair number.
+absolute throughput — the ratio is the only fair number. Any perf **claim**
+must follow **`docs/MEASUREMENT_PROTOCOL.md`** (frozen-baseline interleaved
+A/B, Ir/branch-sim arbiters, drop-if-neutral) — wall time alone does not
+attribute on this rig.
 ```bash
 bash harness/bench/compare.sh                              # all workloads, best-of-5
 bash harness/bench/compare.sh --runs 3 --workloads fibonacci,binarytrees
