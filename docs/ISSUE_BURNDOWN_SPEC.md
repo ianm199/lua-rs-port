@@ -28,9 +28,20 @@ Status checklist (tick only with evidence paths):
       A3 Option::expect already compiles to a shared cold symbol. The frame
       pole is structural in the CallInfoFrame discriminant branch → T2-C2.
       Surviving docs commit: PR #148.
-- [ ] T2-C2: CallInfoFrame flatten, Option A (safe flat struct, branch-free
-      accessors) — APPROVED 2026-06-11; Option B (union, 64 B) gated behind
-      Option A results + unsafe-budget decision
+- [x] T2-C2: CallInfoFrame flatten Option A landed (commit b93ec81): branch
+      deleted at the source, CallInfo stays 72 B (compile-time assert), zero
+      new unsafe, debug_assert tripwires on every accessor, trap →
+      CIST_TRAP bit (frame-reuse reset validated byte-identical vs ref C).
+      Evidence: targets call_return_shapes −8.6% / method_calls −4.4% wall
+      reproducibly with EXACTLY FLAT Ir (cachegrind), but the call-free
+      mandelbrot control also moved ~12% (Ir +0.55%) — the wall win is
+      layout-entangled on this macOS/arm64 rig, not cleanly isolable to
+      branch-removal. Gates: lua-vm 23/0, oracle green, canaries 36/0,
+      official calls/events/coroutine/errors/db/locals 6/6, workspace 0 fail.
+      VERDICT: Option B (union, 64 B, unsafe budget 0→≥6) NOT escalated —
+      no control-isolated wall win, and the 8 B/frame RSS is not
+      independently requested. Reopen via the #113 diet ladder or with a
+      Linux perf-stat branch-miss measurement.
 - [ ] T2-D: `finish_get` method-lookup diet landed (`method_calls` improves)
 - [x] T3: #113 retitled to the RSS target with measured size table
       (issue #113 comment 2026-06-11, candidate ladder + done condition posted)
