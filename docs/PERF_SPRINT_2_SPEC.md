@@ -38,9 +38,15 @@ Status checklist (tick only with evidence paths):
       {table_setfield_same, table_seti_same, global_settabup_same,
       table_settable_string_key}, no control regression, canaries +
       quarantine green
-- [ ] T3a GC/alloc design memo (supervisor-written, dhat-quantified;
-      options: size-class free lists, Vec→Box<[T]> table parts,
-      sweep-time pooling, pacer cadence; SmallVec stays rejected)
+- [x] T3a GC/alloc design memo written: `docs/GC_ALLOC_DESIGN_MEMO.md`
+      (supervisor-authored, dhat absolutes @ 5727ee4: concat_chain 13.9M
+      blocks/38 B avg is the standout anomaly; binarytrees peak 36 MB live).
+      Ranking: R1 lazy weak-token registration APPROVED as T3b; R2 concat
+      string-churn packet filed as discovered follow-up; R3 size-class
+      pooling deferred (needs human sign-off, quarantine interplay); R4
+      candidate-9 table parts stays on the #113 ladder behind T2; R5
+      GcHeader sub-40 diet REJECTED (hot-field packing already measured
+      +4% Ir; remaining 32 B is two fat pointers); R6 pacer tuning deferred.
 - [ ] T3b memo's top-ranked bounded step implemented + full battery
 - [ ] T4 safety-tax ablation measured on branch `ablation/unchecked-stack`
       (NEVER merged); matrix delta written into `docs/PERFORMANCE_MODEL.md`
