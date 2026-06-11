@@ -1290,8 +1290,7 @@ fn get_upval_name<'a>(
     };
     for (i, upval_slot) in lua_cl.upvals.iter().enumerate() {
         let upval = upval_slot.get();
-        let state = upval.slot().clone();
-        if let lua_types::UpValState::Open { idx, .. } = state {
+        if let Some((_thread_id, idx)) = upval.try_open_payload() {
             if idx == val_idx {
                 // TODO(phase-b): the name needs to be tied to state's lifetime; using
                 // a static fallback keeps the trait bounds satisfied for now.

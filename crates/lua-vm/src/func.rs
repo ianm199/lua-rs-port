@@ -142,13 +142,10 @@ pub(crate) fn find_upval(state: &mut LuaState, level: StackIdx) -> GcRef<UpVal> 
     // When we find an entry with idx < level we've passed the insertion point.
     let mut insert_pos = state.openupval.len(); // default: append at end
     for (i, uv_ref) in state.openupval.iter().enumerate() {
-        // macros.tsv: uplevel → extract thread_stack_idx from UpVal::Open
-        let uv_idx = match &*uv_ref.slot() {
-            lua_types::UpValState::Open {
-                thread_id: _,
-                idx: thread_stack_idx,
-            } => *thread_stack_idx,
-            lua_types::UpValState::Closed(_) => {
+        // macros.tsv: uplevel → extract thread_stack_idx from the open payload
+        let uv_idx = match uv_ref.try_open_payload() {
+            Some((_thread_id, thread_stack_idx)) => thread_stack_idx,
+            None => {
                 debug_assert!(false, "closed upvalue found in openupval list");
                 continue;
             }
@@ -336,12 +333,9 @@ pub(crate) fn close_upval(state: &mut LuaState, level: StackIdx) {
             Some(uv) => uv.clone(),
             None => break,
         };
-        let uv_idx = match &*uv.slot() {
-            lua_types::UpValState::Open {
-                thread_id: _,
-                idx: thread_stack_idx,
-            } => *thread_stack_idx,
-            lua_types::UpValState::Closed(_) => {
+        let uv_idx = match uv.try_open_payload() {
+            Some((_thread_id, thread_stack_idx)) => thread_stack_idx,
+            None => {
                 // Cross-thread close/reset paths can leave a stale closed
                 // upvalue in this Vec-backed open list. The C intrusive list
                 // cannot represent that state; in Rust, unlink it and keep

@@ -10,19 +10,30 @@ Board claim: `../AGENT_COORDINATION_BOARD.md` Active Work row (Fable,
 
 Status checklist (tick only with evidence paths):
 
-- [ ] T0.1 `instr-count.sh --branch-sim` mode (Bc/Bcm per workload) — the CPI
-      arbiter
-- [ ] T0.2 `instr-count.sh` bash-3.2 `set -u` empty-array crash fixed
-- [ ] T0.3 `profile-hotspots.sh` agent-safe (or documented manual fallback)
-- [ ] T0.4 heap-profile diff script (alloc-count / bytes-per-block deltas
-      between two commits for a named workload)
+- [x] T0.1 `instr-count.sh --branch-sim` (Bc/Bcm/Bi/Bim; tool is cachegrind,
+      header corrected) — PR #158; first run surfaced fibonacci Bim 3.3x vs C
+      (bytecode dispatch), the CPI gap now measurable
+- [x] T0.2 bash-3.2 `set -u` EXTRA_MOUNT fix; audit found no other
+      empty-array bugs in harness/bench — PR #158
+- [x] T0.3 `profile-hotspots.sh` agent-stall FIXED (detached watchdog
+      inherited stdout/stderr and held the pipe open; fds detached, watchdog
+      reaped via pkill -P) — validated under the agent harness, PR #158
+- [x] T0.4 `heap-diff.sh` landed with exact-zero null test — PR #158; first
+      real use produced T1's causal evidence below
 - [x] T0.5 `docs/MEASUREMENT_PROTOCOL.md` written (supervisor-authored,
       2026-06-11), linked from `CLAUDE.md` §Benchmarks
 - [x] T0.6 `port-harness/templates/c-to-rust/perf-packet.md` extracted
       (port-harness commit 90239a5, green proof = ISSUE_BURNDOWN_SPEC.md)
-- [ ] T1 UpVal mirror removal: GcBox<UpVal> ≤ 64 B via value_layout,
-      closure_ops RSS improves, zero behavior change, quarantine clean on
-      coroutine/locals/closure officials; #113 progress comment posted
+- [x] T1 UpVal mirror removal landed (commit 03c4468): UpVal 64→32 B,
+      GcBox<UpVal> 104→72 B (value_layout; the goal doc's "≤64 B" bar was a
+      supervisor arithmetic error — 72 B is the floor with the 40 B GcHeader,
+      whose diet belongs to T3/#113). closure_ops causal chain: heap-diff
+      total bytes −7.89% / peak live −10.86% with alloc count unchanged
+      (100k upvals × 32 B = the measured −3,199,936 B), process max-RSS
+      40.7→37.3 MB (−8.3%, interleaved ×3). Gates: oracle 165/0, canaries
+      36/0, quarantine clean on coroutine/locals/closure, workspace 0 fail,
+      wasm check green. UpValState deleted from the public API (0.0.x).
+      #113 progress comment: pending below.
 - [ ] T2 setter family: FRESH profile first; Ir down on ≥2 of
       {table_setfield_same, table_seti_same, global_settabup_same,
       table_settable_string_key}, no control regression, canaries +

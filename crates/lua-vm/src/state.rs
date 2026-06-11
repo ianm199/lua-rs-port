@@ -69,7 +69,7 @@ pub use lua_types::closure::{
 pub use lua_types::gc::GcRef;
 pub use lua_types::proto::LuaProto;
 pub use lua_types::string::LuaString;
-pub use lua_types::upval::{UpVal, UpValState};
+pub use lua_types::upval::UpVal;
 pub use lua_types::userdata::LuaUserData;
 pub use lua_types::value::{F2Imod, LuaTable, LuaValue};
 

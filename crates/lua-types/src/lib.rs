@@ -33,7 +33,7 @@ pub use proto::{AbsLineInfo, LocalVar, LuaProto, UpvalDesc};
 pub use status::LuaStatus;
 pub use string::LuaString;
 pub use table::LuaTable;
-pub use upval::{UpVal, UpValState};
+pub use upval::UpVal;
 pub use userdata::LuaUserData;
 pub use value::{F2Imod, LuaValue};
 pub use version::{LuaVersion, NumberModel};

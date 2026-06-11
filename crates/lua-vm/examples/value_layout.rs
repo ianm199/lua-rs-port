@@ -67,6 +67,11 @@ fn main() {
         align_of::<LuaUserData>(),
     );
     row("UpVal", size_of::<UpVal>(), align_of::<UpVal>());
+    row(
+        "GcBox<UpVal>",
+        size_of::<GcBox<UpVal>>(),
+        align_of::<GcBox<UpVal>>(),
+    );
     row("GcHeader", size_of::<GcHeader>(), align_of::<GcHeader>());
     row(
         "GcBox<LuaTable>",
