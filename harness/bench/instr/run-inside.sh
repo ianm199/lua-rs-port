@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 # run-inside.sh — container half of the P2.1 instruction-count rig.
 # Mounted at /src (read-only repo) with /cache (persistent volume) for cargo
-# and the reference build. Emits TSV rows on stdout:
-#   workload<TAB>binary<TAB>Ir
+# and the reference build. Emits TSV rows on stdout.
+#
+# Two output schemas, selected by the second positional arg ($2 = branch_sim):
+#   "no"  (default): workload<TAB>binary<TAB>Ir              — byte-identical to
+#                    the original rig; nothing downstream needs to change.
+#   "yes":           workload<TAB>binary<TAB>Ir<TAB>Bc<TAB>Bcm<TAB>Bi<TAB>Bim
+#                    — adds simulated conditional-branch (Bc), conditional-
+#                    mispredict (Bcm), indirect-branch (Bi) and indirect-
+#                    mispredict (Bim) counts from valgrind --branch-sim=yes.
 # callgrind is simulation-based: counts are deterministic (~0.1%), immune to
-# thermal/scheduler noise, and work fine inside VMs — no PMU needed.
+# thermal/scheduler noise, and work fine inside VMs — no PMU needed. The same
+# is true of the branch predictor model: Bcm/Bim are a deterministic 2-bit
+# saturating-counter simulation, not the host CPU's predictor, so they are
+# reproducible across machines and the right arbiter for "was it the branch?".
 set -euo pipefail
 
 WORKLOADS="$1"
+BRANCH_SIM="${2:-no}"
 
 export CARGO_TARGET_DIR=/cache/target
 export CARGO_HOME=/cache/cargo
@@ -29,7 +40,12 @@ REF_BIN=/cache/luaref/src/lua
 # cachegrind with --cache-sim=no, not callgrind: callgrind's call-graph
 # tracking OOMs the ~8GB docker VM on these workloads (exit 137). Cachegrind
 # gives the same deterministic Ir total; use callgrind manually for
-# per-function drill-downs on a bigger box.
+# per-function drill-downs on a bigger box. --branch-sim=yes adds the four
+# branch events (Bc Bcm Bi Bim) to the same summary line at zero extra runs.
+BRANCH_FLAG=""
+[ "$BRANCH_SIM" = "yes" ] && BRANCH_FLAG="--branch-sim=yes"
+
+# count_ir: emit the Ir total only (default schema).
 count_ir() {
     local bin="$1" wpath="$2" out
     out=$(mktemp)
@@ -39,14 +55,33 @@ count_ir() {
     rm -f "$out"
 }
 
+# count_branch: emit "Ir Bc Bcm Bi Bim" (space-separated) from the branch-sim
+# summary line, which is exactly those five fields in that order.
+count_branch() {
+    local bin="$1" wpath="$2" out
+    out=$(mktemp)
+    valgrind --tool=cachegrind --cache-sim=no --branch-sim=yes \
+        --cachegrind-out-file="$out" --quiet \
+        "$bin" "$wpath" >/dev/null 2>&1 || true
+    awk '/^summary:/ {print $2, $3, $4, $5, $6; exit}' "$out"
+    rm -f "$out"
+}
+
 IFS=',' read -ra WLIST <<< "$WORKLOADS"
 for wname in "${WLIST[@]}"; do
     wpath="/src/harness/bench/workloads/${wname}.lua"
     [ -f "$wpath" ] || wpath="/src/harness/bench/probes/${wname}.lua"
     [ -f "$wpath" ] || wpath="/extra/${wname}.lua"
     [ -f "$wpath" ] || { echo "[inside] missing workload $wname" >&2; continue; }
-    echo "[inside] callgrind: $wname (ref)" >&2
-    printf '%s\tref\t%s\n' "$wname" "$(count_ir "$REF_BIN" "$wpath")"
-    echo "[inside] callgrind: $wname (rs)" >&2
-    printf '%s\trs\t%s\n' "$wname" "$(count_ir "$RS_BIN" "$wpath")"
+    if [ "$BRANCH_SIM" = "yes" ]; then
+        echo "[inside] cachegrind --branch-sim: $wname (ref)" >&2
+        printf '%s\tref\t%s\n' "$wname" "$(count_branch "$REF_BIN" "$wpath" | tr ' ' '\t')"
+        echo "[inside] cachegrind --branch-sim: $wname (rs)" >&2
+        printf '%s\trs\t%s\n' "$wname" "$(count_branch "$RS_BIN" "$wpath" | tr ' ' '\t')"
+    else
+        echo "[inside] cachegrind: $wname (ref)" >&2
+        printf '%s\tref\t%s\n' "$wname" "$(count_ir "$REF_BIN" "$wpath")"
+        echo "[inside] cachegrind: $wname (rs)" >&2
+        printf '%s\trs\t%s\n' "$wname" "$(count_ir "$RS_BIN" "$wpath")"
+    fi
 done

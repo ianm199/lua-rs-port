@@ -62,34 +62,68 @@ SAMPLE_OUT="$OUT_DIR/sample.txt"
 SUMMARY="$OUT_DIR/summary.txt"
 VM_EXECUTE="$OUT_DIR/vm-execute.txt"
 
-# Watchdog: a hung workload must not outlive the profile session
-# (PROFILE_MAX_S, default 600s). The workload is spawned DIRECTLY (not via
-# with-timeout.sh) because /usr/bin/sample needs the interpreter's own PID —
-# a wrapper pid samples as 100% __wait4. A detached sleep+kill subshell
-# provides the bound instead.
+# The workload is spawned DIRECTLY (not via with-timeout.sh) because
+# /usr/bin/sample needs the interpreter's own PID — a wrapper pid samples as
+# 100% __wait4. Its three std fds go to /dev/null (also < /dev/null) so it can
+# never inherit and hold open this script's stdout/stderr pipe.
+#
+# AGENT-SAFETY (2026-06-11): the previous version armed a detached
+#   ( sleep "$PROFILE_MAX_S" && kill ... ) &
+# watchdog. That subshell INHERITED the script's stdout/stderr, so any reader
+# of this script's output (a `| tail` pipe, or the agent harness's process-
+# group drain) blocked on EOF until the 600s `sleep` finished — the script's
+# real work completed and wrote sample.txt/summary.txt, but the caller never
+# saw the script "return" for up to 10 minutes (observed: 0-byte/no-artifact
+# stalls under the harness). The EXIT trap's `kill "$KILLER"` did not help:
+# killing the subshell orphans its already-running `sleep` child.
+#
+# The bound is `sample`'s own duration argument: it self-terminates after
+# $SAMPLE_SECONDS regardless of the workload, and the workload is killed the
+# instant sampling returns. PROFILE_MAX_S stays as a hard ceiling on a runaway
+# workload, but the watchdog is now (a) detached from this script's std fds
+# — `< /dev/null > /dev/null 2>&1` — so it can NEVER hold the script's
+# stdout/stderr pipe open (the actual stall cause), and (b) reaped together
+# with its `sleep` child (via `pkill -P`) on every exit path. macOS has no
+# `setsid`, so the process-group trick is unavailable; the fd detach is what
+# fixes the harness stall, and -P reaping keeps no orphan `sleep` behind.
 PROFILE_MAX_S="${PROFILE_MAX_S:-600}"
 if [ -n "$PROFILE_LUA_EVAL" ]; then
     echo "==> spawning $RS_BIN -e <PROFILE_LUA_EVAL> ($WORKLOAD_LABEL)" >&2
-    "$RS_BIN" -e "$PROFILE_LUA_EVAL" >/dev/null 2>&1 &
+    "$RS_BIN" -e "$PROFILE_LUA_EVAL" </dev/null >/dev/null 2>&1 &
 else
     echo "==> spawning $RS_BIN $WORKLOAD_FILE" >&2
-    "$RS_BIN" "$WORKLOAD_FILE" >/dev/null 2>&1 &
+    "$RS_BIN" "$WORKLOAD_FILE" </dev/null >/dev/null 2>&1 &
 fi
 PID=$!
-( sleep "$PROFILE_MAX_S" && kill -KILL "$PID" 2>/dev/null ) &
-KILLER=$!
-trap 'kill "$PID" 2>/dev/null || true; kill "$KILLER" 2>/dev/null || true' EXIT
+
+WATCHDOG=""
+reap() {
+    kill "$PID" 2>/dev/null || true
+    if [ -n "$WATCHDOG" ]; then
+        pkill -P "$WATCHDOG" 2>/dev/null || true
+        kill "$WATCHDOG" 2>/dev/null || true
+    fi
+}
+trap reap EXIT
+
+( sleep "$PROFILE_MAX_S" && kill -KILL "$PID" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+WATCHDOG=$!
 
 # Give the workload a moment to leave the startup phase.
 sleep 0.3
 if ! kill -0 "$PID" 2>/dev/null; then
-    echo "[err] workload exited before sampling could begin (workload too short?)" >&2
+    echo "[err] workload exited before sampling could begin (workload too short? use PROFILE_REPEAT)" >&2
     exit 3
 fi
 
 echo "==> sampling PID $PID for ${SAMPLE_SECONDS}s" >&2
 "$SAMPLE_BIN" "$PID" "$SAMPLE_SECONDS" -file "$SAMPLE_OUT" -mayDie 2>/dev/null
 echo "==> sample written: $SAMPLE_OUT ($(wc -l < "$SAMPLE_OUT") lines)" >&2
+
+# Sampling done: kill the workload and the watchdog (with its sleep child)
+# immediately so neither outlives this script or holds any fd open.
+reap
+WATCHDOG=""
 
 # `sample` output has a "Sort by top of stack, same collapsed" section with
 # lines of the form:
