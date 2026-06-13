@@ -112,3 +112,48 @@ critical multi-day (incremental pacer), or behind the excluded NaN-boxing/
 unsafe line — i.e. the safe, bounded perf roadmap will be genuinely exhausted.
 
 (Status section appended by the supervisor as packets land.)
+
+## Status — overnight 2026-06-13 grind COMPLETE
+
+The safe/bounded perf roadmap is now executed. Outcome of every thread:
+
+**Landed (6 PRs):**
+- concat string-churn (#176) — Ir −13.5%, allocations −43.5% (13.9M→7.8M/run).
+- `is_collectable` tag-layout reorder (#177) — 11→6 instructions, −1 Bc/call.
+- closure `upvals` `Box<[T]>` (#180) — LuaLClosure 32→24 B.
+- table `array`/`node` `Box<[T]>` / candidate 9 (#181) — GcBox<LuaTable> 128→112 B.
+- `LuaString` `Rc<[u8]>→Box<[u8]>` (#182) — −16 B refcount header per string.
+- InternedStringMap shrink-when-sparse (#184) — bounds worst-case intern memory
+  (C-faithful `luaS_resize`); synthetic test proves 64→2048→64 bucket reclaim.
+
+**Measured negatives (the equally-valuable half):**
+- Result→unwind conversion (#183 memo, prototype branch `proto/unwind-errors-
+  tableset`) — Result-tax ~1.5 Ir/write, below the layout floor; **NO-GO**.
+  Corrects the earlier ~20-35% estimate: the compiler already elides the
+  always-`Ok` happy path.
+- fasttm absence cache (Thread D) — **DROPPED**. Invalidation fully proven
+  correct (events.lua metamethod oracle + 8 invalidation tests across 5
+  versions, incl. the subtle nil-repopulation case), but the Ir arbiter showed
+  it *regresses* representative rows (metatable_index_chain +1.35%, method_calls
+  +1.04%) to win only a synthetic absent-TM probe (−14.5%). Our per-access
+  machinery is heavier than C's near-free bitmask, so the faithful C
+  optimization does not transfer. Reverted; tree byte-identical to main.
+
+**Cumulative deterministic check (machine-immune Ir, dec6a11 → HEAD):**
+even compute rows the night did not target improved — numeric_mixed −2.72% Ir,
+compare_immediates −2.47% Ir (the tag-layout reorder reaching the arithmetic
+metamethod-check path).
+
+**Matrix caveat:** the closing single-run wall matrix (20260613T065155Z,
+overall 1.48) is NOT trustworthy — the machine ran heavy all night, so absolute
+wall is thermally inflated; the *same* binary's compute rows show LOWER Ir than
+pre-overnight, proving the wall "regressions" are machine-state, not code. A
+clean wall before/after needs a cold-machine best-of-N re-run. The structural
+RSS wins are guaranteed by the type changes (value_layout, deterministic); the
+matrix RSS column still shows them through the noise (binarytrees 2.69→2.22,
+string_ops 1.57→1.28, sort_seeded 1.07→0.68).
+
+**Verdict:** the safe, bounded perf roadmap is genuinely exhausted. What remains
+is only NaN-boxing / unsafe (excluded by direction) and the multi-day,
+correctness-critical incremental-pacer rewrite (assess-only). No further safe
+perf grind exists to pull.

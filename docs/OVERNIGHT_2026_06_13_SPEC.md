@@ -1,5 +1,14 @@
 # Overnight session spec — 2026-06-12 → 13
 
+## STATUS: COMPLETE (2026-06-13). 13 PRs merged (#173-#184 + this summary).
+T1 Bevy demo (#175, compiles to wasm — wedge proven) · T2 content drafts
+(#173) · T3 release dry-run GO (#174) · T4 concat perf (#176, Ir -13.5%) ·
+T5a tag-layout (#177) · T5b unwind NO-GO memo (#183) · plus the discovered
+RSS grind: closure-box (#180), table-box (#181), string-box (#182), intern-
+shrink (#184); fasttm DROPPED (measured negative). Full outcomes +
+roadmap verdict in docs/PERF_ROADMAP_AUDIT.md. Hard line held: nothing
+tagged/published/posted; v0.1.0 tag + 2 content drafts await the user.
+
 Owner: Fable (supervision, merges, review). Execution: Opus subagents.
 User is asleep; everything here is reviewable in the morning.
 
