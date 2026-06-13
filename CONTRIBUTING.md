@@ -1,10 +1,13 @@
-# Contributing to lua-rs
+# Contributing to omniLua
 
-Thanks for your interest in `lua-rs` — a pure-Rust Lua interpreter that runs Lua
-5.1 through 5.5 from one core (5.4 is the stable baseline). This guide covers how
-to build it, how to run the tests, the project layout, and the code-style rules
-the project enforces. For the agent-facing operational guide (the iteration
-ladder, the multi-version oracle, benchmarks), see [CLAUDE.md](CLAUDE.md).
+Thanks for your interest in **omniLua** — a pure-Rust Lua interpreter that runs
+Lua 5.1 through 5.5 from one core (5.4 is the stable baseline). The embedding
+crate is `omnilua`, the CLI crate is `omnilua-cli` (binary `omnilua`), and the
+npm package is `omnilua`; the CLI selects a version with `OMNILUA_VERSION`
+(`LUA_RS_VERSION` is still honoured as a fallback). This guide covers how to
+build it, how to run the tests, the project layout, and the code-style rules the
+project enforces. For the agent-facing operational guide (the iteration ladder,
+the multi-version oracle, benchmarks), see [CLAUDE.md](CLAUDE.md).
 
 ## Prerequisites
 

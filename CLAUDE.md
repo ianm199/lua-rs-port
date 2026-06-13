@@ -1,10 +1,17 @@
-# lua-rs — agent guide
+# omniLua — agent guide
 
 Pure-Rust port of Lua that runs **5.1, 5.2, 5.3, 5.4, and 5.5** from one core,
 selected per instance. No C dependency. Ships to crates.io + npm, runs the stock
 LuaRocks client, embeds in Rust programs and in the browser (`wasm32`). This file
 is the operational entry point — read it first, then the subsystem guide for
 wherever you're working (`crates/<x>/CLAUDE.md`, `harness/CLAUDE.md`).
+
+The public artifact is **omniLua**: embedding crate `omnilua` (dir
+`crates/lua-rs-runtime/` unchanged), CLI crate `omnilua-cli` producing the
+`omnilua` binary, npm package `omnilua`. The version env var is
+`OMNILUA_VERSION` (canonical), with `LUA_RS_VERSION` still read as a fallback.
+The local directory `lua-rs-port/` and internal crate names (`lua-vm`, `lua-gc`,
+…) are unchanged — they are implementation paths, not public surfaces.
 
 This repo is one of three siblings under `../`; see **`../CLAUDE.md`** for the
 tree-level story (the AI-agent harness is the real product). Cross-repo
