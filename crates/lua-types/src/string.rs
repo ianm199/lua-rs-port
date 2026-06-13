@@ -21,6 +21,25 @@ impl LuaString {
         }
     }
 
+    /// Construct directly from a borrowed slice with a single allocating copy.
+    ///
+    /// `from_bytes` takes an owned `Vec<u8>`, but `Vec<u8> -> Rc<[u8]>` always
+    /// reallocates (the `Rc` co-locates its refcount header with the payload and
+    /// cannot adopt a `Vec`'s buffer), so a caller holding only a slice would copy
+    /// twice: once into a `Vec`, once into the `Rc`. `Rc::from(&[u8])` copies the
+    /// slice straight into the final allocation, matching C's single
+    /// `luaS_newlstr` allocation per string. Hash is computed with the same
+    /// algorithm as `from_bytes`.
+    pub fn from_slice(b: &[u8]) -> Self {
+        let is_short = b.len() <= 40;
+        let hash = Self::hash_bytes(b, 0);
+        LuaString {
+            bytes: std::rc::Rc::from(b),
+            is_short,
+            hash,
+        }
+    }
+
     pub fn placeholder() -> Self {
         Self::from_bytes(Vec::new())
     }

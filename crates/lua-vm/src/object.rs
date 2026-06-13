@@ -641,18 +641,49 @@ pub(crate) fn number_to_str_buf(val: &LuaValue, version: lua_types::LuaVersion) 
     }
 }
 
+/// Largest byte length of a base-10 `i64` rendering: `-9223372036854775808`.
+const INT_STR_CAP: usize = 20;
+
+/// Render an `i64` into a fixed stack buffer in base 10, returning the filled
+/// suffix slice. Matches C's `lua_integer2str` (`l_sprintf` with `"%lld"`),
+/// which for every `i64` is the same as Rust's default `Display`, but writes
+/// into a caller-owned `[u8]` instead of heap-allocating a `Vec`/`String` — so
+/// the concat/coercion hot path interns straight from the stack with no heap
+/// temporary, mirroring `luaO_tostr` filling a stack `buff[]`.
+fn int_to_str_buf(i: i64, buf: &mut [u8; INT_STR_CAP]) -> &[u8] {
+    use std::io::Write;
+    let mut cursor = std::io::Cursor::new(&mut buf[..]);
+    write!(cursor, "{}", i).expect("i64 always fits in INT_STR_CAP bytes");
+    let len = cursor.position() as usize;
+    &buf[..len]
+}
+
 /// Converts a numeric `LuaValue` to an interned `LuaString`, returning a
 /// `GcRef<LuaString>` handle.  Callers are responsible for updating the
 /// `LuaValue` (or stack slot) with `LuaValue::Str(s)`.
 ///
 /// in place; in Rust we return the string because holding `&mut LuaValue`
 /// across a `state.intern_str` call would borrow `state` twice.
+///
+/// Integers stringify through a stack buffer so the common case (and the
+/// number-coercion arm of `OP_CONCAT`) allocates nothing beyond the interned
+/// string itself; floats stay on the existing formatting path, which produces
+/// the identical bytes.
 pub fn num_to_string(state: &mut LuaState, val: &LuaValue) -> Result<GcRef<LuaString>, LuaError> {
     //    int len = tostringbuff(obj, buff);
     //    setsvalue(L, obj, luaS_newlstr(L, buff, len));
-    let version = state.global().lua_version;
-    let bytes = number_to_str_buf(val, version);
-    state.intern_str(&bytes)
+    match val {
+        LuaValue::Int(i) => {
+            let mut buf = [0u8; INT_STR_CAP];
+            let bytes = int_to_str_buf(*i, &mut buf);
+            state.intern_str(bytes)
+        }
+        _ => {
+            let version = state.global().lua_version;
+            let bytes = number_to_str_buf(val, version);
+            state.intern_str(&bytes)
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

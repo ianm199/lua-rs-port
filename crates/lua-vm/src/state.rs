@@ -2644,14 +2644,14 @@ impl LuaState {
                     return Ok(existing);
                 }
             }
-            let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
+            let new_ref = GcRef::new(LuaString::from_slice(bytes));
             new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             self.global_mut().interned_lt.insert(new_ref.clone());
             self.mark_gc_check_needed();
             Ok(new_ref)
         } else {
             self.mark_gc_check_needed();
-            let new_ref = GcRef::new(LuaString::from_bytes(bytes.to_vec()));
+            let new_ref = GcRef::new(LuaString::from_slice(bytes));
             new_ref.account_buffer(new_ref.buffer_bytes() as isize);
             Ok(new_ref)
         }
