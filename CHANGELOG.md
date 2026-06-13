@@ -6,7 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed (perf sprint 2, 2026-06-11 — `docs/PERF_SPRINT_2_SPEC.md` is the evidence ledger)
+### Changed (rebrand to omniLua, 0.1.0)
+
+- **Project renamed `lua-rs` → omniLua.** The wordmark, public docs, and the
+  GitHub repository (`ianm199/lua-rs` → `ianm199/omnilua`) move to the new name;
+  github.com redirects the old repo URL, but the GitHub Pages site moves to
+  `ianm199.github.io/omnilua`.
+- **Crate and package renames.** The embedding crate `lua-rs-runtime` →
+  `omnilua` (the directory `crates/lua-rs-runtime/` is unchanged), the CLI crate
+  `lua-cli` → `omnilua-cli` with the binary `lua-rs` → `omnilua`, and the npm
+  package `lua-rs-wasm` → `omnilua`. Internal crates (`lua-vm`, `lua-gc`,
+  `lua-types`, `lua-parse`, `lua-stdlib`, …) keep their names — they are
+  implementation details, not published surfaces.
+- **Version env var.** `OMNILUA_VERSION` is now the canonical way to select a
+  Lua version on the CLI; `LUA_RS_VERSION` is still read as a fallback for
+  compatibility.
+- **Version bumped to 0.1.0** across the workspace for the first release under
+  the new name.
+
+
 
 - **gc/types** (T1, #113 rung 1): deleted the `UpVal` `RefCell<UpValState>`
   mirror — the Cell-tagged fields are the single source of truth

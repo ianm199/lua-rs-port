@@ -1,44 +1,80 @@
-# lua-rs
+# omniLua
 
-A pure-Rust Lua interpreter — one implementation that runs **Lua 5.1, 5.2, 5.3,
-5.4, and 5.5**, selected per instance. Runs as a standalone binary with no C
-dependency, embeds in Rust programs and in the browser. The stable 5.4 backend
-passes the full upstream PUC-Rio test suite.
+**Every Lua, everywhere.** One pure-Rust runtime for Lua 5.1, 5.2, 5.3, 5.4, and
+5.5 — as a standalone interpreter, embedded in Rust, or in the browser. No C
+dependency, no unsafe FFI. Passes the official PUC-Rio test suites. Runs the
+stock LuaRocks client.
 
-[![CI](https://github.com/ianm199/lua-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ianm199/lua-rs/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/lua-cli.svg?label=crates.io%2Flua-cli)](https://crates.io/crates/lua-cli)
-[![docs.rs](https://img.shields.io/docsrs/lua-rs-runtime?label=docs.rs%2Flua-rs-runtime)](https://docs.rs/lua-rs-runtime)
+[![CI](https://github.com/ianm199/omnilua/actions/workflows/ci.yml/badge.svg)](https://github.com/ianm199/omnilua/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/omnilua-cli.svg?label=crates.io%2Fomnilua-cli)](https://crates.io/crates/omnilua-cli)
+[![docs.rs](https://img.shields.io/docsrs/omnilua?label=docs.rs%2Fomnilua)](https://docs.rs/omnilua)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+If your Rust program — or your game — ships a wasm build, a C-backed Lua binding
+can't follow it. omniLua is pure Rust: the same scripting runtime compiles
+natively and to `wasm32-unknown-unknown`, with no Emscripten and no toolchain
+gymnastics.
+
+## Try it in 30 seconds
+
+Run five Luas side by side in the browser, no install:
+[**omniLua playground**](https://ianm199.github.io/omnilua/).
+
+Or locally:
+
 ```bash
-cargo install lua-cli            # crate `lua-cli`; the binary it installs is `lua-rs`
-lua-rs -e 'print("hello")'
-lua-rs script.lua                # run a file; `lua-rs` for the REPL
+cargo install omnilua-cli         # crate `omnilua-cli`; the binary it installs is `omnilua`
+omnilua -e 'print("hello")'
+omnilua script.lua                # run a file; `omnilua` with no args for the REPL
 ```
 
-It is competitive with reference C (~1.3× geomean wall time, benchmarked per
-[commit](https://ianm199.github.io/lua-rs/harness/bench/history/)), not faster,
-and is not LuaJIT. Most crates build under `#![forbid(unsafe_code)]`; the
-trusted unsafe is budgeted in the GC, the dynamic-library loader, and the WASM
-pointer ABI.
+In the browser or Node via npm:
+
+```bash
+npm install omnilua
+```
+
+## What's checkable
+
+Conformance you can check: the official Lua test suites pass on every supported
+version, benchmarks vs reference C are published per-commit, and we measured
+what memory safety costs — see
+[`docs/PERFORMANCE_MODEL.md`](docs/PERFORMANCE_MODEL.md) (§Safety-tax ablation):
+~0% of wall time.
+
+- **Suites.** `TEST_TIMEOUT_S=90 ./harness/run_official_all.sh` runs the
+  unmodified upstream suite against `omnilua` and reports the live pass count.
+  5.4 passes the full PUC-Rio suite; 5.3 and 5.5 run their own upstream test
+  trees in beta; 5.1 and 5.2 are verified against the reference binary via a
+  behavioral battery and the upstream example programs. This is Lua
+  source/runtime compatibility, not C API/ABI compatibility.
+- **Benchmarks.** The omniLua/reference-C wall and RSS ratios are tracked
+  per-commit on the
+  [bench dashboard](https://ianm199.github.io/omnilua/harness/bench/history/).
+  ~1.3× geomean of reference C wall time.
+- **Safety tax.** The bounds-checks-and-`RefCell`-guards ablation costs ~0% of
+  reliable wall time — the residual gap to C is representation, not safety. The
+  unsafe budget stays at zero outside the GC, the dynamic-library loader, and
+  the wasm pointer ABI.
 
 ## Embed it in Rust
 
-[`lua-rs-runtime`](https://crates.io/crates/lua-rs-runtime) is an embedding API
-shaped after `mlua`. Being pure Rust, it builds for `wasm32-unknown-unknown`
-and needs no C toolchain or `liblua`. It's young and it isn't LuaJIT, so if you
-need either, use `mlua`.
+[`omnilua`](https://crates.io/crates/omnilua) is an embedding API shaped after
+`mlua`. Being pure Rust, it builds for `wasm32-unknown-unknown` and needs no C
+toolchain or `liblua`.
 
 ```rust
+use omnilua::Lua;
+
 let lua = Lua::new();
 let f = lua.create_function(|_, name: String| Ok(format!("hello, {name}")))?;
 lua.globals().set("greet", f)?;
-lua.load(r#"print(greet("lua-rs"))"#).exec()?;
+lua.load(r#"print(greet("omniLua"))"#).exec()?;
 ```
 
 `Lua::scope` lends Lua a non-`'static` borrow (e.g. a game engine's `&mut
 World`) for one call; a handle that escapes the scope errors cleanly instead of
-dangling. `AnyUserData::delegate` returns live sub-references into it.
+dangling.
 
 ```rust
 lua.scope(|s| {
@@ -48,83 +84,53 @@ lua.scope(|s| {
 })?;
 ```
 
-Full API on [docs.rs](https://docs.rs/lua-rs-runtime). Worked Bevy 0.18
-integration:
-[bevy-lua-rs-starter](https://github.com/ianm199/bevy-lua-rs-starter)
-([live demo](https://ianm199.github.io/bevy-lua-rs-starter/)).
-
-## Multiple Lua versions
-
-The same API and binary run **Lua 5.1 through 5.5**, selected per instance:
+Untrusted scripts get uncatchable CPU and memory caps with host access stripped:
 
 ```rust
-let lua = Lua::new_versioned(LuaVersion::V51); // V51..V55; Lua::new() is 5.4
-```
+use omnilua::{Lua, SandboxConfig};
 
-The CLI selects with `LUA_RS_VERSION=5.1|5.2|5.3|5.4|5.5`. All five share one
-core — the bytecode dispatch loop carries no per-version cost, so compute-bound
-code runs identically across versions; version differences (number model,
-globals model, stdlib roster, error wording) live in cold-path seams. Every
-version is verified against its unmodified upstream reference binary.
-
-Maturity, by version:
-
-- **5.4** — stable; passes the full upstream PUC-Rio suite.
-- **5.3 / 5.5** — beta; long tails closed (compat-math, error wording, `global`
-  declarations, named varargs, traceback fidelity), verified against the
-  reference. A few documented divergences remain (see the open issues).
-- **5.1 / 5.2** — supported, float-only number family (5.2 on the modern `_ENV`
-  globals model; 5.1 adds fenv globals). Verified against the reference binary
-  via a behavioral battery and the upstream example programs rather than a
-  bundled conformance suite, so treat them as the newest backends. `math.random`
-  sequences differ (host PRNG); see the [changelog](CHANGELOG.md).
-
-Use 5.4 for production; the others are good for running version-specific scripts
-and for the embedding use cases the [playbook](specs/MULTIVERSION_PLAYBOOK.md)
-describes.
-
-## Running untrusted Lua
-
-Bound CPU and memory and strip host access, so a buggy or hostile script can't
-hang the process, exhaust memory, or reach the filesystem. Limits are enforced
-on every thread (coroutines included) and are **uncatchable** — a script can't
-escape them with `pcall`. A non-sandboxed runtime pays zero overhead.
-
-```rust
 let (lua, sandbox) = Lua::sandboxed(SandboxConfig::strict())?;
-match lua.load(untrusted_source).exec() {
-    Ok(()) => { /* finished within limits */ }
-    Err(_) => match sandbox.tripped() {
-        Some(TripReason::Instructions) => { /* CPU budget hit */ }
-        Some(TripReason::Memory)       => { /* memory ceiling hit */ }
-        None                           => { /* ordinary Lua error */ }
-    },
-}
+lua.load(untrusted_source).exec().ok();
 sandbox.reset(); // refill the budget before re-running
 ```
 
-From the CLI:
+Full API on [docs.rs](https://docs.rs/omnilua). Worked Bevy 0.18 integration:
+[bevy-lua-rs-starter](https://github.com/ianm199/bevy-lua-rs-starter)
+([live demo](https://ianm199.github.io/bevy-lua-rs-starter/)).
 
-```
-lua-rs --sandbox script.lua              # strip host globals + default caps
-lua-rs --max-instructions=5000000 s.lua  # CPU budget
-lua-rs --max-memory=64M s.lua            # memory ceiling (K/M/G suffixes)
-```
+## Honesty
 
-Design and threat model:
-[docs/SANDBOXING_EXPLORATION.md](docs/SANDBOXING_EXPLORATION.md).
+~1.3× geomean of reference C wall time — competitive, not faster, and not
+LuaJIT. If you need LuaJIT speed or a decades-mature binding, use `mlua`. Native
+C rocks are not supported in LuaRocks yet (pure-Lua rocks are). The 5.4 backend
+is production-ready; the other versions are the newer surfaces (see the table).
+
+## Supported versions
+
+The same API and binary run all five, selected per instance
+(`Lua::new_versioned(LuaVersion::V51)`; the CLI reads
+`OMNILUA_VERSION=5.1|5.2|5.3|5.4|5.5`, with `LUA_RS_VERSION` honoured as a
+fallback). All five share one core — the bytecode dispatch loop carries no
+per-version cost — so compute-bound code runs identically across versions, and
+version differences live in cold-path seams.
+
+| Version | Status | Verified against |
+|---|---|---|
+| **5.4** | Stable; production | Full upstream PUC-Rio suite |
+| **5.3 / 5.5** | Beta; long tails closed | Their own upstream test trees + reference binary |
+| **5.1 / 5.2** | Supported; newest backends | Behavioral battery + upstream example programs |
+
+5.1/5.2 are float-only number families (5.2 on the modern `_ENV` globals model;
+5.1 adds fenv globals); `math.random` sequences differ from C (host PRNG). The
+per-version methodology lives in
+[`specs/MULTIVERSION_PLAYBOOK.md`](specs/MULTIVERSION_PLAYBOOK.md).
 
 ## Browser / WebAssembly
 
-Ships as [`lua-rs-wasm`](https://www.npmjs.com/package/lua-rs-wasm) (npm) for
-running Lua in the browser or Node without bundling the C interpreter. Try it in
-the [playground](https://ianm199.github.io/lua-rs/examples/wasm-browser/); see
-[`harness/wasm/README.md`](harness/wasm/README.md) for the host-hook API.
-
-Sandboxing is exposed over the WASM ABI for running untrusted user scripts:
-`lua_rs_wasm_set_limits(max_instructions, max_memory, strict)` before
-`lua_rs_wasm_run`, then `lua_rs_wasm_last_trip()` to learn which limit (if any)
-stopped a run, and `lua_rs_wasm_sandbox_reset()` to refill the budget.
+The npm package [`omnilua`](https://www.npmjs.com/package/omnilua) runs Lua in
+the browser or Node without bundling the C interpreter. Sandboxing is exposed
+over the wasm ABI for untrusted user scripts. Wrapper API and a runnable example:
+[`packages/omnilua/README.md`](packages/omnilua/README.md).
 
 ## LuaRocks
 
@@ -134,16 +140,16 @@ supported yet.
 
 ## More
 
-- Conformance: `TEST_TIMEOUT_S=90 ./harness/run_official_all.sh` runs the
-  unmodified upstream suite against `lua-rs` and reports the live pass count.
-  This is Lua source/runtime compatibility, not C API/ABI compatibility.
 - Building, testing, and contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+- Sandboxing design and threat model:
+  [docs/SANDBOXING_EXPLORATION.md](docs/SANDBOXING_EXPLORATION.md).
 - Embedding internals and roadmap:
-  [docs/EMBEDDING_API_IMPLEMENTATION.md](docs/EMBEDDING_API_IMPLEMENTATION.md),
-  [docs/FUTURE_GOALS.md](docs/FUTURE_GOALS.md).
+  [docs/EMBEDDING_API_IMPLEMENTATION.md](docs/EMBEDDING_API_IMPLEMENTATION.md).
 
 ## License
 
 A port of [Lua](https://www.lua.org/) (Roberto Ierusalimschy, Luiz Henrique de
 Figueiredo, and Waldemar Celes, PUC-Rio). Lua and this port are both
 MIT-licensed. See [LICENSE](LICENSE).
+</content>
+</invoke>
