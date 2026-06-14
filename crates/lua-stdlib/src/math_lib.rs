@@ -18,13 +18,6 @@ use lua_types::{LuaError, LuaType, LuaValue};
 /// the nearest `f64`); both round-trip to the same `f64` bit pattern.
 const PI: f64 = 3.141592653589793238462643383279502884_f64;
 
-/// Number of binary digits in the `f64` mantissa (`DBL_MANT_DIG`).
-const FIGS: u32 = 53;
-
-/// Bits to discard from a 64-bit random word before float conversion (`= 11`):
-/// the word is reduced to its top [`FIGS`] significant bits.
-const SHIFT64_FIG: u32 = 64 - FIGS;
-
 // ── Type aliases for library registration ─────────────────────────────────
 
 /// A Lua C-style function: takes the Lua state, returns count of pushed values.
@@ -49,87 +42,100 @@ thread_local! {
         std::cell::RefCell::new(RanState { s: [0xff, 0xff, 0xff, 0xff] });
 }
 
-// ── Pure PRNG algorithms ──────────────────────────────────────────────────
-
-/// Advance the xoshiro256** state by one step and return the next raw 64-bit
-/// pseudo-random value.
+/// The xoshiro256** generator: the bit-exact, load-bearing PRNG core.
 ///
-fn next_rand(s: &mut [u64; 4]) -> u64 {
-    let s0 = s[0];
-    let s1 = s[1];
-    let s2 = s[2] ^ s0;
-    let s3 = s[3] ^ s1;
-    let res = s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9);
-    s[0] = s0 ^ s3;
-    s[1] = s1 ^ s2;
-    s[2] = s2 ^ (s1 << 17);
-    s[3] = s3.rotate_left(45);
-    res
-}
+/// Every function here is pinned byte-for-byte by the behavioral net (the
+/// `multiversion_oracle` PRNG-sequence tests on 5.4/5.5). The internals must NOT
+/// be reordered or "simplified" — any change to the arithmetic diverges from the
+/// reference stream. Grouping them in one private module makes that contract
+/// explicit; the callers reach them as `xoshiro::*`.
+mod xoshiro {
+    /// Number of binary digits in the `f64` mantissa (`DBL_MANT_DIG`).
+    const FIGS: u32 = 53;
 
-/// Convert a raw 64-bit PRNG output to a float in [0.0, 1.0).
-///
-/// Takes the top FIGS=53 bits, interprets them as a signed integer, scales
-/// by `scaleFIG = 0.5 / 2^52`, then corrects the two's-complement sign.
-fn rand_to_float(x: u64) -> f64 {
-    let sx = (x >> SHIFT64_FIG) as i64;
-    let scale_fig: f64 = 0.5 / ((1u64 << (FIGS - 1)) as f64);
-    let mut res = (sx as f64) * scale_fig;
-    if sx < 0 {
-        res += 1.0;
+    /// Bits to discard from a 64-bit random word before float conversion (`= 11`):
+    /// the word is reduced to its top [`FIGS`] significant bits.
+    const SHIFT64_FIG: u32 = 64 - FIGS;
+
+    /// Advance the xoshiro256** state by one step and return the next raw 64-bit
+    /// pseudo-random value.
+    pub(super) fn next_rand(s: &mut [u64; 4]) -> u64 {
+        let s0 = s[0];
+        let s1 = s[1];
+        let s2 = s[2] ^ s0;
+        let s3 = s[3] ^ s1;
+        let res = s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9);
+        s[0] = s0 ^ s3;
+        s[1] = s1 ^ s2;
+        s[2] = s2 ^ (s1 << 17);
+        s[3] = s3.rotate_left(45);
+        res
     }
-    debug_assert!(0.0 <= res && res < 1.0);
-    res
-}
 
-/// Initialise the four PRNG words from two seed values.
-///
-/// `s[1]` is forced to `0xff` so the state is never all-zero (xoshiro's
-/// fixed point), and sixteen draws are discarded to spread the seed bits before
-/// the first observable output. Takes the word array (not the [`LuaState`]) so
-/// the caller can push the seed values without a borrow conflict against the
-/// `RanState` upvalue.
-fn set_seed_words(s: &mut [u64; 4], n1: u64, n2: u64) {
-    s[0] = n1;
-    s[1] = 0xff;
-    s[2] = n2;
-    s[3] = 0;
-    for _ in 0..16 {
-        next_rand(s);
-    }
-}
-
-/// Project `ran` uniformly into `[0, n]` by rejection sampling.
-///
-/// When `n + 1` is a power of two the low bits are already uniform, so a single
-/// mask suffices. Otherwise `lim` is built as the smallest `2^b - 1` not smaller
-/// than `n` (the bit-smear), and draws outside `[0, n]` are rejected and
-/// redrawn. The `>> 32` smear step is unconditional here because `u64` always
-/// has 64 bits; the C source guards it behind an `#if` on the integer width.
-/// Takes the word array (not `&mut RanState`) to avoid nested borrows at the
-/// call sites.
-fn project(mut ran: u64, n: u64, s: &mut [u64; 4]) -> u64 {
-    if (n & n.wrapping_add(1)) == 0 {
-        return ran & n;
-    }
-    let mut lim = n;
-    lim |= lim >> 1;
-    lim |= lim >> 2;
-    lim |= lim >> 4;
-    lim |= lim >> 8;
-    lim |= lim >> 16;
-    lim |= lim >> 32;
-    debug_assert!((lim & lim.wrapping_add(1)) == 0);
-    debug_assert!(lim >= n);
-    debug_assert!((lim >> 1) < n);
-    loop {
-        ran &= lim;
-        if ran <= n {
-            break;
+    /// Convert a raw 64-bit PRNG output to a float in [0.0, 1.0).
+    ///
+    /// Takes the top FIGS=53 bits, interprets them as a signed integer, scales
+    /// by `scaleFIG = 0.5 / 2^52`, then corrects the two's-complement sign.
+    pub(super) fn rand_to_float(x: u64) -> f64 {
+        let sx = (x >> SHIFT64_FIG) as i64;
+        let scale_fig: f64 = 0.5 / ((1u64 << (FIGS - 1)) as f64);
+        let mut res = (sx as f64) * scale_fig;
+        if sx < 0 {
+            res += 1.0;
         }
-        ran = next_rand(s);
+        debug_assert!(0.0 <= res && res < 1.0);
+        res
     }
-    ran
+
+    /// Initialise the four PRNG words from two seed values.
+    ///
+    /// `s[1]` is forced to `0xff` so the state is never all-zero (xoshiro's
+    /// fixed point), and sixteen draws are discarded to spread the seed bits before
+    /// the first observable output. Takes the word array (not the [`LuaState`]) so
+    /// the caller can push the seed values without a borrow conflict against the
+    /// `RanState` upvalue.
+    pub(super) fn set_seed_words(s: &mut [u64; 4], n1: u64, n2: u64) {
+        s[0] = n1;
+        s[1] = 0xff;
+        s[2] = n2;
+        s[3] = 0;
+        for _ in 0..16 {
+            next_rand(s);
+        }
+    }
+
+    /// Project `ran` uniformly into `[0, n]` by rejection sampling.
+    ///
+    /// When `n + 1` is a power of two the low bits are already uniform, so a single
+    /// mask suffices. Otherwise `lim` is built as the smallest `2^b - 1` not smaller
+    /// than `n` (the bit-smear), and draws outside `[0, n]` are rejected and
+    /// redrawn. The `>> 32` smear step is unconditional here because `u64` always
+    /// has 64 bits; the C source guards it behind an `#if` on the integer width.
+    /// Takes the word array (not `&mut RanState`) to avoid nested borrows at the
+    /// call sites.
+    pub(super) fn project(mut ran: u64, n: u64, s: &mut [u64; 4]) -> u64 {
+        if (n & n.wrapping_add(1)) == 0 {
+            return ran & n;
+        }
+        let mut lim = n;
+        lim |= lim >> 1;
+        lim |= lim >> 2;
+        lim |= lim >> 4;
+        lim |= lim >> 8;
+        lim |= lim >> 16;
+        lim |= lim >> 32;
+        debug_assert!((lim & lim.wrapping_add(1)) == 0);
+        debug_assert!(lim >= n);
+        debug_assert!((lim >> 1) < n);
+        loop {
+            ran &= lim;
+            if ran <= n {
+                break;
+            }
+            ran = next_rand(s);
+        }
+        ran
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -595,7 +601,7 @@ fn math_random(state: &mut LuaState) -> Result<usize, LuaError> {
     let n_args = state.get_top();
 
     if n_args == 0 {
-        state.push(LuaValue::Float(rand_to_float(rv)));
+        state.push(LuaValue::Float(xoshiro::rand_to_float(rv)));
         return Ok(1);
     }
 
@@ -704,13 +710,13 @@ fn math_randomseed(state: &mut LuaState) -> Result<usize, LuaError> {
 /// userdata in closure upvalue 1; the [`next_rand`] algorithm is identical (see
 /// [`math_random`] for the deferred per-state migration).
 fn advance_prng(_state: &mut LuaState) -> Result<u64, LuaError> {
-    Ok(RAN_STATE.with(|r| next_rand(&mut r.borrow_mut().s)))
+    Ok(RAN_STATE.with(|r| xoshiro::next_rand(&mut r.borrow_mut().s)))
 }
 
 /// Project a raw draw into `[0, n]` using the thread-local PRNG for any
 /// rejection redraws (see [`advance_prng`] for the thread-local rationale).
 fn project_from_upvalue(_state: &mut LuaState, ran: u64, n: u64) -> Result<u64, LuaError> {
-    Ok(RAN_STATE.with(|r| project(ran, n, &mut r.borrow_mut().s)))
+    Ok(RAN_STATE.with(|r| xoshiro::project(ran, n, &mut r.borrow_mut().s)))
 }
 
 /// Seed the PRNG from the host entropy hook (the 5.3+ auto-seed path).
@@ -728,7 +734,7 @@ fn apply_random_seed(state: &mut LuaState) -> Result<(), LuaError> {
 /// Apply explicit seeds to the thread-local PRNG and push them onto the stack
 /// (the 5.3+ `randomseed` return shape — the two seed words).
 fn apply_set_seed(state: &mut LuaState, n1: u64, n2: u64) -> Result<(), LuaError> {
-    RAN_STATE.with(|r| set_seed_words(&mut r.borrow_mut().s, n1, n2));
+    RAN_STATE.with(|r| xoshiro::set_seed_words(&mut r.borrow_mut().s, n1, n2));
     state.push(LuaValue::Int(n1 as i64));
     state.push(LuaValue::Int(n2 as i64));
     Ok(())
@@ -739,7 +745,7 @@ fn apply_set_seed(state: &mut LuaState, n1: u64, n2: u64) -> Result<(), LuaError
 /// 5.1/5.2 `math.randomseed` returns no values, so its seeding path must not
 /// push (unlike the modern [`apply_set_seed`], which returns the two words).
 fn apply_set_seed_quiet(_state: &mut LuaState, n1: u64, n2: u64) {
-    RAN_STATE.with(|r| set_seed_words(&mut r.borrow_mut().s, n1, n2));
+    RAN_STATE.with(|r| xoshiro::set_seed_words(&mut r.borrow_mut().s, n1, n2));
 }
 
 /// Register `math.random` and `math.randomseed` on the math library table at
