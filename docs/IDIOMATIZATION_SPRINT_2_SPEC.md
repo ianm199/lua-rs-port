@@ -63,8 +63,20 @@ net now guards it and which algorithm code was left load-bearing.
       official suite incl. math.lua, check.sh 5.1-5.5 0-fail, workspace, wasm,
       unsafe 0); recipes + verdict below; graduation in
       `crates/lua-stdlib/GRADUATED.md`. Branch `idiom/math` (supervisor PRs).
-- [ ] (then, as gates + budget allow: `table` (sort/nextvar nets), `os` date/time
-      arithmetic — both cold/pure)
+- [x] P2b: TABLE (`table_lib`) — module arrived ALREADY mostly idiomatic (0
+      unsafe, helpers extracted) with a MARGINAL net, so the Phase-2 value was
+      net-strengthening, not idiomatization (the second Phase-2 data point). Net
+      strengthened FIRST (9 oracle assertions across the 4 recon gaps + sort
+      contract, reference-pinned); the `remove` arg-gate test FAILED at baseline
+      and caught a real 5.1/5.2 divergence, fixed in the same commit. Then thin
+      Tier-1 only: crutch removal (12 stale `TODO(port)`, C-source blocks, 4 C-
+      correspondence PORT NOTEs, dangling doc summaries, condensed trailer) +
+      `aux_getn`→`check_table_and_get_len` rename; the quicksort core + all
+      version gates left load-bearing. Behavioral suite green (oracle 178,
+      sort.lua + nextvar.lua PASS, check.sh 5.1-5.5 0-fail at 57/54/23/7/10,
+      workspace, wasm, unsafe 0); recipes + verdict below; graduation in
+      `crates/lua-stdlib/GRADUATED.md`. Branch `idiom/table` (supervisor PRs).
+- [ ] (then, as gates + budget allow: `os` date/time arithmetic — cold/pure)
 - [ ] (LAST, separate, with the perf arbiter: the `string` pattern matcher)
 - [ ] CLOSE: PRs merged CI-green; board row updated
 
@@ -207,6 +219,106 @@ practice)**
   migration) — kept because it is real deferred behavior, not stale scaffolding.
 - Caveat: comment-only but gate it like code (a blank line detaches a `///`).
 
+### P2b — table (`table_lib`), 2026-06-14
+
+`crates/lua-stdlib/src/table_lib.rs` is a ~1054-line port of `ltablib.c`. It
+arrived **already mostly idiomatic** (0 `unsafe`, helpers extracted, no dead
+scaffolding) with a **marginal** behavioral net. That inverts P2a: math needed a
+rich-ish idiomatization on a strong-for-algebra net; table needed almost no
+idiomatization but a strengthened net. **The Phase-2 value here was
+net-strengthening, not idiomatization** — the second Phase-2 data point, and the
+sharper statement of the governing lesson: *idiomatization debt is not uniform —
+and neither is net strength*. The honest discipline is to read which of the two
+is the binding constraint for THIS module and spend the budget there, rather
+than reflexively rewriting clean code.
+
+---
+
+**Recipe: `net-strengthening that catches a bug the weak net was hiding`**
+- Pattern: a stdlib module looks behaviorally done (official suite green, roster
+  checks pass), but the net only SAMPLES the version seams. When you pin the full
+  version matrix of a seam against the reference, an assertion FAILS at baseline —
+  the net was hiding a real divergence, not merely under-describing a correct one.
+- Concrete: `table.remove` out-of-bounds. The old net checked only the
+  5.3-vs-5.4 arg index. Pinning all five versions exposed that our impl errored
+  on **5.1** (legacy `ltablib.c` does NO bounds check — out-of-range silently
+  removes nothing and returns ZERO results) and reported arg **#2 on 5.2** (ref:
+  **#1**, same as 5.3). The new `v_remove_out_of_bounds_arg_gate_crossversion`
+  FAILED at baseline (caught the 5.1 case), proving non-tautological; the
+  faithful three-way gate (5.1 inert / 5.2+5.3 #1 / 5.4+5.5 #2) — confirmed
+  against the 5.1.5/5.2.4/5.3.6/5.4.7/5.5.0 `tremove` sources — landed in the
+  same commit, FAIL→PASS.
+- Discipline twist vs the packet brief: the brief expected every net test to be
+  "green at baseline" (the recon believed the impl matched). When a pinned-to-
+  reference test instead FAILS, that is the net doing its job — the resolution is
+  to pin reference and fix the impl, NOT to weaken the test to the impl's output
+  (that would be the tautology the phase forbids). Keep the test commit's message
+  explicit that it caught a divergence.
+- Invariant that now guards it: the full-matrix remove test (5.1 inert + zero
+  results; 5.2/5.3 arg #1; 5.4/5.5 arg #2), green.
+
+**Recipe: `pin the well-behaved-but-untested edges (green at baseline)`**
+- Pattern: most net gaps are NOT bugs — they are correct paths nobody pinned. The
+  value is converting "works today, unguarded" into "guarded," so a future
+  idiomatization (or a shared-core change) can't silently break them.
+- Action: capture each edge from the reference binaries and assert it; confirm
+  green at baseline (proving the net describes the reference, and the impl already
+  matches). Closed here: 5.1 `__len`-bypass-on-insert vs 5.2+ honoring it (a
+  contrast pair, so the gate is provably exercised); `pack.n` counts holes/nils;
+  `unpack` empty-range / INT_MAX-span / i64-extreme-wrap boundaries (split 5.2-
+  literal cases from 5.3+ `math.maxinteger` cases — the integer subtype is a 5.3
+  addition); `move` overlap copy-direction + interleaved `__index`/`__newindex`
+  order (forward AND backward); the observable sort contract.
+- Caveat: a "green at baseline" net test is still a real net — it is the tripwire
+  that lets the idiomatization that follows be verified rather than described.
+  Distinguish it from a tautology: it pins the REFERENCE (an independent oracle),
+  not the impl's own output.
+
+**Recipe: `thin Tier-1 on an already-idiomatic module — crutch removal + safe rename`**
+- Pattern: when the code is already clean, idiomatization is NOT a rewrite. It is
+  removing the Phase-A scaffolding crutches and a few intent-clarifying renames —
+  and nothing else. Forcing a "rich" rewrite here would be the churn the brief
+  warns against.
+- Action: (1) remove the 12 stale `TODO(port)` "verify method name" notes — each
+  named a `LuaState` method that now exists and is called (proven stale by
+  compilation + the green net, the parser-packet discipline). (2) Delete the
+  embedded `/// static ... { ... }` C-source blocks and the 4 pure-C-
+  correspondence PORT NOTEs from the idiomatized functions, repairing each
+  function's orphaned first-line doc fragment into a real summary that points at
+  the test now pinning it. (3) Rename `aux_getn` → `check_table_and_get_len` (it
+  both type-checks and returns the border — the C name hid that), at the 4 Rust
+  call sites only, leaving the C function name verbatim where it refers to
+  upstream. (4) Condense the stale PORT STATUS trailer to the math template's
+  form (unsafe=0, the one genuine deferred item, the net, the kept perf note).
+- Keep-list (sharper because the net is coarse): the genuine deferred-behavior
+  note (`check_tab` error-path stack cleanup, rephrased from the stale "Phase B
+  should…" to current truth); EVERY per-version roster-delta comment; the
+  `remove` version-gate C evidence (5.4.7 + 5.1.5 `tremove` side-by-side — that is
+  the per-version-behavior REASON, not generic crutch); and the ENTIRE sort
+  cluster's docs + C blocks UNTOUCHED.
+- Invariant that guards it: pure comment/rename changes — oracle 178, sort.lua +
+  nextvar.lua, check.sh×5 all unmoved.
+
+**Recipe: `fence off the load-bearing algorithm by leaving it ALONE`**
+- Pattern: P2a's "group into a private module" fenced off math's xoshiro core.
+  table's quicksort core (partition / aux_sort / sort_comp / choose_pivot / set2 /
+  randomize_pivot) is the same kind of net-uncoverable algorithm — but here the
+  faithful move was even more conservative: leave it **entirely untouched**, docs
+  and C-evidence blocks included, rather than re-group it.
+- Why not extract/group like math? Two reasons. (a) The cluster is already
+  visually contiguous under a `// ─── Quicksort ───` banner — grouping would be
+  churn for no readability gain. (b) The net is WEAKER here than for the PRNG: the
+  PRNG sequence is bit-pinnable (the tripwire that made math's regrouping
+  verifiable), but the partition's internal comparator-callback-during-GC safety
+  is NOT behaviorally observable, so there is no tripwire that would catch a
+  regrouping bug. With no tripwire, the correct amount of change to a load-bearing
+  region is ZERO.
+- Invariant: the OBSERVABLE sort contract (stability, invalid-order detection,
+  array-too-big, mixed-type compare) is pinned; the partition internals are
+  declared load-bearing and not touched.
+- Caveat: this is the strongest form of "leave load-bearing" — when even the
+  fence-off refactor (regroup/rename) lacks a net to verify it, don't do it.
+
 ## Verdict ledger
 (append per-module outcomes — graduated OR honest-negative-with-reason)
 
@@ -235,3 +347,46 @@ a blind spot, not a coverage gap.
 **Out of scope, noted not fixed:** `math.fmod(x,0)` error omits the function name
 (`bad argument #2 (zero)` vs `... to 'fmod' (zero)`) — a shared-core arg-naming
 gap tracked separately.
+
+### P2b — table: GRADUATED (2026-06-14)
+
+Graduated. The module arrived **already mostly idiomatic** (0 `unsafe`, helpers
+extracted) with a **marginal** net, so — inverting P2a — the value was
+net-strengthening, not idiomatization (the **second Phase-2 data point**:
+idiomatization debt is not uniform, and neither is net strength). Net
+strengthened FIRST: 9 oracle assertions (oracle 169 → 178) across the four recon
+gaps + the observable sort contract, each pinning the version-suffixed reference
+binaries. Then thin Tier-1 only (crutch removal + the `aux_getn` rename); the
+quicksort core and all version gates left load-bearing. Final state: oracle 178,
+sort.lua + nextvar.lua PASS, check.sh 5.1-5.5 at baseline 57/54/23/7/10 (0 fail),
+workspace green, wasm check OK, **unsafe blocks 0**. Graduation doc:
+`crates/lua-stdlib/GRADUATED.md` "table". Branch `idiom/table` (supervisor
+verifies + PRs).
+
+**Bug caught by the strengthened net (fixed in this packet):** `table.remove`
+out-of-bounds was gated only `V53→arg1 else arg2`. The full-matrix pin exposed
+two divergences from the reference — **5.1** must NOT bounds-check at all (legacy
+`ltablib.c`: out-of-range silently removes nothing, returns ZERO results; our
+impl raised), and **5.2** must report arg **#1** (our impl reported #2). The new
+test FAILED at baseline, proving it pins reference; the faithful three-way gate
+(5.1 inert / 5.2+5.3 #1 / 5.4+5.5 #2) was landed in the same commit, verified
+against all five `tremove` sources + binaries and the check.sh×5 baseline.
+
+**Honest-negative (within an otherwise-graduated module):** the sort partition's
+*internal* invariant — the comparator callback cannot corrupt partition state
+even if it triggers a GC or mutates the array mid-sort — is **not behaviorally
+observable** and so cannot be reference-pinned (the table analogue of math's
+platform-dependent 5.1/5.2 PRNG sequence). The net pins the observable sort
+contract (stability, invalid-order detection, mixed-type compare, array-too-big)
+and STOPS; the quicksort core is fenced off as load-bearing and left ENTIRELY
+untouched. Unlike math's xoshiro (regrouped into a private module under cover of
+the bit-exact sequence tripwire), the partition was NOT even regrouped — with no
+behavioral tripwire to verify a regroup, the correct change to a load-bearing
+region is zero.
+
+**Tier-2 loop refactor declined (honest-negative):** the repeated
+wrapping-subtract bounds idiom (`(pos - 1) < bound`) in insert/remove/move/unpack
+was a candidate to factor into a shared range-check helper. Declined: extracting
+it without a dedicated equivalence unit test (which the brief required as the
+precondition) would itself be unverified churn on edge-case logic the coarse net
+guards only partially. Left as-is.
