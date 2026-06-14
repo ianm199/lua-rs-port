@@ -1,20 +1,32 @@
-//! Dynamic library loader for the Lua `package` library.
+//! The Lua `package` library: `require`, `package.loadlib`,
+//! `package.searchpath`, and the four built-in module searchers (preload,
+//! Lua-file, C-library, C-root).
 //!
-//! Ported from `reference/lua-5.4.7/src/loadlib.c` (758 lines, ~25 functions).
+//! ## Graduation (Idiomatization Sprint 2 / Phase 2 — cold, platform-FFI module)
 //!
-//! Provides `require`, `package.loadlib`, `package.searchpath`, and the four
-//! built-in module searchers (preload, Lua-file, C-library, C-root).
+//! Split cleanly into two regimes, and treated as such:
 //!
-//! ## Platform-specific dynamic loading
-//!
-//! The three platform calls (`lsys_load`, `lsys_sym`, `lsys_unloadlib`) are
-//! dispatched through embedder hooks on [`lua_vm::state::GlobalState`]:
-//! `dynlib_load_hook`, `dynlib_symbol_hook`, `dynlib_unload_hook`. `lua-cli`
-//! installs a `libloading`-backed implementation; embeddings that omit the
-//! hooks behave like C-Lua's fallback platform stub (`LIB_FAIL = "absent"`).
-//!
-//! Keeping the platform calls behind hooks lets `lua-stdlib` stay free of
-//! `unsafe` per PORTING.md §1; `libloading` lives entirely in `lua-cli`.
+//! * **Deterministic pure-Lua package logic** — now guarded by
+//!   `tests/loadlib_strengthen.rs` (16 reference-pinned cross-version
+//!   assertions). Strengthening that net FIRST caught **seven** divergences our
+//!   weaker net hid: the 5.1 `package.config` trailing newline, `require`'s 5.4+
+//!   2nd return value, the 5.1 preload-loader arg count, a C-root searcher
+//!   message truncation, the `nil`-vs-`false` `luaL_pushfail` value, the 5.1
+//!   absence of `package.searchpath`, and the 5.2/5.3 searchpath-error leading
+//!   separator. All were fixed via single-source version helpers; the version
+//!   gates are explicit and load-bearing. See `GRADUATED.md` "loadlib".
+//! * **Platform / dynamic-loading FFI** — left LOAD-BEARING and untouched. The
+//!   three platform calls (`lsys_load`, `lsys_sym`, `lsys_unloadlib`) dispatch
+//!   through embedder hooks on [`lua_vm::state::GlobalState`]
+//!   (`dynlib_load_hook`, `dynlib_symbol_hook`, `dynlib_unload_hook`); `lua-cli`
+//!   installs a `libloading`-backed (genuinely `unsafe`) implementation, while
+//!   embeddings that omit the hooks behave like C-Lua's fallback stub
+//!   (`LIB_FAIL = "absent"`). This indirection keeps `lua-stdlib` itself
+//!   `unsafe`-free (`unsafe_code = "forbid"`); the real FFI bridge lives in
+//!   `lua-cli`. Its behavior — the dlopen/dlsym path, the platform error
+//!   strings, the `"open"`/`"absent"`/`"init"` tags — needs a real shared
+//!   object and host loader, so it is NOT reference-pinnable and is a documented
+//!   honest-negative (the analogue of math's platform `rand()`).
 
 use crate::state_stub::{lua_CFunction, LuaState, LuaStateStubExt as _};
 use lua_types::{LuaError, LuaType, LuaValue};
@@ -49,11 +61,11 @@ const LUA_DIRSEP: u8 = b'/';
 const LUA_CSUBSEP: u8 = LUA_DIRSEP;
 const LUA_LSUBSEP: u8 = LUA_DIRSEP;
 
-// In the Rust port these became enum variants of `LookForFuncStatus` so the
-// failure-tag string travels with the status (the C code always uses the
-// single compile-time `LIB_FAIL`). See `LookForFuncStatus` below.
+// The fail-tag spelling travels with `LookForFuncStatus` (below) rather than a
+// single compile-time `LIB_FAIL` constant, so each failure carries its own tag.
 
-// is registered on `GlobalState`. The CLI backend supplies its own error
+// Pushed when no `dynlib_load_hook`/`dynlib_symbol_hook` is registered on
+// `GlobalState`. With a backend installed the CLI supplies its own error
 // strings via the hook's `Err` return for "open" failures.
 const DLMSG: &[u8] = b"dynamic libraries not enabled; check your Lua installation";
 
@@ -207,9 +219,9 @@ fn lsys_unloadlib(state: &mut LuaState, lib: DynLibId) {
 ///    — POSIX: `dlopen(path, RTLD_NOW | (seeglb ? RTLD_GLOBAL : RTLD_LOCAL))`
 ///    — Windows: `LoadLibraryExA(path, NULL, LUA_LLE_FLAGS)`
 ///
-/// PORT NOTE: returns `(handle, lib_fail_tag)`. The tag is `"absent"` when no
-/// hook is registered (matching C's fallback-stub `LIB_FAIL`) and `"open"`
-/// when the hook itself reports a failure (matching POSIX/Windows builds).
+/// Returns `(handle, lib_fail_tag)`. The tag is `"absent"` when no hook is
+/// registered (matching C's fallback-stub `LIB_FAIL`) and `"open"` when the
+/// hook itself reports a failure (matching POSIX/Windows builds).
 fn lsys_load(
     state: &mut LuaState,
     path: &[u8],
@@ -226,11 +238,11 @@ fn lsys_load(
     };
     match load_fn(state, path, see_glb) {
         Ok(id) => (Some(id), b"open"),
-        // PORT NOTE: `LuaError::File` is reserved for "no shared library at
-        // this path". Map it to the fallback-stub `"absent"` tag so that a
-        // probe like `package.loadlib("./nonexistent.so", ...)` reports
-        // `"absent"` regardless of whether a backend is installed. Every
-        // other `Err` is a true open-time failure → `"open"`.
+        // `LuaError::File` is reserved for "no shared library at this path":
+        // map it to the fallback-stub `"absent"` tag so a probe like
+        // `package.loadlib("./nonexistent.so", ...)` reports `"absent"`
+        // regardless of whether a backend is installed. Every other `Err` is a
+        // true open-time failure → `"open"`.
         Err(LuaError::File) => {
             let mut msg = b"cannot find library '".to_vec();
             msg.extend_from_slice(path);
@@ -351,15 +363,10 @@ fn noenv(state: &mut LuaState) -> bool {
 ///
 /// Priority: versioned env var (e.g. `LUA_PATH_5_4`) → unversioned env var
 /// (`LUA_PATH`) → compiled-in default. When the env var contains `;;`, the
-/// compiled-in default is spliced in place of `;;`.
-///
-/// const char *envname, const char *dft)`
-///
-/// PORT NOTE: C pushes the versioned env-var name string onto the Lua stack
-/// (via `lua_pushfstring`) and pops it at the end so that `setfield` uses index
-/// `-3`. In Rust we compute the versioned name without touching the Lua stack,
-/// so after pushing the final path value the package table is at `-2`. The
-/// caller must ensure the package table is at stack top when setpath is called.
+/// compiled-in default is spliced in place of `;;`. The caller must leave the
+/// `package` table at the stack top; the path value is set on it directly (the
+/// versioned env-var name is computed off-stack, so no index bookkeeping is
+/// needed).
 fn setpath(
     state: &mut LuaState,
     fieldname: &[u8],
@@ -399,18 +406,13 @@ fn setpath(
         }
     };
 
-    // PORT NOTE: On Windows, setprogdir replaces LUA_EXEC_DIR in the path with
-    // the directory of the running executable (GetModuleFileNameA). On all other
-    // platforms it's a no-op ((void)0). Stubbed here; on Windows this would also
-    // require unsafe (Win32 API). The EXEC_DIR substitution is therefore skipped.
-
-    // PORT NOTE: In C the index is -3 because the versioned-name string is still
-    // on the stack. In Rust it is -2 because we did not push the versioned name.
+    // The Windows `setprogdir` step (replace `LUA_EXEC_DIR` with the running
+    // executable's directory via `GetModuleFileNameA`, a Win32/`unsafe` call) is
+    // a no-op on every other platform and is not yet implemented here, so the
+    // `LUA_EXEC_DIR` substitution is skipped.
     let s = state.intern_str(&final_path)?;
     state.push(LuaValue::Str(s));
     state.set_field(-2, fieldname)?;
-
-    // PORT NOTE: No nver was pushed in Rust; nothing to pop here.
 
     Ok(())
 }
@@ -459,19 +461,15 @@ fn gctm(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ── Dynamic function lookup ───────────────────────────────────────────────────
 
-/// Look for a C function named `sym` in the dynamically loaded library at `path`.
+/// Outcome of looking for a C function in a dynamically loaded library.
 ///
-/// On success, pushes the C function (or `true` for `*`-sentinel) and returns `Ok(0)`.
-/// On non-fatal failure, pushes an error message string and returns `Ok(ERRLIB)`
-/// or `Ok(ERRFUNC)`. Fatal errors (e.g. OOM) propagate via `Err`.
-///
-///
-/// PORT NOTE: C returns raw `int` error codes. Rust encodes them as `Ok(i32)`
-/// so the caller can distinguish "error code + message on stack" from "fatal Err".
-/// Status of `lookforfunc`. `Ok(0)` corresponds to C's `0` "success",
-/// `ErrLib(tag)` to C's `ERRLIB` (tag is the `LIB_FAIL` string the caller
-/// should attach: `"open"` for true dlopen failures, `"absent"` when no
-/// backend or the file doesn't exist), `ErrFunc` to C's `ERRFUNC`.
+/// On success the function (or `true` for the `*` sentinel) is on the stack;
+/// on a non-fatal failure an error-message string is on the stack and the
+/// variant tells the caller what to report. Fatal errors propagate via `Err`.
+/// `Ok` is C's success; `ErrLib(tag)` is C's `ERRLIB` carrying the `LIB_FAIL`
+/// string (`"open"` for a true dlopen failure, `"absent"` when no backend is
+/// installed or the file does not exist); `ErrFunc` is C's `ERRFUNC` (the
+/// library opened but the symbol was not found).
 enum LookForFuncStatus {
     /// Loader successfully resolved a symbol (function pushed on stack).
     Ok,
@@ -544,13 +542,12 @@ pub fn ll_loadlib(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ── File existence check ──────────────────────────────────────────────────────
 
-/// Try to open `filename` for reading; return `true` if it succeeds.
+/// Whether `filename` can be opened for reading.
 ///
-///    — `FILE *f = fopen(filename, "r"); if (f == NULL) return 0;`
-///
-/// PORT NOTE: `std::fs` is banned in `lua-stdlib`, so the actual file probe is
-/// delegated to the embedder-registered `file_loader_hook` on `GlobalState`.
-/// Without a hook installed, `readable` reports `false` (file system unreachable).
+/// `std::fs` is banned in `lua-stdlib`, so the probe is delegated to the
+/// embedder-registered `file_loader_hook` on `GlobalState`. Without a hook
+/// installed, `readable` reports `false` (the file system is unreachable) — so
+/// the in-process searcher tests deterministically see every path as not-found.
 fn readable(state: &LuaState, filename: &[u8]) -> bool {
     match state.global().file_loader_hook {
         Some(hook) => hook(filename).is_ok(),
@@ -560,14 +557,9 @@ fn readable(state: &LuaState, filename: &[u8]) -> bool {
 
 // ── Path-component iterator ───────────────────────────────────────────────────
 
-/// Iterator over `;`-separated path components.
-///
-/// through a buffer, temporarily zero-terminating each component. In Rust we
-/// advance a slice reference without mutation.
-///
-/// PORT NOTE: The C implementation restored each separator after use (mutating
-/// the buffer). This Rust version slices immutably, which changes the interface
-/// but produces the same sequence of filenames.
+/// Iterator over `;`-separated path-template components, yielding each as an
+/// immutable slice (the C original walked one mutable buffer, swapping each
+/// separator for a NUL and back; this produces the identical sequence).
 struct PathComponents<'a> {
     remaining: &'a [u8],
 }
@@ -621,13 +613,10 @@ fn pusherrornotfound(state: &mut LuaState, path: &[u8]) -> Result<(), LuaError> 
 
 /// Search for a readable file matching `name` in the `;`-separated `path`.
 ///
-/// In each path template, `?` is replaced by `name` (with `sep` bytes replaced
-/// by `dirsep` first). Returns `Some(filename_bytes)` and pushes the filename
-/// string on the Lua stack if found. Returns `None` and pushes an error message
-/// string if not found.
-///
-/// const char *path, const char *sep,
-/// const char *dirsep)`
+/// `sep` bytes in `name` are first replaced by `dirsep`; then each template's
+/// `?` is replaced by the adjusted name. On the first readable match, pushes the
+/// filename string and returns `Some(filename_bytes)`; otherwise pushes the
+/// not-found message and returns `None`.
 fn searchpath(
     state: &mut LuaState,
     name: &[u8],
@@ -635,14 +624,12 @@ fn searchpath(
     sep: &[u8],
     dirsep: &[u8],
 ) -> Result<Option<Vec<u8>>, LuaError> {
-    //        name = luaL_gsub(L, name, sep, dirsep);
     let name_buf: Vec<u8> = if !sep.is_empty() && name.contains(&sep[0]) {
         gsub_bytes(name, sep, dirsep)
     } else {
         name.to_vec()
     };
 
-    // Build pathname list: replace every '?' in path with the (adjusted) name.
     let pathname: Vec<u8> = gsub_bytes(path, &[LUA_PATH_MARK], &name_buf);
 
     for filename in PathComponents::new(&pathname) {
@@ -653,9 +640,6 @@ fn searchpath(
         }
     }
 
-    // PORT NOTE: C uses the Lua-stack string of the expanded pathname as the
-    // argument to pusherrornotfound. In Rust we have `pathname` already as a
-    // Vec<u8>; we pass it directly without the round-trip through the Lua stack.
     pusherrornotfound(state, &pathname)?;
     Ok(None)
 }
@@ -714,16 +698,15 @@ fn prepend_searchpath_separator(state: &mut LuaState) -> Result<(), LuaError> {
     Ok(())
 }
 
-/// Find a module file using the path stored in `package[pname]`.
-///
-/// const char *pname, const char *dirsep)`
+/// Find a module file using the path stored in `package[pname]` (e.g.
+/// `package.path` / `package.cpath`), read from upvalue #1 of the searcher
+/// closure. Errors if that field is not a string.
 fn findfile(
     state: &mut LuaState,
     name: &[u8],
     pname: &[u8],
     dirsep: u8,
 ) -> Result<Option<Vec<u8>>, LuaError> {
-    // The package table is upvalue #1 for the searcher closures.
     let uv = state.upvalue_index(1);
     let _ = state.get_field(uv, pname);
     let path_opt: Option<Vec<u8>> = state.to_bytes(-1);
@@ -747,11 +730,9 @@ fn checkload(state: &mut LuaState, stat: bool, filename: &[u8]) -> Result<usize,
         state.push(LuaValue::Str(s));
         Ok(2)
     } else {
-        //                         lua_tostring(L, 1), filename, lua_tostring(L, -1));
-        // PORT NOTE: The error message in C embeds the module name (stack[1]) and
-        // the loader error message (stack top). In Rust we read those byte slices.
-        // TODO(port): state.to_bytes(1) and state.to_bytes(-1) borrow from the
-        //             stack simultaneously; in Phase B use index-snapshot clones.
+        // The error embeds the module name (the `require` arg at stack[1]) and
+        // the loader's own error message (the searcher's pushed string at the
+        // stack top). Both are owned byte copies, so there is no aliasing.
         let modname = state.to_bytes(1).unwrap_or_else(|| b"?".to_vec());
         let loader_err = state.to_bytes(-1).unwrap_or_else(|| b"?".to_vec());
 
@@ -762,7 +743,6 @@ fn checkload(state: &mut LuaState, stat: bool, filename: &[u8]) -> Result<usize,
         msg.extend_from_slice(b"':\n\t");
         msg.extend_from_slice(&loader_err);
 
-        // PERF(port): builds a heap Vec then interns; in Phase B use push_fstring.
         let s = state.intern_str(&msg)?;
         return Err(LuaError::from_value(LuaValue::Str(s)));
     }
@@ -782,12 +762,11 @@ fn searcher_lua(state: &mut LuaState) -> Result<usize, LuaError> {
         return Ok(1);
     }
     let filename = filename.unwrap();
-    //
-    // PORT NOTE: `std::fs` is banned in `lua-stdlib`, so file contents come in
-    // via the embedder-registered `file_loader_hook` on `GlobalState`. We then
-    // parse them through `state.load(...)` (which dispatches to the parser
-    // hook) and place the resulting closure on the stack so `checkload` can
-    // pair it with the filename.
+    // `std::fs` is banned in `lua-stdlib`, so file contents arrive via the
+    // embedder-registered `file_loader_hook` on `GlobalState`; the bytes are then
+    // parsed through `state.load(...)` (which dispatches to the parser hook) and
+    // the resulting closure is left on the stack for `checkload` to pair with the
+    // filename.
     let chunk = match state.global().file_loader_hook {
         Some(hook) => hook(&filename),
         None => Err(LuaError::runtime(format_args!(
@@ -949,13 +928,11 @@ fn searcher_preload(state: &mut LuaState) -> Result<usize, LuaError> {
 /// On success, leaves `(loader_function, loader_data)` at the top of the stack
 /// (below the searchers table). On failure, raises a runtime error.
 ///
-///
-/// TODO(port): The exact absolute stack indices used in C (index 3 for the
-/// searchers table) depend on the caller (`ll_require`) having set up the
-/// stack in a specific way. In Rust we use relative indices. The behaviour
-/// should match C but the index arithmetic must be verified in Phase B.
+/// The accumulated `module '<name>' not found:` message lists one searcher per
+/// line; the per-iteration `\n\t` prefix matches 5.4+ `findloader`, while the
+/// pre-5.4 searchers prepend their own separator (the two regimes converge on
+/// the identical trace, pinned in `tests/loadlib_strengthen.rs`).
 fn findloader(state: &mut LuaState, name: &[u8]) -> Result<(), LuaError> {
-    //        luaL_error(L, "'package.searchers' must be a table");
     let uv = state.upvalue_index(1);
     // In 5.1 the searcher list lives in `package.loaders`; 5.2 renamed it to
     // `package.searchers` (5.2 keeps `loaders` as an alias). Read the name this
@@ -971,7 +948,6 @@ fn findloader(state: &mut LuaState, name: &[u8]) -> Result<(), LuaError> {
             "'package.searchers' must be a table"
         )));
     }
-    // Searchers table is now at the top of the stack.
 
     let mut msg_buf: Vec<u8> = Vec::new();
 
@@ -979,9 +955,6 @@ fn findloader(state: &mut LuaState, name: &[u8]) -> Result<(), LuaError> {
     loop {
         msg_buf.extend_from_slice(b"\n\t");
 
-        // PORT NOTE: In C the searchers table is at absolute index 3. In Rust
-        // it is at -1 (relative to the top). TODO(port): verify this is correct
-        // after accounting for whatever else the caller left on the stack.
         let item_ty = state.raw_geti(-1, i)?;
         if item_ty == LuaType::Nil {
             state.pop_n(1);
@@ -1127,18 +1100,16 @@ fn require_returns_loader_data(version: lua_types::LuaVersion) -> bool {
 /// with the `package` table as upvalue #1.
 ///
 fn createsearcherstable(state: &mut LuaState) -> Result<(), LuaError> {
-    //        searcher_Lua, searcher_C, searcher_Croot, NULL };
     let searchers: &[fn(&mut LuaState) -> Result<usize, LuaError>] =
         &[searcher_preload, searcher_lua, searcher_c, searcher_croot];
 
     state.create_table(searchers.len() as i32, 0)?;
 
     for (i, &f) in searchers.iter().enumerate() {
+        // Each searcher closes over the `package` table (upvalue #1) so
+        // `findfile` can read `package.path`/`package.cpath` via
+        // `lua_upvalueindex(1)`.
         state.push_value(-2)?;
-        // TODO(port): push_c_closure takes the function and n upvalues from the
-        //             stack. The package table upvalue must be correctly associated
-        //             with each searcher closure so that findfile can access it
-        //             via lua_upvalueindex(1). Verify in Phase B.
         state.push_c_closure(f, 1)?;
         state.raw_seti(-2, (i + 1) as i64)?;
     }
@@ -1174,7 +1145,6 @@ fn createsearcherstable(state: &mut LuaState) -> Result<(), LuaError> {
 fn createclibstable(state: &mut LuaState) -> Result<(), LuaError> {
     state.get_subtable_registry(CLIBS)?;
     state.create_table(0, 1)?;
-    // TODO(phase-b): LuaClosure::LightC currently typed fn() -> i32 in lua-types; use push_c_function until widened.
     state.push_c_function(gctm)?;
     state.set_field(-2, b"__gc")?;
     state.set_metatable(-2)?;
@@ -1363,25 +1333,28 @@ pub fn luaopen_package(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/loadlib.c  (758 lines, 25 functions)
 //   target_crate:  lua-stdlib
-//   confidence:    medium
-//   todos:         8
-//   port_notes:    7
-//   unsafe_blocks: 0   (must be 0 outside explicit unsafe-budget crates)
-//   notes:         lsys_load/lsys_sym/lsys_unloadlib now dispatch through
-//                  dynlib_*_hook on GlobalState (Phase D-3.5); lua-cli
-//                  installs a libloading-backed backend. With no hook
-//                  installed, LIB_FAIL is "absent" (matches the C fallback
-//                  stub); with a hook installed it is "open". Stock Lua C
-//                  ABI symbols resolve but fail with "init" + a clear
-//                  unsupported-ABI message (DynamicSymbol::LuaCAbi case);
-//                  full C-ABI compatibility is a separate project. readable()
-//                  and searcher_lua are wired through file_loader_hook on
-//                  GlobalState. Stack-index arithmetic in findloader /
-//                  ll_require should be verified in Phase B. LUA_PATH_DEFAULT
-//                  / LUA_CPATH_DEFAULT are hardcoded and must be replaced
-//                  with platform configuration constants.
-// ──────────────────────────────────────────────────────────────────────────────
+//   unsafe_blocks: 0  (the dlopen/dlsym FFI lives in lua-cli, behind the
+//                  dynlib_*_hook indirection on GlobalState; this crate stays
+//                  unsafe-free per its `unsafe_code = "forbid"`)
+//   deferred:      two genuine TODOs — LUA_VERSUFFIX / LUA_PATH_DEFAULT /
+//                  LUA_CPATH_DEFAULT are hardcoded for 5.4 rather than tracking
+//                  the selected version + a platform install prefix; the Windows
+//                  setprogdir LUA_EXEC_DIR substitution is unimplemented.
+//   notes:         Idiomatization Sprint 2 / Phase 2 (cold module, no perf
+//                  arbiter). The deterministic pure-Lua surface (package.config,
+//                  require + package.loaded caching, the four-searcher not-found
+//                  trace, package.searchpath string logic, the loaders/searchers
+//                  rename, module/seeall 5.1 roster, the nil-vs-false fail value)
+//                  is pinned by tests/loadlib_strengthen.rs, which caught SEVEN
+//                  cross-version divergences fixed here (see GRADUATED.md
+//                  "loadlib"). The platform/FFI surface is left LOAD-BEARING and
+//                  untouched: the dlopen/dlsym bridge (— POSIX/Windows notes on
+//                  lsys_load/lsys_sym/lsys_unloadlib), the file probe + module
+//                  read via file_loader_hook, the "open"/"absent"/"init" tags
+//                  and platform error strings, and the unsupported-stock-C-ABI
+//                  message (DynamicSymbol::LuaCAbi). None of that is
+//                  reference-pinnable without a real .so + host loader.
+// ──────────────────────────────────────────────────────────────────────────
