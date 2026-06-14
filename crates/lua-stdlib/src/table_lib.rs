@@ -928,23 +928,21 @@ pub fn open_table(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/ltablib.c  (430 lines, 14 functions)
 //   target_crate:  lua-stdlib
-//   confidence:    medium
-//   todos:         17
-//   port_notes:    5
 //   unsafe_blocks: 0
-//   notes:         Logic is faithfully translated. All TODOs are method-name
-//                  uncertainties for LuaState API calls (table_get_i, table_set_i,
-//                  opt_arg_integer, opt_arg_lstring, get_metatable, to_bytes_at,
-//                  push_lstring, push_value_at, compare, new_lib, set_top,
-//                  check_stack_growth, type_name_str_at, create_table) — Phase B
-//                  maps these to the real method names once lua-vm is drafted.
-//                  Stack cleanup on error paths is elided (C uses longjmp);
-//                  needs Phase B attention in check_tab and add_field.
-//                  PERF: remove() and insert() shift loops now cache the table
-//                  value once (via value_at) and call table_get_i_value /
-//                  table_set_i_value, bypassing the per-iteration index_to_value
-//                  call. This shrank the index_to_value hot frame and improved
-//                  table_ops_long from ~4.76x to ~4.02x vs reference.
+//   deferred:      check_tab leaves the stack dirty on its failure path (C's
+//                  longjmp unwinds it; here the LuaError propagates and the
+//                  frame is torn down, so the leak is behaviorally inert). The
+//                  insert/remove version-gated bounds checks and the sort
+//                  quicksort core (partition/aux_sort/sort_comp/choosePivot) are
+//                  LOAD-BEARING: extract/rename only, never refactor.
+//   net:           behavior is pinned by the behavioral suite — multiversion
+//                  oracle (the P2b __len/pack/unpack/move/remove-gate/sort
+//                  assertions), sort.lua + nextvar.lua, check.sh 5.1-5.5. The
+//                  partition-internal comparator-callback-during-GC safety is
+//                  NOT behaviorally observable; see GRADUATED.md "table".
+//   perf:          remove()/insert() shift loops cache the table value once
+//                  (value_at) and use table_get_i_value/table_set_i_value,
+//                  bypassing per-iteration index_to_value (table_ops_long
+//                  ~4.76x -> ~4.02x vs reference).
 // ──────────────────────────────────────────────────────────────────────────────
