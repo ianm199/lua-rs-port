@@ -109,3 +109,111 @@ the right reason to STOP short on that blind spot, not a gap in coverage.
 
 See the "Recipe ledger" → "### P2a — math" in
 `docs/IDIOMATIZATION_SPRINT_2_SPEC.md`.
+
+---
+
+## table
+
+Status: graduated 2026-06-14 (Sprint 2, Phase P2b — the second Phase-2 module).
+Branch of record: `idiom/table`.
+
+### What "graduated" means here — and the headline finding
+
+`crates/lua-stdlib/src/table_lib.rs` (a port of `ltablib.c`) arrived at P2b
+**already mostly idiomatic**: 0 `unsafe`, helpers already extracted, no dead
+scaffolding. Its behavioral net, by contrast, was **marginal** — ~75% of
+standard paths sampled, but edge cases and version seams thin. So — exactly like
+the Phase-1 parser, and reinforcing the P2a lesson from the opposite direction —
+**the Phase-2 value here was net-strengthening, not idiomatization.** The
+idiomatization on top was deliberately thin (crutch removal + safe
+renames/doc-repair); the real deliverable is the strengthened net, and the real
+finding is the **second Phase-2 data point**: *idiomatization debt is not
+uniform — and neither is net strength*. A module can be clean code with a weak
+net; the honest move is to invert the usual rich-rewrite instinct and spend the
+budget on the net.
+
+The net-strengthening even **caught a real behavioral bug** the weak net was
+hiding (see below) — the clearest possible proof that the net was the thing
+worth touching.
+
+### The oracle that now guards it (behavioral-only — no bytecode parity)
+
+A change to table is verified only when all are green (the P2b gate):
+
+1. **Behavioral suite.** `cargo test -p omnilua --test multiversion_oracle`
+   (**178** — the prior 169 plus the nine net-strengthening assertions added
+   FIRST in P2b), the table-heavy official files run directly
+   (`harness/run_official_test.sh reference/lua-5.4.7-tests/sort.lua` and
+   `nextvar.lua`, both PASS — they pin sort/insert/remove/move/pack/unpack), and
+   the version-gated batteries (`specs/oracle/check.sh 5.1`..`5.5` at the
+   baseline 57/54/23/7/10, 0 fail).
+2. **Crate gates:** `cargo test -p lua-stdlib`, `cargo test --workspace`,
+   `cargo check -p lua-stdlib --target wasm32-unknown-unknown`. `unsafe` blocks:
+   **0** (unchanged).
+
+#### The net had to be STRENGTHENED before idiomatizing — the four gaps closed
+
+At baseline the net sampled the standard paths but left four real holes. The
+first commits added tests pinning REFERENCE behavior (captured from
+`/tmp/lua-refs/bin/lua5.{1.5,2.4,3.6,4.7,5.0}`):
+
+- **`table.remove` out-of-bounds gate (a REAL BUG the net was hiding).** The old
+  net only checked the 5.3-vs-5.4 arg index, so two divergences hid behind it:
+  our impl errored on **5.1** (where legacy `ltablib.c` has NO bounds check —
+  out-of-range silently removes nothing and returns ZERO results) and reported
+  arg **#2 on 5.2** (the reference reports **#1** on both 5.2 and 5.3). The new
+  cross-version test pins every cell of the matrix and **FAILED at baseline**,
+  proving it pins reference behavior; the faithful three-way gate
+  (5.1 inert / 5.2+5.3 arg #1 / 5.4+5.5 arg #2) was then landed in the same
+  commit.
+- **5.1 `__len` bypass.** Under 5.1, `table.insert` (and `#`) use the primitive
+  length and IGNORE a table `__len` metamethod; 5.2+ honors it. Pinned both
+  directions (was roster-check only).
+- **pack/unpack boundaries.** `table.pack`'s `.n` counts all args including
+  holes/trailing nils; `table.unpack` raises "too many results to unpack" at the
+  INT_MAX span and at the i64-extreme wrap rather than looping. Pinned (was
+  untested).
+- **`table.move` overlap + metamethod order.** Overlapping in-place moves copy
+  in collision-safe order (forward when the destination is clear, backward
+  otherwise); reads drive `__index` and writes drive `__newindex` interleaved
+  one element at a time. Pinned both the result and the call order (was
+  untested).
+
+### Left load-bearing — extract/rename only, NEVER refactored (the net does not cover these)
+
+- **The quicksort core** — `partition` (Sedgewick median-of-three with the
+  comparator-callback inner loops), `aux_sort` (recurse-smaller / tail-loop-
+  larger with pivot re-randomization), `sort_comp`, `choose_pivot`, `set2`,
+  `randomize_pivot`. Left **entirely untouched** — docs, C-evidence blocks, and
+  the stack-evolution annotations all kept verbatim. The behavioral net pins the
+  OBSERVABLE sort contract (stability via a descending comparator, invalid-order
+  detection, mixed-type compare error, array-too-big) but **cannot** observe the
+  partition-internal comparator-callback-during-GC safety — that is a
+  load-bearing region the behavioral net does not fully guard (an honest
+  limitation, the table analogue of math's un-pinnable 5.1/5.2 PRNG).
+- **The wrapping-subtract index bounds checks** in insert/remove/move/unpack —
+  the unsigned `(pos - 1) < bound` idiom that rejects `pos <= 0` and overflow in
+  one comparison. Left as-is (no proven-equivalent helper was extracted, because
+  extracting one without a dedicated equivalence test would itself be the
+  unverified churn this phase forbids).
+- **ALL version gates — NOT consolidated.** The `open_table` per-version roster
+  (`move` 5.3+, `pack`/`unpack` 5.2+, `create` 5.5, the 5.1 legacy
+  `getn`/`setn`/`maxn`/`foreach`/`foreachi`), the three-way `remove` arg-gate,
+  and the `__len` semantics are each checked per-version in isolation by the
+  oracle. The per-version roster-delta comments were KEPT.
+
+### Honest-negative recorded in this graduation
+
+The sort partition's internal invariant — that the user comparator callback
+cannot corrupt the partition state even if it triggers a GC or mutates the array
+mid-sort — is **not behaviorally observable** and so cannot be reference-pinned
+(it is the table analogue of math's platform-dependent 5.1/5.2 PRNG, which P2a
+also declined to pin tautologically). The net pins the externally-visible sort
+contract and STOPS there; the quicksort core is fenced off as load-bearing
+rather than papered with a self-referential test. This is a correct STOP on a
+blind spot, not a coverage gap.
+
+### Recipes harvested
+
+See the "Recipe ledger" → "### P2b — table" in
+`docs/IDIOMATIZATION_SPRINT_2_SPEC.md`.
