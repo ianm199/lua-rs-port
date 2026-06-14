@@ -1615,11 +1615,9 @@ fn cg_patch_test_reg(fs: &mut FuncState, node: i32, reg: u32) -> bool {
 ///
 /// Mirrors C's `removevalues` from `lcode.c`.
 fn cg_remove_values(fs: &mut FuncState, list: i32) {
-    let mut list = list;
-    while list != NO_JUMP {
-        let next = cg_get_jump(fs, list);
-        cg_patch_test_reg(fs, list, lua_code::opcodes::NO_REG);
-        list = next;
+    let mut walk = JumpList::new(list);
+    while let Some(pc) = walk.next(fs) {
+        cg_patch_test_reg(fs, pc, lua_code::opcodes::NO_REG);
     }
 }
 
@@ -1686,14 +1684,49 @@ fn cg_set_inst_at(fs: &mut FuncState, pc: i32, inst: lua_code::opcodes::Instruct
 
 /// Return the absolute pc that the jump at `pc` targets, or `NO_JUMP` if the
 /// jump's offset field is still the sentinel.
-///
-/// Mirrors C's `getjump` from `lcode.c`.
 fn cg_get_jump(fs: &FuncState, pc: i32) -> i32 {
     let offset = cg_inst_at(fs, pc).arg_s_j();
     if offset == NO_JUMP {
         NO_JUMP
     } else {
         (pc + 1) + offset
+    }
+}
+
+/// A cursor over a singly-linked jump list — the chain of pending `OP_JMP`s
+/// threaded through their own offset fields, terminated by `NO_JUMP`.
+///
+/// This is a *lending* cursor rather than a plain [`Iterator`]: every visit
+/// body mutates the same [`FuncState`] (patching the visited jump's controller
+/// or offset), so the chain cannot be borrowed across steps. Instead the
+/// `FuncState` is handed back in on each [`JumpList::next`] call.
+///
+/// Crucially, `next` computes the *following* node **before** returning the
+/// current one, so a body may rewrite the current node's instruction without
+/// breaking the walk — this preserves the order the hand-written loops relied
+/// on (read-next-then-mutate). Yielding the same pc sequence as the manual
+/// `while pc != NO_JUMP { ...; pc = cg_get_jump(fs, pc) }` is the behavioral
+/// invariant; the jump offsets that ultimately get patched must not move.
+struct JumpList {
+    cur: i32,
+}
+
+impl JumpList {
+    /// Begin walking the list rooted at `list` (which may be `NO_JUMP`).
+    fn new(list: i32) -> Self {
+        JumpList { cur: list }
+    }
+
+    /// Yield the current jump pc and advance to its successor, or `None` at the
+    /// end of the chain. The successor is read *before* this returns, so the
+    /// caller may rewrite the yielded node without disturbing the walk.
+    fn next(&mut self, fs: &FuncState) -> Option<i32> {
+        if self.cur == NO_JUMP {
+            return None;
+        }
+        let pc = self.cur;
+        self.cur = cg_get_jump(fs, pc);
+        Some(pc)
     }
 }
 
@@ -1733,15 +1766,12 @@ fn cg_concat(fs: &mut FuncState, l1: &mut i32, l2: i32) -> Result<(), LuaError> 
         *l1 = l2;
         return Ok(());
     }
-    let mut list = *l1;
-    loop {
-        let next = cg_get_jump(fs, list);
-        if next == NO_JUMP {
-            break;
-        }
-        list = next;
+    let mut walk = JumpList::new(*l1);
+    let mut tail = *l1;
+    while let Some(pc) = walk.next(fs) {
+        tail = pc;
     }
-    cg_fix_jump(fs, list, l2)
+    cg_fix_jump(fs, tail, l2)
 }
 
 /// Patch every jump in the singly-linked list rooted at `list` to land at
@@ -2430,14 +2460,13 @@ fn cg_discharge_to_reg(
 /// meaning a concrete LoadTrue / LFalseSkip pair must be emitted to provide
 /// the value at the fallthrough.
 fn cg_need_value(fs: &FuncState, list: i32) -> bool {
-    let mut list = list;
-    while list != NO_JUMP {
-        let ctrl_pc = cg_get_jump_control(fs, list);
+    let mut walk = JumpList::new(list);
+    while let Some(pc) = walk.next(fs) {
+        let ctrl_pc = cg_get_jump_control(fs, pc);
         let ctrl = cg_inst_at(fs, ctrl_pc);
         if ctrl.opcode() != Some(lua_code::opcodes::OpCode::TestSet) {
             return true;
         }
-        list = cg_get_jump(fs, list);
     }
     false
 }
@@ -2461,15 +2490,13 @@ fn cg_patch_list_aux(
     reg: u32,
     dtarget: i32,
 ) -> Result<(), LuaError> {
-    let mut list = list;
-    while list != NO_JUMP {
-        let next = cg_get_jump(fs, list);
-        if cg_patch_test_reg(fs, list, reg) {
-            cg_fix_jump(fs, list, vtarget)?;
+    let mut walk = JumpList::new(list);
+    while let Some(pc) = walk.next(fs) {
+        if cg_patch_test_reg(fs, pc, reg) {
+            cg_fix_jump(fs, pc, vtarget)?;
         } else {
-            cg_fix_jump(fs, list, dtarget)?;
+            cg_fix_jump(fs, pc, dtarget)?;
         }
-        list = next;
     }
     Ok(())
 }
@@ -6084,6 +6111,105 @@ fn local_token_value(v: &lua_lex::TokenValue) -> TokenValue {
             i: 0,
             ts: Some(s.clone()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bare [`FuncState`] with an empty prototype, enough to exercise the
+    /// codegen primitives that only read/write `f.code` (jump emission and the
+    /// jump-list cursor).
+    fn bare_fs() -> FuncState {
+        FuncState {
+            f: Box::new(LuaProto::placeholder()),
+            prev: None,
+            bl: None,
+            pc: 0,
+            lasttarget: 0,
+            previousline: 0,
+            nk: 0,
+            np: 0,
+            nabslineinfo: 0,
+            firstlocal: 0,
+            firstlabel: 0,
+            ndebugvars: 0,
+            nactvar: 0,
+            first_scope_barrier: 0,
+            nups: 0,
+            freereg: 0,
+            iwthabs: 0,
+            needclose: false,
+            last_token_line: 0,
+        }
+    }
+
+    /// Emit three `OP_JMP`s, thread them into one list via [`cg_concat`], then
+    /// confirm the [`JumpList`] cursor yields exactly the pc sequence a manual
+    /// `while pc != NO_JUMP { pc = cg_get_jump(fs, pc) }` walk produces. This is
+    /// the behavioral invariant the iterator transformation must preserve.
+    #[test]
+    fn jumplist_yields_same_pcs_as_manual_walk() {
+        let mut fs = bare_fs();
+
+        let mut list = NO_JUMP;
+        let mut emitted = Vec::new();
+        for _ in 0..3 {
+            let pc = cg_jump(&mut fs, 1);
+            emitted.push(pc);
+            cg_concat(&mut fs, &mut list, pc).unwrap();
+        }
+
+        let mut manual = Vec::new();
+        let mut pc = list;
+        while pc != NO_JUMP {
+            manual.push(pc);
+            pc = cg_get_jump(&fs, pc);
+        }
+
+        let mut via_cursor = Vec::new();
+        let mut walk = JumpList::new(list);
+        while let Some(pc) = walk.next(&fs) {
+            via_cursor.push(pc);
+        }
+
+        assert_eq!(manual, via_cursor);
+        assert_eq!(manual.len(), 3);
+        let mut sorted = manual.clone();
+        sorted.sort_unstable();
+        let mut sorted_emitted = emitted.clone();
+        sorted_emitted.sort_unstable();
+        assert_eq!(sorted, sorted_emitted);
+    }
+
+    /// An empty list yields nothing; a single-node list yields exactly that pc.
+    #[test]
+    fn jumplist_empty_and_single() {
+        let mut fs = bare_fs();
+
+        let mut empty = JumpList::new(NO_JUMP);
+        assert_eq!(empty.next(&fs), None);
+
+        let pc = cg_jump(&mut fs, 1);
+        let mut single = JumpList::new(pc);
+        assert_eq!(single.next(&fs), Some(pc));
+        assert_eq!(single.next(&fs), None);
+    }
+
+    /// [`cg_concat`] must still fix the tail of an existing list to point at the
+    /// appended jump — the cursor-based tail walk must find the same tail node
+    /// the old hand loop did.
+    #[test]
+    fn cg_concat_links_tail_to_appended_jump() {
+        let mut fs = bare_fs();
+        let a = cg_jump(&mut fs, 1);
+        let b = cg_jump(&mut fs, 1);
+        let mut list = a;
+        cg_concat(&mut fs, &mut list, b).unwrap();
+        assert_eq!(list, a);
+        assert_eq!(cg_get_jump(&fs, a), b);
+        assert_eq!(cg_get_jump(&fs, b), NO_JUMP);
     }
 }
 
