@@ -1385,6 +1385,11 @@ pub fn lua_yieldk(
     );
 
     if !state.is_yieldable() {
+        if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+            return Err(LuaError::runtime(format_args!(
+                "attempt to yield across metamethod/C-call boundary"
+            )));
+        }
         if !state.is_main_thread() {
             return Err(LuaError::runtime(format_args!(
                 "attempt to yield across a C-call boundary"

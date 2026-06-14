@@ -3967,6 +3967,30 @@ fn v_sort_observable_contract_crossversion() {
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn v_yield_outside_coroutine_wording_crossversion() {
+    // `coroutine.yield` from outside a resumable coroutine (VM finding F3).
+    // 5.1's `lua_yield` has a single message — "attempt to yield across
+    // metamethod/C-call boundary" — for both the main-thread and C-call-boundary
+    // cases. 5.2+ split it into "attempt to yield from outside a coroutine".
+    // Verified vs /tmp/lua-refs/bin/lua5.x for the main-thread case below.
+    err_contains(
+        LuaVersion::V51,
+        "coroutine.yield()",
+        "attempt to yield across metamethod/C-call boundary",
+    );
+    for v in [
+        LuaVersion::V52,
+        LuaVersion::V53,
+        LuaVersion::V54,
+        LuaVersion::V55,
+    ] {
+        err_contains(v, "coroutine.yield()", "attempt to yield from outside a coroutine");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
 fn v_pattern_too_complex_gate_crossversion() {
     // The matcher bounds recursion depth at MAXCCALLS (200) and raises
     // "pattern too complex" when a pattern recurses past it. pm.lua exercises
