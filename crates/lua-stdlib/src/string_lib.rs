@@ -28,6 +28,12 @@ const LUA_MAX_CAPTURES: usize = 32;
 
 const MAX_CC_CALLS: i32 = 200;
 
+/// The initial `matchdepth` used on Lua 5.1, whose matcher has no recursion
+/// guard. Set high enough that the explicit "pattern too complex" bound never
+/// fires (the native stack overflows first, as it does in the 5.1 reference),
+/// while still leaving headroom for the per-call decrement to stay non-negative.
+const NO_DEPTH_LIMIT: i32 = i32::MAX;
+
 const L_ESC: u8 = b'%';
 
 const SPECIALS: &[u8] = b"^$*+?.([%-";
@@ -104,6 +110,12 @@ struct MatchState<'a> {
     pat: &'a [u8],
     /// Recursion depth counter; decremented on entry, incremented on return.
     matchdepth: i32,
+    /// Value `matchdepth` is (re)initialized to per anchor attempt. `MAX_CC_CALLS`
+    /// on 5.2+ (the "pattern too complex" guard); a high sentinel on 5.1, whose
+    /// `lstrlib.c` `match()` has no depth counter at all — there a too-deep
+    /// pattern simply matches (and only a pathologically deep one overflows the
+    /// native stack, exactly as the 5.1 reference does).
+    initial_matchdepth: i32,
     /// Number of capture records currently in use.
     level: u8,
     /// Capture records indexed `0..level`.
@@ -121,11 +133,20 @@ struct MatchState<'a> {
 }
 
 impl<'a> MatchState<'a> {
-    fn new(src: &'a [u8], pat: &'a [u8], step_limit: u64) -> Self {
+    /// Build a matcher state. `bound_depth` is `true` on 5.2+ (apply the
+    /// `MAX_CC_CALLS` "pattern too complex" guard) and `false` on 5.1 (no guard
+    /// — 5.1's `match()` has no `matchdepth` field).
+    fn new(src: &'a [u8], pat: &'a [u8], step_limit: u64, bound_depth: bool) -> Self {
+        let initial_matchdepth = if bound_depth {
+            MAX_CC_CALLS
+        } else {
+            NO_DEPTH_LIMIT
+        };
         MatchState {
             src,
             pat,
-            matchdepth: MAX_CC_CALLS,
+            matchdepth: initial_matchdepth,
+            initial_matchdepth,
             level: 0,
             captures: [Capture::default(); LUA_MAX_CAPTURES],
             steps: 0,
@@ -136,7 +157,7 @@ impl<'a> MatchState<'a> {
 
     fn reset_level(&mut self) {
         self.level = 0;
-        debug_assert!(self.matchdepth == MAX_CC_CALLS);
+        debug_assert!(self.matchdepth == self.initial_matchdepth);
     }
 }
 
@@ -237,6 +258,27 @@ fn get_end_pos(pos: i64, len: usize) -> usize {
     } else {
         len.wrapping_add(pos as usize).wrapping_add(1)
     }
+}
+
+/// Whether the matcher applies the `MAX_CC_CALLS` recursion bound (the "pattern
+/// too complex" guard). The guard was added in 5.2; 5.1's `lstrlib.c` `match()`
+/// has no `matchdepth` field, so a too-deep pattern matches there (only a
+/// pathologically deep one overflows the native stack). Single source of truth
+/// for that seam — verified against the 5.1.5 source (no `MAXCCALLS`).
+fn matcher_bounds_depth(version: lua_types::LuaVersion) -> bool {
+    version != lua_types::LuaVersion::V51
+}
+
+/// Whether `gmatch`/`gsub` suppress a redundant empty match at the end of the
+/// previous match (the `e != lastmatch` guard). Added in 5.3.3 (present in
+/// 5.3/5.4/5.5, absent in 5.1/5.2). Without it, `gsub(" *", "-")` doubles to
+/// `-a--b--c-d-` and `gmatch("%a*")` emits spurious empty captures. Single
+/// source of truth for that seam — verified against the 5.2.4 vs 5.3.6 sources.
+fn matcher_dedups_empty_match(version: lua_types::LuaVersion) -> bool {
+    matches!(
+        version,
+        lua_types::LuaVersion::V53 | lua_types::LuaVersion::V54 | lua_types::LuaVersion::V55
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1190,7 +1232,8 @@ fn str_find_aux(state: &mut LuaState, find: bool) -> Result<usize, LuaError> {
         }
     } else {
         let step_limit = state.sandbox_match_step_limit();
-        let mut ms = MatchState::new(s, p, step_limit);
+        let bound_depth = matcher_bounds_depth(state.global().lua_version);
+        let mut ms = MatchState::new(s, p, step_limit, bound_depth);
         let anchor = p.first() == Some(&b'^');
         let p_slice = if anchor { &p[1..] } else { p };
         ms.pat = p_slice;
@@ -1285,8 +1328,11 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 
     let ls = s.len();
 
+    let version = state.global().lua_version;
+    let dedup = matcher_dedups_empty_match(version);
+
     let step_limit = state.sandbox_match_step_limit();
-    let mut ms = MatchState::new(s, p, step_limit);
+    let mut ms = MatchState::new(s, p, step_limit, matcher_bounds_depth(version));
     let start_byte = required_start_byte(p);
 
     let mut src = start_pos;
@@ -1300,7 +1346,7 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         ms.reset_level();
         if let Some(e) = match_pat(&mut ms, src, 0)? {
-            if Some(e) != last_match {
+            if !dedup || Some(e) != last_match {
                 hit = Some((src, e));
                 break;
             }
@@ -1318,7 +1364,10 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
     if let Some((src, e)) = hit {
         {
             let mut iter = iter_state.borrow_mut();
-            iter.pos = e;
+            // 5.3+ stores the raw match end and de-dups via `last_match` on the
+            // next call. Pre-5.3 has no `last_match`; it advances past an empty
+            // match by one position (`if (e == src) newstart++`).
+            iter.pos = if dedup || e != src { e } else { e + 1 };
             iter.last_match = Some(e);
         }
         return push_captures(state, &ms, Some((src, e)));
@@ -1502,8 +1551,11 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
     let anchor = pat.first() == Some(&b'^');
     let pat_slice = if anchor { &pat[1..] } else { pat };
 
+    let version = state.global().lua_version;
+    let dedup = matcher_dedups_empty_match(version);
+
     let step_limit = state.sandbox_match_step_limit();
-    let mut ms = MatchState::new(src, pat_slice, step_limit);
+    let mut ms = MatchState::new(src, pat_slice, step_limit, matcher_bounds_depth(version));
     let start_byte = if anchor {
         None
     } else {
@@ -1529,24 +1581,53 @@ pub fn str_gsub(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         ms.reset_level();
         let maybe_e = match_pat(&mut ms, src_pos, 0)?;
-        if let Some(e) = maybe_e {
-            if last_match != Some(e) {
-                n += 1;
-                let delta = add_value(state, &ms, &mut buf, src_pos, e, tr)?;
-                changed |= delta;
-                src_pos = e;
-                last_match = Some(e);
+        if dedup {
+            // 5.3+: `e != lastmatch` suppresses the redundant empty match left
+            // over from the previous non-empty one; on accept, `src = e`
+            // unconditionally and the empty re-match is deduped next iteration.
+            if let Some(e) = maybe_e {
+                if last_match != Some(e) {
+                    n += 1;
+                    let delta = add_value(state, &ms, &mut buf, src_pos, e, tr)?;
+                    changed |= delta;
+                    src_pos = e;
+                    last_match = Some(e);
+                } else if src_pos < ms.src.len() {
+                    buf.push(ms.src[src_pos]);
+                    src_pos += 1;
+                } else {
+                    break;
+                }
             } else if src_pos < ms.src.len() {
                 buf.push(ms.src[src_pos]);
                 src_pos += 1;
             } else {
                 break;
             }
-        } else if src_pos < ms.src.len() {
-            buf.push(ms.src[src_pos]);
-            src_pos += 1;
         } else {
-            break;
+            // 5.1/5.2: no `lastmatch`. Every match counts; a non-empty match
+            // skips to `e`, an empty match (or no match) copies one char. This
+            // is what doubles `gsub(" *", "-")` to `-a--b--c-d-`. Mirrors the
+            // 5.2.4 `lstrlib.c` `if (e) { n++; add_value } if (e && e>src) src=e;
+            // else if (src<end) addchar(*src++); else break;` shape.
+            if let Some(e) = maybe_e {
+                n += 1;
+                let delta = add_value(state, &ms, &mut buf, src_pos, e, tr)?;
+                changed |= delta;
+                if e > src_pos {
+                    src_pos = e;
+                } else if src_pos < ms.src.len() {
+                    buf.push(ms.src[src_pos]);
+                    src_pos += 1;
+                } else {
+                    break;
+                }
+            } else if src_pos < ms.src.len() {
+                buf.push(ms.src[src_pos]);
+                src_pos += 1;
+            } else {
+                break;
+            }
         }
         if ms.aborted || anchor {
             break;
