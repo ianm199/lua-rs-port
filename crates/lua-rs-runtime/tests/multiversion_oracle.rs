@@ -1069,6 +1069,72 @@ fn v55_compat_math_partition() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// ldexp / frexp SUBNORMAL edges — promoted into the standard gate (P2a).
+//
+// The bit-scaling in `ldexp` and the mantissa/exponent split in `frexp` are
+// load-bearing: a naive `x * 2f64.powi(e)` would underflow the intermediate
+// `2^e` factor and lose every subnormal result, and a naive frexp would mishandle
+// subnormal inputs (which have a zero stored exponent). math.lua does not probe
+// these edges, and only ONE (`ldexp(1.0,-1074)`) was previously pinned, on
+// 5.3/5.4 alone. These run on every version that exposes the functions —
+// 5.3, 5.4, 5.5 — so the subnormal tripwire fires unconditionally.
+//
+// The subnormal float values are pinned via `tostring` — the real observable
+// rendering. 5.5 changed the default float formatter to print more significant
+// digits than 5.3/5.4, so the smallest-subnormal and smallest-normal constants
+// are split per version group. Mantissa (0.5/-0.5), integer exponents, 0.0, and
+// inf render identically across versions. Captured from lua5.3.6 / lua5.4.7 /
+// lua5.5.0. (Note: `string.format("%g", subnormal)` is NOT used here — our
+// `%g` formatter has a separate, pre-existing subnormal-rendering bug, out of
+// scope for the math packet; `tostring` renders subnormals correctly.)
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn ldexp_frexp_subnormal_edges() {
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        // `tostring` of the smallest positive subnormal (2^-1074) and the
+        // smallest normal (2^-1022): 5.5's formatter prints more digits.
+        let (smallest_subnormal, smallest_normal) = match v {
+            LuaVersion::V55 => ("4.94065645841247e-324", "2.2250738585072014e-308"),
+            _ => ("4.9406564584125e-324", "2.2250738585072e-308"),
+        };
+
+        // Smallest positive subnormal: 1.0 * 2^-1074. A naive `2f64.powi(-1074)`
+        // is 0.0, so this only passes with the bounded bit-scaling.
+        eq(v, "return tostring(math.ldexp(1.0, -1074))", smallest_subnormal);
+        // Same subnormal reached via a different (x, e) split.
+        eq(v, "return tostring(math.ldexp(0.5, -1073))", smallest_subnormal);
+        // One exponent past the smallest subnormal underflows exactly to +0.0.
+        eq(v, "return math.ldexp(1.0, -1075)", "0.0");
+        // Smallest NORMAL: 2^-1022.
+        eq(v, "return tostring(math.ldexp(1.0, -1022))", smallest_normal);
+        // Overflow past the top of the f64 range goes to +inf.
+        eq(v, "return math.ldexp(1.0, 1024)", "inf");
+
+        // frexp of the smallest positive subnormal: (0.5, -1073). A subnormal
+        // input has a zero stored exponent; this exercises the scale-up-and-
+        // correct branch. Mantissa and exponent render identically on all three.
+        eq(
+            v,
+            r#"local m, e = math.frexp(5e-324) return tostring(m) .. "," .. tostring(e)"#,
+            "0.5,-1073",
+        );
+        // frexp of the smallest NORMAL (2^-1022): (0.5, -1021).
+        eq(
+            v,
+            r#"local m, e = math.frexp(2.2250738585072014e-308) return tostring(m) .. "," .. tostring(e)"#,
+            "0.5,-1021",
+        );
+        // Sign preserved on a subnormal input.
+        eq(
+            v,
+            r#"local m, e = math.frexp(-5e-324) return tostring(m) .. "," .. tostring(e)"#,
+            "-0.5,-1073",
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // 5.4 regression guard — these must NOT drift (the multiversion work is
 // required to leave 5.4 byte-identical to lua5.4.7 on these).
 // ─────────────────────────────────────────────────────────────────────────
