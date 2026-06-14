@@ -1,43 +1,30 @@
-//! Lexical analyzer — port of `llex.c` + `llex.h`.
+//! Lexical analyzer for omniLua.
 //!
-//! Provides the Lua 5.4 lexer: character-by-character scanning of a [`ZIO`]
-//! input stream into [`Token`] values, with one-token lookahead.  The
-//! `llex.h` header is merged here per PORTING.md §1.
+//! Scans a [`ZIO`] byte stream into [`Token`] values one character at a time,
+//! with one-token lookahead. One core lexes Lua 5.1 through 5.5; the lexical
+//! differences between versions (which operators exist, escape handling,
+//! reserved words, error wording) are gated on the active [`LuaVersion`] and are
+//! the behavioural invariant this crate guarantees.
 //!
-//! # C source files
-//! - `reference/lua-5.4.7/src/llex.c`  (581 lines, 24 functions)
-//! - `reference/lua-5.4.7/src/llex.h`  (91 lines; merged here)
+//! This file was originally a line-by-line port of `llex.c` but has been
+//! idiomatized and the C correspondence removed (see `GRADUATED.md`); behaviour
+//! is held by bytecode parity plus the lexical-error / line-number oracle, not
+//! by matching the C source.
 //!
-//! # Design notes
-//! - `LexState.L` (back-pointer to `lua_State`) is removed.  All functions
-//!   that need `LuaState` receive it as `state: &mut LuaState`.
-//! - `Token.token` is `i32` in Phase A (matching the C `int token` field).
-//!   Single-byte tokens are their ASCII values; reserved-word tokens start at
-//!   `FIRST_RESERVED` (257).  A proper `TokenKind` enum is deferred to Phase B.
-//! - `save` / `save_and_next` are now fallible (`Result<(), LuaError>`); the
-//!   `?` operator replaces the C noreturn `lexerror` call on buffer overflow.
-//! - The `goto read_save / only_save / no_save` pattern in `read_string` is
-//!   translated via the local `EscapeResult` enum.
-
-// TODO(port): resolve remaining cross-crate calls (intern_str, table anchor,
-// number parsing, utf8 encoding) in Phase B.  Canonical cross-crate type
-// imports are now in place per harness/type-vocabulary.tsv (see below).
+//! [`LuaVersion`]: lua_types::LuaVersion
 
 use std::io::Write as IoWrite;
 
-// PORT NOTE: GcRef<T> = Rc<T> in Phases A–C; replaced by real GC pointer in Phase D.
 use lua_types::gc::GcRef;
 
-// Canonical cross-crate types: imported from owner crates per
-// harness/type-vocabulary.tsv.  See PORTING.md §7.
 pub use lua_types::LuaError;
 pub use lua_types::LuaString;
 pub use lua_vm::state::LuaState;
 pub use lua_vm::table::LuaTable;
 
-/// Placeholder for `LexBuffer` from `lua_vm::zio`.
-/// TODO(port): replace with `use lua_vm::zio::LexBuffer` in Phase B.
-/// types.tsv: Mbuffer → LexBuffer
+/// Growable token-text buffer for the lexer.
+///
+/// TODO: ZIO/LexBuffer will move to lua_vm::zio (separate refactor).
 pub struct LexBuffer {
     buffer: Vec<u8>,
 }
@@ -47,35 +34,29 @@ impl LexBuffer {
         LexBuffer { buffer: Vec::new() }
     }
 
-    /// macros.tsv: luaZ_bufflen → buf.len()
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
-    /// macros.tsv: luaZ_sizebuffer → buf.capacity()
     pub fn capacity(&self) -> usize {
         self.buffer.capacity()
     }
 
-    /// macros.tsv: luaZ_buffer → buf.as_mut_slice()
     pub fn as_slice(&self) -> &[u8] {
         &self.buffer
     }
 
-    /// macros.tsv: luaZ_resetbuffer → buf.clear()
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
 
-    /// macros.tsv: luaZ_buffremove → buf.truncate_by(i)
     pub fn truncate_by(&mut self, i: usize) {
         let new_len = self.buffer.len().saturating_sub(i);
         self.buffer.truncate(new_len);
     }
 
-    /// allocated capacity. In C this changes `buffsize`, not the live byte
-    /// count `n`. The Rust analogue therefore manipulates `Vec::capacity`,
-    /// never `Vec::len` (otherwise `push_byte` would write past the live
+    /// Ensure the buffer can hold `size` bytes by adjusting allocated capacity,
+    /// never the live byte count (otherwise `push_byte` would write past the live
     /// content and leave embedded zero padding inside the token text).
     pub fn resize(&mut self, _state: &mut LuaState, size: usize) -> Result<(), LuaError> {
         if size < self.buffer.len() {
@@ -93,6 +74,47 @@ impl LexBuffer {
     fn push_byte(&mut self, c: u8) {
         self.buffer.push(c);
     }
+
+    /// The token text with `n` bytes removed from each end, copied to an owned
+    /// `Vec`.
+    ///
+    /// This is the delimiter-stripping extraction used after scanning a quoted
+    /// or long-bracket string: the buffer holds `<open-delim><content><close-delim>`
+    /// where each delimiter is `n` bytes (`n = 1` for `"`/`'`, `n = sep` for
+    /// `[=*[`). An empty `Vec` is returned when the buffer is shorter than the
+    /// two delimiters (an empty string literal).
+    ///
+    /// The copy is an ownership requirement, not a leftover C idiom: the caller
+    /// next passes these bytes to `new_string`, which needs `&mut LexState`, so
+    /// the borrow of the buffer must end first.
+    fn trim_ends(&self, n: usize) -> Vec<u8> {
+        match self.buffer.len().checked_sub(2 * n) {
+            Some(_) => self.buffer[n..self.buffer.len() - n].to_vec(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The whole token text, copied to an owned `Vec`.
+    ///
+    /// Used for identifiers/keywords, where the entire buffer is the token. As
+    /// with [`trim_ends`](Self::trim_ends) the copy releases the buffer borrow
+    /// before `new_string` takes `&mut LexState`.
+    fn to_owned_text(&self) -> Vec<u8> {
+        self.buffer.clone()
+    }
+
+    /// The live contents with a single trailing NUL removed, if present.
+    ///
+    /// Numeral scanning and error-message formatting append a `\0` to mirror
+    /// C's NUL-terminated buffer convention before reading the text back; this
+    /// drops that one sentinel byte without copying. A buffer that does not end
+    /// in NUL is returned whole.
+    fn without_trailing_nul(&self) -> &[u8] {
+        match self.buffer.last() {
+            Some(&0) => &self.buffer[..self.buffer.len() - 1],
+            _ => &self.buffer,
+        }
+    }
 }
 
 impl Default for LexBuffer {
@@ -101,15 +123,23 @@ impl Default for LexBuffer {
     }
 }
 
-/// Placeholder for `ZIO` from `lua_vm::zio`.
-/// TODO(port): replace with `use lua_vm::zio::ZIO` in Phase B.
-/// types.tsv: Zio → ZIO
+/// Chunked byte source for the lexer.
+///
+/// Pulls successive byte chunks from a reader callback and hands them out one
+/// byte at a time as `i32`, with [`EOZ`] (`-1`) signalling end of stream. A
+/// reader is permitted to be re-polled after yielding an empty chunk: an empty
+/// chunk reports `EOZ` without committing it, so a later [`getc`](ZIO::getc)
+/// asks the reader again — that is how an interactive source distinguishes a
+/// momentary stall from a true end.
+///
+/// The byte position is a single cursor into the current chunk; "remaining" is
+/// derived as `chunk.len() - cursor`, not tracked as a separate counter.
+///
+/// TODO: ZIO/LexBuffer will move to lua_vm::zio (separate refactor).
 pub struct ZIO {
-    // TODO(port): full ZIO implementation lives in lua_vm::zio; this is a stub.
     reader: Box<dyn FnMut() -> Option<Vec<u8>>>,
-    n: usize,
-    p: usize,
-    current_chunk: Vec<u8>,
+    chunk: Vec<u8>,
+    cursor: usize,
 }
 
 impl ZIO {
@@ -117,9 +147,8 @@ impl ZIO {
     pub fn new(reader: Box<dyn FnMut() -> Option<Vec<u8>>>) -> Self {
         ZIO {
             reader,
-            n: 0,
-            p: 0,
-            current_chunk: Vec::new(),
+            chunk: Vec::new(),
+            cursor: 0,
         }
     }
 
@@ -129,68 +158,56 @@ impl ZIO {
         ZIO::new(Box::new(move || once.take()))
     }
 
-    /// macros.tsv: zgetc → z.getc()
+    /// Return the next byte as `i32`, or [`EOZ`] at end of stream.
     pub fn getc(&mut self) -> i32 {
-        if self.n > 0 {
-            self.n -= 1;
-            let b = self.current_chunk[self.p] as u8;
-            self.p += 1;
-            b as i32
-        } else {
-            self.fill()
+        match self.chunk.get(self.cursor) {
+            Some(&b) => {
+                self.cursor += 1;
+                b as i32
+            }
+            None => self.fill(),
         }
     }
 
+    /// Pull the next non-exhausted chunk and yield its first byte. An exhausted
+    /// reader (`None`) or an empty chunk both report `EOZ` without advancing the
+    /// cursor, so the reader may be asked again on the next [`getc`](ZIO::getc).
     fn fill(&mut self) -> i32 {
         match (self.reader)() {
-            None => EOZ,
-            Some(chunk) if chunk.is_empty() => EOZ,
-            Some(chunk) => {
-                self.n = chunk.len() - 1;
-                self.current_chunk = chunk;
-                self.p = 0;
-                let b = self.current_chunk[self.p] as u8;
-                self.p += 1;
-                b as i32
+            Some(chunk) if !chunk.is_empty() => {
+                self.chunk = chunk;
+                self.cursor = 1;
+                self.chunk[0] as i32
             }
+            _ => EOZ,
         }
     }
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// macros.tsv: FIRST_RESERVED → const FIRST_RESERVED: i32 = 257
 /// First token kind value that is not a single-byte character.
 /// Single-byte tokens are represented by their ASCII value (0-255).
 pub const FIRST_RESERVED: i32 = 257;
 
-// macros.tsv: LUA_ENV → const LUA_ENV: &[u8] = b"_ENV"
 /// Name of the global environment upvalue.
 pub const LUA_ENV: &[u8] = b"_ENV";
 
-// macros.tsv: NUM_RESERVED → const NUM_RESERVED: usize = (TK_WHILE - FIRST_RESERVED + 1) as usize
 /// Number of reserved words (keywords).
 pub const NUM_RESERVED: usize = (TK_WHILE - FIRST_RESERVED + 1) as usize;
 
-// macros.tsv: EOZ → const EOZ: i32 = -1
 /// End-of-stream sentinel returned by ZIO::getc.
 pub const EOZ: i32 = -1;
 
-// macros.tsv: MAX_SIZE → const MAX_SIZE: usize = ...
 const MAX_SIZE: usize = if std::mem::size_of::<usize>() < std::mem::size_of::<i64>() {
     usize::MAX
 } else {
     i64::MAX as usize
 };
 
-// macros.tsv: LUA_MIN_BUFFER → const LUA_MIN_BUFFER: usize = 32
 const LUA_MIN_BUFFER: usize = 32;
 
-// ── Token kind constants (ORDER RESERVED — matches C enum RESERVED) ───────────
-//
-// In C these are enum values.  In Rust we use i32 constants for Phase A
-// (faithful to `Token.token: int` in C) with a TODO for a proper enum in Phase B.
-//
+// ── Token kind constants (ORDER RESERVED) ─────────────────────────────────────
 
 /// `and`
 pub const TK_AND: i32 = 257;
@@ -317,45 +334,34 @@ pub static LUAX_TOKENS: &[&[u8]] = &[
     b"<string>",
 ];
 
-// ── SemInfo / TokenValue ───────────────────────────────────────────────────────
+// ── TokenValue ──────────────────────────────────────────────────────────────────
 
-// types.tsv: SemInfo → TokenValue
 /// Semantic payload carried by a token.
-///
-/// Corresponds to `SemInfo` (a C union) in `llex.h`.  In Rust this is a
-/// discriminated union (enum).
-///
-/// # C mapping
-/// ```text
-/// SemInfo.r   → TokenValue::Float(f64)      (lua_Number)
-/// SemInfo.i   → TokenValue::Int(i64)        (lua_Integer)
-/// SemInfo.ts  → TokenValue::Str(GcRef<LuaString>)
-/// (no C field) → TokenValue::None           (default / unset)
-/// ```
 #[derive(Clone)]
 pub enum TokenValue {
     /// No semantic value (default; used for single-byte and most multi-char tokens).
     None,
-    /// Float literal payload.  C: `seminfo.r` (`lua_Number`).
+    /// Float literal payload.
     Float(f64),
-    /// Integer literal payload.  C: `seminfo.i` (`lua_Integer`).
+    /// Integer literal payload.
     Int(i64),
-    /// String/name payload.  C: `seminfo.ts` (`TString *`).
+    /// String/name payload.
     Str(GcRef<LuaString>),
 }
 
 // ── Token ─────────────────────────────────────────────────────────────────────
 
-// types.tsv: Token → Token;  Token.token → i32 (Phase A; TODO: TokenKind enum Phase B)
 /// A single lexed token with its semantic payload.
 ///
 /// `kind` is an `i32` whose value is either an ASCII byte code (for single-byte
 /// tokens like `+`, `-`, `[`) or one of the `TK_*` constants (for reserved
 /// words, multi-char symbols, and literals).
 ///
-/// TODO(port): Phase B — replace `kind: i32` with a proper `TokenKind` enum
-/// covering both single-byte and named tokens (e.g. `TokenKind::Char(u8)` +
-/// named variants).
+/// The `i32` kind is the **cross-crate boundary**: `lua-parse` and the error
+/// formatters consume these `TK_*` codes directly, so it stays an integer by
+/// design rather than a typed enum. The lexer's own scan loop does its
+/// dispatch on the internal [`Peek`] enum instead — the typed-match lives
+/// inside the lexer, the integer codes cross the boundary.
 #[derive(Clone)]
 pub struct Token {
     pub kind: i32,
@@ -379,53 +385,28 @@ impl Token {
 
 // ── LexState ──────────────────────────────────────────────────────────────────
 
-// types.tsv: LexState → LexState;  LexState.L removed (thread via &mut LuaState)
 /// Per-chunk lexer (and shared parser) state.
 ///
-/// Corresponds to `LexState` in `llex.h`.  Owns the input stream, token
-/// buffer, and current/lookahead tokens.
-///
-/// # C mapping (types.tsv)
-/// ```text
-/// LexState.current    → current: i32        (charint; -1 = EOZ)
-/// LexState.linenumber → linenumber: i32
-/// LexState.lastline   → lastline: i32
-/// LexState.t          → t: Token            (current token)
-/// LexState.lookahead  → lookahead: Token    (one-token lookahead)
-/// LexState.fs         → fs: Option<Box<FuncState>>   (parser state)
-/// LexState.L          → (removed; callers pass &mut LuaState)
-/// LexState.z          → z: ZIO              (owned input stream)
-/// LexState.buff       → buff: LexBuffer     (owned token-text buffer)
-/// LexState.h          → h: GcRef<LuaTable>  (string-anchor table)
-/// LexState.dyd        → dyd: DynData        (parser dynamic data)
-/// LexState.source     → source: GcRef<LuaString>
-/// LexState.envn       → envn: GcRef<LuaString>
-/// ```
+/// Owns the input stream, token buffer, and current/lookahead tokens.
 pub struct LexState {
     pub current: i32,
     pub linenumber: i32,
     pub lastline: i32,
     pub t: Token,
     pub lookahead: Token,
-    // TODO(port): Box<FuncState> once FuncState lands in lua-parse (Phase B)
     pub fs: Option<()>,
-    // PORT NOTE: C held a pointer; Rust owns the ZIO directly per types.tsv.
     pub z: ZIO,
-    // PORT NOTE: C held a pointer; Rust owns the LexBuffer directly per types.tsv.
     pub buff: LexBuffer,
-    // TODO(port): GcRef<LuaTable> once LuaTable is defined in Phase B
     pub h: Option<GcRef<LuaTable>>,
-    /// Per-parse-session anchor for long strings. C-Lua's `ls->h` is a Lua
-    /// table that deduplicates all literal strings within a chunk (both short
-    /// and long), so e.g. `local s1 <const>="..."` and `local s2 <const>="..."`
-    /// with identical 50-byte payloads share one `TString` object — which is
-    /// what makes `string.format("%p", s1) == string.format("%p", s2)` hold.
-    /// Short strings already share identity via the global `interned_lt` pool,
-    /// but long strings (>LUAI_MAXSHORTLEN = 40) are not globally interned and
-    /// need this session-level map. Keyed by the string bytes; populated lazily
-    /// by `new_string`.
+    /// Per-parse-session anchor for long strings, deduplicating all literal
+    /// strings within a chunk so e.g. `local s1 <const>="..."` and
+    /// `local s2 <const>="..."` with identical 50-byte payloads share one
+    /// `LuaString` object — which is what makes
+    /// `string.format("%p", s1) == string.format("%p", s2)` hold. Short strings
+    /// already share identity via the global `interned_lt` pool, but long
+    /// strings (>40 bytes) are not globally interned and need this session-level
+    /// map. Keyed by the string bytes; populated lazily by `new_string`.
     pub long_str_anchor: std::collections::HashMap<Vec<u8>, GcRef<LuaString>>,
-    // TODO(port): DynData once parser types land in Phase B
     pub dyd: Option<()>,
     pub source: GcRef<LuaString>,
     pub envn: GcRef<LuaString>,
@@ -440,12 +421,8 @@ pub struct LexState {
 
 // ── Character-classification helpers ─────────────────────────────────────────
 //
-// These are simplified ASCII implementations for Phase A.
-// TODO(port): import from lua_vm::ctype in Phase B; the full table handles
-// the LUA_UCID (Unicode identifiers) flag and matches the C bit-table exactly.
-//
-// PORT NOTE: the C macros take `int` (not `char`) so they handle EOZ (-1) safely.
-// These Rust fns match that contract: EOZ returns false for all predicates.
+// These take `i32` (a byte, or EOZ = -1) so EOZ returns false for all
+// predicates.
 
 #[inline]
 fn is_digit(c: i32) -> bool {
@@ -459,7 +436,7 @@ fn is_xdigit(c: i32) -> bool {
         || (c >= b'A' as i32 && c <= b'F' as i32)
 }
 
-// ALPHABIT: ASCII letters + '_'
+// ASCII letters + '_'
 #[inline]
 fn is_lalpha(c: i32) -> bool {
     (c >= b'a' as i32 && c <= b'z' as i32)
@@ -477,7 +454,7 @@ fn is_space(c: i32) -> bool {
     matches!(c, 9 | 10 | 11 | 12 | 13 | 32) // \t \n \v \f \r space
 }
 
-// PRINTBIT: printable ASCII (graph + space), i.e. 0x20-0x7E
+// printable ASCII (graph + space), i.e. 0x20-0x7E
 #[inline]
 fn is_print(c: i32) -> bool {
     c >= 0x20 && c <= 0x7E
@@ -492,54 +469,30 @@ fn curr_is_newline(ls: &LexState) -> bool {
 
 /// Advance the lexer by one character.
 ///
-/// Corresponds to the `next(ls)` macro.  Named `advance` to avoid collision
-/// with Rust's iterator method.
+/// Named `advance` to avoid collision with Rust's iterator method.
 #[inline]
 fn advance(ls: &mut LexState) {
-    // macros.tsv: zgetc → z.getc()
     ls.current = ls.z.getc();
 }
 
 /// Append character `c` to the token buffer, growing it if necessary.
 ///
 /// On overflow calls [`lex_error`] which becomes `Err(LuaError::Syntax(...))`.
-///
-/// # C source
-/// ```c
-///
-/// //   Mbuffer *b = ls->buff;
-/// //   if (luaZ_bufflen(b) + 1 > luaZ_sizebuffer(b)) {
-/// //     size_t newsize;
-/// //     if (luaZ_sizebuffer(b) >= MAX_SIZE/2)
-/// //       lexerror(ls, "lexical element too long", 0);
-/// //     newsize = luaZ_sizebuffer(b) * 2;
-/// //     luaZ_resizebuffer(ls->L, b, newsize);
-/// //   }
-/// //   b->buffer[luaZ_bufflen(b)++] = cast_char(c);
-/// // }
-/// ```
 fn save(ls: &mut LexState, state: &mut LuaState, c: i32) -> Result<(), LuaError> {
-    // macros.tsv: luaZ_bufflen → buf.len(); luaZ_sizebuffer → buf.capacity()
     if ls.buff.len() + 1 > ls.buff.capacity() {
         if ls.buff.capacity() >= MAX_SIZE / 2 {
             return Err(lex_error(ls, b"lexical element too long", 0));
         }
-        //    luaZ_resizebuffer(ls->L, b, newsize);
-        // macros.tsv: luaZ_resizebuffer → buf.resize(state, size)?
         let newsize = ls.buff.capacity() * 2;
         ls.buff.resize(state, newsize)?;
     }
-    // macros.tsv: cast_char → x as i8  (C char is signed; Lua bytes stored as-is)
-    // PORT NOTE: we store the byte value directly; the i8 cast in C is for the
-    // C char type but the data is read back as unsigned via cast_uchar everywhere.
     ls.buff.push_byte(c as u8);
     Ok(())
 }
 
 /// Save the current character into the token buffer, then advance the stream.
 ///
-/// Corresponds to the `save_and_next(ls)` macro.  Fallible because `save`
-/// may need to grow the buffer.
+/// Fallible because `save` may need to grow the buffer.
 #[inline]
 fn save_and_next(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError> {
     let c = ls.current;
@@ -550,23 +503,15 @@ fn save_and_next(ls: &mut LexState, state: &mut LuaState) -> Result<(), LuaError
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
-// l_noret → -> !  but in Rust we return LuaError (callers wrap in Err(...))
-// error_sites.tsv: luaX_lexerror → return Err(LuaError::syntax_at(ls, "msg", token))
 /// Build a syntax error, optionally annotated with the offending token text.
 ///
-/// Corresponds to the static `lexerror` function in `llex.c`.  In C this is
-/// `l_noret` (diverges via `luaD_throw`); in Rust it returns a `LuaError`
-/// value that callers wrap in `Err(...)`.
-///
-/// # C source
-/// ```c
-///
-/// //   msg = luaG_addinfo(ls->L, msg, ls->source, ls->linenumber);
-/// //   if (token)
-/// //     luaO_pushfstring(ls->L, "%s near %s", msg, txtToken(ls, token));
-/// //   luaD_throw(ls->L, LUA_ERRSYNTAX);
-/// // }
-/// ```
+/// Returns the constructed [`LuaError`] by value rather than diverging. This is
+/// the lexer's error-construction boundary: the lexer's own callsites wrap it as
+/// `return Err(lex_error(...))`, and `lua-parse` does the same across the crate
+/// boundary, so the by-value return is a deliberate public contract — not a
+/// half-finished translation of a diverging C function. The error text format
+/// (`source:line: message` plus an optional ` near <token>` suffix) is the
+/// behavioural invariant the oracle checks.
 pub fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
     const LUA_IDSIZE: usize = 60;
     let mut buff = [0u8; LUA_IDSIZE];
@@ -587,16 +532,7 @@ pub fn lex_error(ls: &mut LexState, msg: &[u8], token: i32) -> LuaError {
     LuaError::syntax_raw(&full_msg)
 }
 
-// LUAI_FUNC → pub(crate)
-// error_sites.tsv: luaX_syntaxerror → return Err(LuaError::syntax(format_args!("msg")))
 /// Report a syntax error at the current token.
-///
-/// # C source
-/// ```c
-///
-/// //   lexerror(ls, msg, ls->t.token);
-/// // }
-/// ```
 pub fn syntax_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
     let token = ls.t.kind;
     lex_error(ls, msg, token)
@@ -605,11 +541,10 @@ pub fn syntax_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
 /// Report a semantic error at the current line WITHOUT the `near <token>`
 /// suffix.
 ///
-/// Mirrors upstream `luaK_semerror` (`lcode.c`), which sets
-/// `ls->t.token = 0` before calling `luaX_syntaxerror` so the `near` clause is
-/// suppressed. Used for attribute errors (`unknown attribute '<name>'`,
-/// `global variables cannot be to-be-closed`) where the offending construct is
-/// the attribute itself, not the current lookahead token.
+/// The `near` clause is suppressed by passing token `0`. Used for attribute
+/// errors (`unknown attribute '<name>'`, `global variables cannot be
+/// to-be-closed`) where the offending construct is the attribute itself, not
+/// the current lookahead token.
 pub fn sem_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
     lex_error(ls, msg, 0)
 }
@@ -619,36 +554,12 @@ pub fn sem_error(ls: &mut LexState, msg: &[u8]) -> LuaError {
 /// For `TK_NAME`, `TK_STRING`, `TK_FLT`, `TK_INT`: formats the current
 /// token buffer contents as `'<text>'`.  For everything else, delegates to
 /// [`token2str`].
-///
-/// # C source
-/// ```c
-///
-/// //   switch (token) {
-/// //     case TK_NAME: case TK_STRING:
-/// //     case TK_FLT: case TK_INT:
-/// //       save(ls, '\0');
-/// //       return luaO_pushfstring(ls->L, "'%s'", luaZ_buffer(ls->buff));
-/// //     default:
-/// //       return luaX_token2str(ls, token);
-/// //   }
-/// // }
-/// ```
-///
-/// PORT NOTE: C calls `luaO_pushfstring` which pushes the string onto the
-/// Lua stack (stack-anchored temporary).  Rust returns `Vec<u8>` directly
-/// since there is no stack-based string lifecycle for error formatting.
 fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
     match token {
         t if t == TK_NAME || t == TK_STRING || t == TK_FLT || t == TK_INT => {
             let mut v: Vec<u8> = Vec::new();
             v.push(b'\'');
-            let buff = ls.buff.as_slice();
-            let trimmed = if buff.last() == Some(&0) {
-                &buff[..buff.len() - 1]
-            } else {
-                buff
-            };
-            v.extend_from_slice(trimmed);
+            v.extend_from_slice(ls.buff.without_trailing_nul());
             v.push(b'\'');
             v
         }
@@ -656,53 +567,27 @@ fn txt_token(ls: &mut LexState, token: i32) -> Vec<u8> {
     }
 }
 
-// LUAI_FUNC → pub(crate)
 /// Produce a human-readable token description (for error messages and the parser).
 ///
 /// Single-byte printable tokens are formatted as `'X'`; non-printable as
 /// `'<\N>'`.  Reserved words and multi-char symbols are formatted as `'kw'`.
 /// Literal tokens (`<name>`, `<string>`, etc.) return the bare label.
-///
-/// # C source
-/// ```c
-///
-/// //   if (token < FIRST_RESERVED) {
-/// //     if (lisprint(token))
-/// //       return luaO_pushfstring(ls->L, "'%c'", token);
-/// //     else
-/// //       return luaO_pushfstring(ls->L, "'<\\%d>'", token);
-/// //   }
-/// //   else {
-/// //     const char *s = luaX_tokens[token - FIRST_RESERVED];
-/// //     if (token < TK_EOS)
-/// //       return luaO_pushfstring(ls->L, "'%s'", s);
-/// //     else
-/// //       return s;
-/// //   }
-/// // }
-/// ```
-///
-/// PORT NOTE: The `LexState` parameter is retained in the signature for API
-/// parity with the C export, but is unused in Rust because we don't push onto
-/// the Lua stack.  The real formatting is in [`token2str_raw`].
 pub fn token2str(ls: &LexState, token: i32) -> Vec<u8> {
     token2str_raw(token, ls.version)
 }
 
 /// Inner implementation of [`token2str`] that does not need `LexState`.
 ///
-/// PORT NOTE: `version` gates the 5.1 special-token quoting. Upstream 5.1's
-/// `luaX_lexerror`/`error_expected` wrap the whole near/expected token in
-/// `LUA_QS` ('%s'), so the bare multi-char labels (`<eof>`, `<name>`, …) that
-/// `luaX_token2str` returns for `token >= TK_EOS` end up quoted. 5.2 rewrote
-/// `txtToken` to leave those bare and quote only symbols/reserved/literals, so
-/// for 5.2+ the `>= TK_EOS` arm stays unquoted. (Issue #105.)
+/// `version` gates the 5.1 special-token quoting. Lua 5.1 wraps the whole
+/// near/expected token in quotes, so the bare multi-char labels (`<eof>`,
+/// `<name>`, …) returned for `token >= TK_EOS` end up quoted. 5.2 leaves those
+/// bare and quotes only symbols/reserved/literals, so for 5.2+ the `>= TK_EOS`
+/// arm stays unquoted. (Issue #105.)
 fn token2str_raw(token: i32, version: lua_types::LuaVersion) -> Vec<u8> {
     if token < FIRST_RESERVED {
         if is_print(token) {
             vec![b'\'', token as u8, b'\'']
         } else {
-            // PORT NOTE: uses write! to Vec<u8> to avoid String allocation for Lua data.
             let mut v: Vec<u8> = Vec::new();
             v.extend_from_slice(b"'<\\");
             let _ = write!(&mut v, "{}", token);
@@ -726,69 +611,22 @@ fn token2str_raw(token: i32, version: lua_types::LuaVersion) -> Vec<u8> {
 
 // ── Public init / setup ───────────────────────────────────────────────────────
 
-// LUAI_FUNC → pub(crate)
 /// Initialise the lexer subsystem: intern all reserved words and fix them
 /// in the GC so they are never collected.
 ///
-/// Must be called exactly once during VM startup via `luaX_init`.
-///
-/// # C source
-/// ```c
-///
-/// //   int i;
-/// //   TString *e = luaS_newliteral(L, LUA_ENV);  /* create env name */
-/// //   luaC_fix(L, obj2gco(e));  /* never collect this name */
-/// //   for (i=0; i<NUM_RESERVED; i++) {
-/// //     TString *ts = luaS_new(L, luaX_tokens[i]);
-/// //     luaC_fix(L, obj2gco(ts));  /* reserved words are never collected */
-/// //     ts->extra = cast_byte(i+1);  /* reserved word */
-/// //   }
-/// // }
-/// ```
+/// Must be called exactly once during VM startup.
 pub fn init(state: &mut LuaState) -> Result<(), LuaError> {
-    // macros.tsv: luaS_newliteral → state.intern_str(b"...")
-    // TODO(port): call state.intern_str(LUA_ENV) once LuaState has that method (Phase B)
     let _e = intern_str_stub(state, LUA_ENV)?;
 
-    // macros.tsv: luaC_objbarrier / luaC_fix — GC fix; no-op in Phases A-C
-    // TODO(port): state.gc().fix(e) in Phase D
-
     for i in 0..NUM_RESERVED {
-        // macros.tsv: luaS_new → state.intern_str(...)
-        // TODO(port): call state.intern_str(LUAX_TOKENS[i]) in Phase B
         let ts = intern_str_stub(state, LUAX_TOKENS[i])?;
-
-        // TODO(port): state.gc().fix(ts.clone()) in Phase D
-
-        // macros.tsv: cast_byte → x as u8
-        // PORT NOTE: LuaString.extra uses Cell<u8> interior mutability.
-        // TODO(port): ts.set_extra((i + 1) as u8) — needs pub accessor on LuaString
-        let _ = ts; // suppress unused warning until Phase B
+        let _ = ts;
     }
 
     Ok(())
 }
 
-// LUAI_FUNC → pub(crate)
 /// Initialise `ls` for lexing a new chunk from stream `z`.
-///
-/// # C source
-/// ```c
-///
-/// //                         TString *source, int firstchar) {
-/// //   ls->t.token = 0;
-/// //   ls->L = L;
-/// //   ls->current = firstchar;
-/// //   ls->lookahead.token = TK_EOS;  /* no look-ahead token */
-/// //   ls->z = z;
-/// //   ls->fs = NULL;
-/// //   ls->linenumber = 1;
-/// //   ls->lastline = 1;
-/// //   ls->source = source;
-/// //   ls->envn = luaS_newliteral(L, LUA_ENV);  /* get env name */
-/// //   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);
-/// // }
-/// ```
 pub fn set_input(
     state: &mut LuaState,
     ls: &mut LexState,
@@ -805,52 +643,26 @@ pub fn set_input(
     ls.lastline = 1;
     ls.source = source;
     ls.version = state.global().lua_version;
-    // macros.tsv: luaS_newliteral → state.intern_str(b"...")
-    // TODO(port): state.intern_str(LUA_ENV) in Phase B
     ls.envn = intern_str_stub(state, LUA_ENV)?;
-    // macros.tsv: luaZ_resizebuffer → buf.resize(state, size)?
     ls.buff.resize(state, LUA_MIN_BUFFER)?;
     Ok(())
 }
 
-// LUAI_FUNC → pub(crate)
 /// Create (or retrieve) a Lua string and anchor it in the parser's GC-protection
 /// table `ls.h` so it cannot be collected before the end of compilation.
 ///
 /// Also internalises long strings so that each unique content has exactly one
 /// copy in memory.  The table `ls.h` is used as a set: the string is both the
 /// key and the value.
-///
-/// # C source
-/// ```c
-///
-/// //   lua_State *L = ls->L;
-/// //   TString *ts = luaS_newlstr(L, str, l);
-/// //   const TValue *o = luaH_getstr(ls->h, ts);
-/// //   if (!ttisnil(o))  /* string already present? */
-/// //     ts = keystrval(nodefromval(o));  /* get saved copy */
-/// //   else {
-/// //     TValue *stv = s2v(L->top.p++);  /* reserve stack space */
-/// //     setsvalue(L, stv, ts);           /* anchor the string */
-/// //     luaH_finishset(L, ls->h, stv, o, stv);  /* t[string] = string */
-/// //     luaC_checkGC(L);
-/// //     L->top.p--;                       /* remove string from stack */
-/// //   }
-/// //   return ts;
-/// // }
-/// ```
 pub(crate) fn new_string(
     state: &mut LuaState,
     ls: &mut LexState,
     bytes: &[u8],
 ) -> Result<GcRef<LuaString>, LuaError> {
-    // PORT NOTE: in C, the anchor table ls->h is a Lua table mapping the string
-    // to itself so a second occurrence of the same literal in the chunk returns
-    // the originally-created TString. We use a plain HashMap on LexState
-    // (`long_str_anchor`) for the equivalent dedup — sufficient because Phase
-    // A-C `GcRef<T>` is `Rc<T>` and identity is determined by the `Rc`
-    // allocation. Short strings already share identity via the global pool;
-    // long strings (>LUAI_MAXSHORTLEN) need this session-level map.
+    // The `long_str_anchor` map dedups so a second occurrence of the same
+    // literal in the chunk returns the originally-created string; identity is
+    // determined by the `Rc` allocation. Short strings already share identity
+    // via the global pool; long strings (>40 bytes) need this session-level map.
     if let Some(existing) = ls.long_str_anchor.get(bytes) {
         return Ok(existing.clone());
     }
@@ -861,24 +673,10 @@ pub(crate) fn new_string(
 
 // ── Public advance / lookahead ─────────────────────────────────────────────────
 
-// LUAI_FUNC → pub(crate)
 /// Consume the current token; load the next one from the stream.
 ///
 /// If a lookahead token was set, it becomes the current token without re-reading
 /// from the stream.
-///
-/// # C source
-/// ```c
-///
-/// //   ls->lastline = ls->linenumber;
-/// //   if (ls->lookahead.token != TK_EOS) {
-/// //     ls->t = ls->lookahead;
-/// //     ls->lookahead.token = TK_EOS;
-/// //   }
-/// //   else
-/// //     ls->t.token = llex(ls, &ls->t.seminfo);
-/// // }
-/// ```
 pub fn next(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
     ls.lastline = ls.linenumber;
 
@@ -894,23 +692,12 @@ pub fn next(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
     Ok(())
 }
 
-// LUAI_FUNC → pub(crate)
 /// Peek at the next token without consuming the current one.
 ///
 /// The lookahead token is cached in `ls.lookahead` and returned.  Only one
 /// token of lookahead is supported; calling this twice without an intervening
 /// [`next`] is a logic error (asserted in debug builds).
-///
-/// # C source
-/// ```c
-///
-/// //   lua_assert(ls->lookahead.token == TK_EOS);
-/// //   ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
-/// //   return ls->lookahead.token;
-/// // }
-/// ```
 pub fn lookahead(state: &mut LuaState, ls: &mut LexState) -> Result<i32, LuaError> {
-    // macros.tsv: lua_assert → debug_assert!
     debug_assert!(
         ls.lookahead.kind == TK_EOS,
         "luaX_lookahead: lookahead already set"
@@ -926,14 +713,6 @@ pub fn lookahead(state: &mut LuaState, ls: &mut LexState) -> Result<i32, LuaErro
 // ── Private lexer helpers ──────────────────────────────────────────────────────
 
 /// If the current character equals `c`, advance and return `true`.
-///
-/// # C source
-/// ```c
-///
-/// //   if (ls->current == c) { next(ls); return 1; }
-/// //   else return 0;
-/// // }
-/// ```
 fn check_next1(ls: &mut LexState, c: i32) -> bool {
     if ls.current == c {
         advance(ls);
@@ -945,18 +724,6 @@ fn check_next1(ls: &mut LexState, c: i32) -> bool {
 
 /// If the current character is either of the two bytes in `set`, save-and-advance
 /// and return `true`.
-///
-/// # C source
-/// ```c
-///
-/// //   lua_assert(set[2] == '\0');
-/// //   if (ls->current == set[0] || ls->current == set[1]) {
-/// //     save_and_next(ls);
-/// //     return 1;
-/// //   }
-/// //   else return 0;
-/// // }
-/// ```
 fn check_next2(ls: &mut LexState, state: &mut LuaState, set: &[u8; 2]) -> Result<bool, LuaError> {
     if ls.current == set[0] as i32 || ls.current == set[1] as i32 {
         save_and_next(ls, state)?;
@@ -968,22 +735,10 @@ fn check_next2(ls: &mut LexState, state: &mut LuaState, set: &[u8; 2]) -> Result
 
 /// Increment the line counter and consume the newline sequence.
 ///
-/// Handles `\n`, `\r`, `\n\r`, and `\r\n`.
-///
-/// # C source
-/// ```c
-///
-/// //   int old = ls->current;
-/// //   lua_assert(currIsNewline(ls));
-/// //   next(ls);  /* skip '\n' or '\r' */
-/// //   if (currIsNewline(ls) && ls->current != old)
-/// //     next(ls);  /* skip '\n\r' or '\r\n' */
-/// //   if (++ls->linenumber >= MAX_INT)
-/// //     lexerror(ls, "chunk has too many lines", 0);
-/// // }
-/// ```
+/// Handles `\n`, `\r`, `\n\r`, and `\r\n`: a second newline byte is only
+/// consumed when it differs from the first, so a `\n\n` (two blank lines)
+/// is not collapsed into one.
 fn inc_line_number(ls: &mut LexState, _state: &mut LuaState) -> Result<(), LuaError> {
-    // macros.tsv: lua_assert → debug_assert!
     debug_assert!(curr_is_newline(ls), "inc_line_number: not at a newline");
 
     let old = ls.current;
@@ -993,7 +748,6 @@ fn inc_line_number(ls: &mut LexState, _state: &mut LuaState) -> Result<(), LuaEr
         advance(ls);
     }
 
-    // macros.tsv: MAX_INT → i32::MAX
     ls.linenumber += 1;
     if ls.linenumber >= i32::MAX {
         return Err(lex_error(ls, b"chunk has too many lines", 0));
@@ -1007,33 +761,6 @@ fn inc_line_number(ls: &mut LexState, _state: &mut LuaState) -> Result<(), LuaEr
 /// `%d(%x|%.|(Ee[+-]?))*` or `0[Xx](%x|%.|(Pp[+-]?))*`.
 ///
 /// Returns `TK_INT` for integers, `TK_FLT` for floats.
-///
-/// # C source
-/// ```c
-///
-/// //   TValue obj;
-/// //   const char *expo = "Ee";
-/// //   int first = ls->current;
-/// //   lua_assert(lisdigit(ls->current));
-/// //   save_and_next(ls);
-/// //   if (first == '0' && check_next2(ls, "xX"))  /* hexadecimal? */
-/// //     expo = "Pp";
-/// //   for (;;) {
-/// //     if (check_next2(ls, expo))
-/// //       check_next2(ls, "-+");
-/// //     else if (lisxdigit(ls->current) || ls->current == '.')
-/// //       save_and_next(ls);
-/// //     else break;
-/// //   }
-/// //   if (lislalpha(ls->current))  /* numeral touching a letter? */
-/// //     save_and_next(ls);         /* force an error */
-/// //   save(ls, '\0');
-/// //   if (luaO_str2num(luaZ_buffer(ls->buff), &obj) == 0)
-/// //     lexerror(ls, "malformed number", TK_FLT);
-/// //   if (ttisinteger(&obj)) { seminfo->i = ivalue(&obj); return TK_INT; }
-/// //   else { seminfo->r = fltvalue(&obj); return TK_FLT; }
-/// // }
-/// ```
 fn read_numeral(
     state: &mut LuaState,
     ls: &mut LexState,
@@ -1055,7 +782,6 @@ fn read_numeral(
         if check_next2(ls, state, expo)? {
             check_next2(ls, state, b"-+")?;
         } else if is_xdigit(ls.current) || ls.current == b'.' as i32 {
-            //      save_and_next(ls);
             save_and_next(ls, state)?;
         } else {
             break;
@@ -1066,29 +792,11 @@ fn read_numeral(
         save_and_next(ls, state)?;
     }
 
-    // In Rust, luaO_str2num will receive a byte slice; NUL is not needed.
-    // We save 0 for parity with C, but our str2num stub ignores it.
     save(ls, state, 0)?;
 
-    //        lexerror(ls, "malformed number", TK_FLT);
-    // macros.tsv: luaZ_buffer → buf.as_mut_slice()
-    let buf = ls.buff.as_slice();
-    let num_bytes = if buf.last() == Some(&0) {
-        &buf[..buf.len() - 1]
-    } else {
-        buf
-    };
-    let mut obj = lua_types::LuaValue::Nil;
-    if lua_vm::object::str2num(num_bytes, &mut obj) == 0 {
-        return Err(lex_error(ls, b"malformed number", TK_FLT));
-    }
-    match obj {
-        lua_types::LuaValue::Int(i) => {
-            // Lua 5.1/5.2 are float-only: `lua_Number` is the only numeric type,
-            // so every numeric literal is parsed as a float (`lua_str2number`),
-            // including ones written without a decimal point. A literal like
-            // 9007199254740993 therefore loses precision exactly as in lua5.2.4
-            // (prints `9.007199254741e+15`), rather than surviving as an i64.
+    match parse_numeral(ls.buff.without_trailing_nul()) {
+        None => Err(lex_error(ls, b"malformed number", TK_FLT)),
+        Some(lua_types::LuaValue::Int(i)) => {
             if is_float_only(state) {
                 *seminfo = TokenValue::Float(i as f64);
                 Ok(TK_FLT)
@@ -1097,11 +805,11 @@ fn read_numeral(
                 Ok(TK_INT)
             }
         }
-        lua_types::LuaValue::Float(f) => {
+        Some(lua_types::LuaValue::Float(f)) => {
             *seminfo = TokenValue::Float(f);
             Ok(TK_FLT)
         }
-        _ => unreachable!("str2num returned non-numeric LuaValue"),
+        Some(other) => unreachable!("parse_numeral yielded non-numeric value: {other:?}"),
     }
 }
 
@@ -1111,23 +819,6 @@ fn read_numeral(
 /// - `count + 2` if well-formed (where `count` is the number of `=` signs),
 /// - `1` if a single bracket with no `=`s and no second bracket,
 /// - `0` if malformed (e.g. `[==` with no closing bracket).
-///
-/// # C source
-/// ```c
-///
-/// //   size_t count = 0;
-/// //   int s = ls->current;
-/// //   lua_assert(s == '[' || s == ']');
-/// //   save_and_next(ls);
-/// //   while (ls->current == '=') {
-/// //     save_and_next(ls);
-/// //     count++;
-/// //   }
-/// //   return (ls->current == s) ? count + 2
-/// //          : (count == 0) ? 1
-/// //          : 0;
-/// // }
-/// ```
 fn skip_sep(state: &mut LuaState, ls: &mut LexState) -> Result<usize, LuaError> {
     let mut count: usize = 0;
     let s = ls.current;
@@ -1157,45 +848,6 @@ fn skip_sep(state: &mut LuaState, ls: &mut LexState) -> Result<usize, LuaError> 
 /// `seminfo` is `Some` when reading a string literal; `None` when skipping a
 /// long comment.  When `None`, buffer contents are discarded on each newline
 /// to avoid wasting memory.
-///
-/// # C source
-/// ```c
-///
-/// //   int line = ls->linenumber;
-/// //   save_and_next(ls);  /* skip 2nd '[' */
-/// //   if (currIsNewline(ls)) inclinenumber(ls);
-/// //   for (;;) {
-/// //     switch (ls->current) {
-/// //       case EOZ: { /* error */
-/// //         const char *what = (seminfo ? "string" : "comment");
-/// //         const char *msg = luaO_pushfstring(..., what, line);
-/// //         lexerror(ls, msg, TK_EOS);
-/// //         break;
-/// //       }
-/// //       case ']': {
-/// //         if (skip_sep(ls) == sep) {
-/// //           save_and_next(ls);  /* skip 2nd ']' */
-/// //           goto endloop;
-/// //         }
-/// //         break;
-/// //       }
-/// //       case '\n': case '\r': {
-/// //         save(ls, '\n');
-/// //         inclinenumber(ls);
-/// //         if (!seminfo) luaZ_resetbuffer(ls->buff);
-/// //         break;
-/// //       }
-/// //       default: {
-/// //         if (seminfo) save_and_next(ls);
-/// //         else next(ls);
-/// //       }
-/// //     }
-/// //   } endloop:
-/// //   if (seminfo)
-/// //     seminfo->ts = luaX_newstring(ls, luaZ_buffer(ls->buff) + sep,
-/// //                                      luaZ_bufflen(ls->buff) - 2 * sep);
-/// // }
-/// ```
 fn read_long_string(
     state: &mut LuaState,
     ls: &mut LexState,
@@ -1217,7 +869,6 @@ fn read_long_string(
         match ls.current {
             c if c == EOZ => {
                 let what: &[u8] = if is_string { b"string" } else { b"comment" };
-                // PORT NOTE: build message as Vec<u8> to avoid String allocation.
                 let mut msg: Vec<u8> = Vec::new();
                 msg.extend_from_slice(b"unfinished long ");
                 msg.extend_from_slice(what);
@@ -1237,7 +888,6 @@ fn read_long_string(
             c if c == b'\n' as i32 || c == b'\r' as i32 => {
                 save(ls, state, b'\n' as i32)?;
                 inc_line_number(ls, state)?;
-                // macros.tsv: luaZ_resetbuffer → buf.clear()
                 if !is_string {
                     ls.buff.clear();
                 }
@@ -1252,16 +902,10 @@ fn read_long_string(
         }
     }
 
-    //      seminfo->ts = luaX_newstring(ls, luaZ_buffer(ls->buff) + sep,
-    //                                       luaZ_bufflen(ls->buff) - 2 * sep);
     if let Some(out) = seminfo {
-        // The buffer contains: sep bytes of '[=' + content + sep bytes of '=]'
-        // We want the content in between.
-        // PORT NOTE: per PORTING.md §4.3, capture the slice into an owned
-        // Vec so the immutable borrow of ls.buff is dropped before the
-        // mutable borrow needed by new_string.
-        let buf = ls.buff.as_slice();
-        let content: Vec<u8> = buf[sep..buf.len() - sep].to_vec();
+        // The buffer holds `[=*[` + content + `]=*]`, each delimiter `sep` bytes
+        // wide; strip both to recover the content.
+        let content = ls.buff.trim_ends(sep);
         let ts = new_string(state, ls, &content)?;
         *out = TokenValue::Str(ts);
     }
@@ -1270,17 +914,6 @@ fn read_long_string(
 
 /// Check `c` is non-zero (truthy); if not, save the current char and raise a
 /// string-escape error.
-///
-/// # C source
-/// ```c
-///
-/// //   if (!c) {
-/// //     if (ls->current != EOZ)
-/// //       save_and_next(ls);  /* add current to buffer for error message */
-/// //     lexerror(ls, msg, TK_STRING);
-/// //   }
-/// // }
-/// ```
 fn esc_check(
     state: &mut LuaState,
     ls: &mut LexState,
@@ -1298,15 +931,6 @@ fn esc_check(
 
 /// Save-and-advance, then verify the new current char is a hex digit; return
 /// its numeric value (0-15).
-///
-/// # C source
-/// ```c
-///
-/// //   save_and_next(ls);
-/// //   esccheck (ls, lisxdigit(ls->current), "hexadecimal digit expected");
-/// //   return luaO_hexavalue(ls->current);
-/// // }
-/// ```
 fn get_hexa(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     save_and_next(ls, state)?;
     esc_check(
@@ -1315,50 +939,18 @@ fn get_hexa(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
         is_xdigit(ls.current),
         b"hexadecimal digit expected",
     )?;
-    // TODO(port): call lua_vm::object::hex_value in Phase B
     Ok(hex_value_stub(ls.current))
 }
 
 /// Scan a `\xNN` hex escape; return the decoded byte value.
-///
-/// # C source
-/// ```c
-///
-/// //   int r = gethexa(ls);
-/// //   r = (r << 4) + gethexa(ls);
-/// //   luaZ_buffremove(ls->buff, 2);  /* remove saved chars from buffer */
-/// //   return r;
-/// // }
-/// ```
 fn read_hex_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let r = get_hexa(state, ls)?;
     let r = (r << 4) + get_hexa(state, ls)?;
-    // macros.tsv: luaZ_buffremove → buf.truncate_by(i)
     ls.buff.truncate_by(2);
     Ok(r)
 }
 
 /// Scan a `\u{XXXXXX}` UTF-8 escape; return the Unicode codepoint.
-///
-/// # C source
-/// ```c
-///
-/// //   unsigned long r;
-/// //   int i = 4;  /* chars to remove: '\', 'u', '{', first digit */
-/// //   save_and_next(ls);  /* skip 'u' */
-/// //   esccheck(ls, ls->current == '{', "missing '{'");
-/// //   r = gethexa(ls);  /* must have at least one digit */
-/// //   while (cast_void(save_and_next(ls)), lisxdigit(ls->current)) {
-/// //     i++;
-/// //     esccheck(ls, r <= (0x7FFFFFFFu >> 4), "UTF-8 value too large");
-/// //     r = (r << 4) + luaO_hexavalue(ls->current);
-/// //   }
-/// //   esccheck(ls, ls->current == '}', "missing '}'");
-/// //   next(ls);  /* skip '}' */
-/// //   luaZ_buffremove(ls->buff, i);
-/// //   return r;
-/// // }
-/// ```
 fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let mut i: usize = 4;
 
@@ -1368,18 +960,18 @@ fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaErro
 
     let mut r = get_hexa(state, ls)?;
 
-    // The codepoint upper bound is version-gated and the C control flow differs
-    // between families (`llex.c readutf8esc`):
-    //   * 5.3 (L336-340): `r = (r<<4)+digit; esccheck(r <= 0x10FFFF, ...)` —
-    //     accumulate the digit FIRST, then bound the running value at 0x10FFFF.
-    //   * 5.4 (L351) / 5.5 (L373): `esccheck(r <= (0x7FFFFFFFu >> 4), ...);
-    //     r = (r<<4)+digit` — bound BEFORE the shift, allowing up to 0x7FFFFFFF.
-    // The order (check-before-shift vs shift-before-check) is reproduced exactly
-    // because it also determines how many digits land in the `near '...'` buffer
-    // snippet of the error message.
+    // The codepoint upper bound is version-gated, and the digit-accumulation
+    // order differs between the families:
+    //   * 5.3: accumulate the digit FIRST (`r = (r<<4)+digit`), THEN bound the
+    //     running value at 0x10FFFF.
+    //   * 5.4 / 5.5: bound BEFORE the shift (`r <= 0x7FFFFFFF >> 4`), then
+    //     accumulate — allowing codepoints up to 0x7FFFFFFF.
+    // The order (check-before-shift vs shift-before-check) is load-bearing: it
+    // also determines how many digits land in the `near '...'` snippet of the
+    // "UTF-8 value too large" error, so a too-large `\u{...}` reports the same
+    // message and offset as the matching reference binary.
     let is_v53 = matches!(state.global().lua_version, lua_types::LuaVersion::V53);
 
-    // cast_void: discard return value
     loop {
         save_and_next(ls, state)?;
         if !is_xdigit(ls.current) {
@@ -1387,7 +979,6 @@ fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaErro
         }
         i += 1;
         if is_v53 {
-            // TODO(port): lua_vm::object::hex_value in Phase B
             r = (r << 4) + hex_value_stub(ls.current);
             esc_check(state, ls, r <= 0x10_FFFF, b"UTF-8 value too large")?;
         } else {
@@ -1397,7 +988,6 @@ fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaErro
                 r <= (0x7FFF_FFFFu32 >> 4),
                 b"UTF-8 value too large",
             )?;
-            // TODO(port): lua_vm::object::hex_value in Phase B
             r = (r << 4) + hex_value_stub(ls.current);
         }
     }
@@ -1412,22 +1002,9 @@ fn read_utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaErro
 }
 
 /// Scan `\u{...}` and append the UTF-8 encoding of the codepoint to the buffer.
-///
-/// # C source
-/// ```c
-///
-/// //   char buff[UTF8BUFFSZ];
-/// //   int n = luaO_utf8esc(buff, readutf8esc(ls));
-/// //   for (; n > 0; n--)
-/// //     save(ls, buff[UTF8BUFFSZ - n]);
-/// // }
-/// ```
 fn utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
     let codepoint = read_utf8_esc(state, ls)?;
 
-    // macros.tsv: UTF8BUFFSZ → const UTF8_BUF_SZ: usize = 8
-    // TODO(port): call lua_vm::object::utf8_esc_encode(codepoint) in Phase B.
-    // For Phase A, encode directly here.
     let encoded = utf8_encode_stub(codepoint);
 
     for &b in &encoded {
@@ -1437,21 +1014,6 @@ fn utf8_esc(state: &mut LuaState, ls: &mut LexState) -> Result<(), LuaError> {
 }
 
 /// Scan a decimal escape `\ddd` (up to 3 digits); return the byte value.
-///
-/// # C source
-/// ```c
-///
-/// //   int i;
-/// //   int r = 0;
-/// //   for (i = 0; i < 3 && lisdigit(ls->current); i++) {
-/// //     r = 10*r + ls->current - '0';
-/// //     save_and_next(ls);
-/// //   }
-/// //   esccheck(ls, r <= UCHAR_MAX, "decimal escape too large");
-/// //   luaZ_buffremove(ls->buff, i);  /* remove read digits from buffer */
-/// //   return r;
-/// // }
-/// ```
 fn read_dec_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError> {
     let mut i: usize = 0;
     let mut r: u32 = 0;
@@ -1478,21 +1040,19 @@ fn read_dec_esc(state: &mut LuaState, ls: &mut LexState) -> Result<u32, LuaError
 
 /// Scan a short (single/double-quoted) string literal.
 ///
-/// The C function uses `goto read_save / only_save / no_save` for escape
-/// handling.  In Rust this is replaced by the `EscapeResult` enum.
-///
-/// # C source (see llex.c lines 382-442 for full listing)
+/// Escape-sequence handling decodes a byte and then dispatches via the local
+/// [`EscapeResult`] enum.
 fn read_string(
     state: &mut LuaState,
     ls: &mut LexState,
     del: i32,
     seminfo: &mut TokenValue,
 ) -> Result<(), LuaError> {
-    // Encoding for what the escape sequence handler needs to do after decoding.
+    // What the escape-sequence handler does after decoding a byte.
     //
-    // read_save:  advance(ls), remove '\' from buffer, save decoded byte
-    // only_save:  remove '\' from buffer, save decoded byte (no advance)
-    // no_save:    nothing (just break from the escape case)
+    // ReadSave:  advance, remove '\' from buffer, save decoded byte.
+    // OnlySave:  remove '\' from buffer, save decoded byte (no advance).
+    // NoSave:    nothing (just break from the escape case).
     enum EscapeResult {
         ReadSave(i32),
         OnlySave(i32),
@@ -1569,7 +1129,6 @@ fn read_string(
                     }
                 };
 
-                // Dispatch the C goto targets as match arms.
                 match esc {
                     EscapeResult::ReadSave(c) => {
                         advance(ls);
@@ -1591,26 +1150,14 @@ fn read_string(
 
     save_and_next(ls, state)?;
 
-    //                                     luaZ_bufflen(ls->buff) - 2);
-    // Buffer contains: delimiter + content + delimiter; strip both delimiters.
-    // PORT NOTE: capture into owned Vec to drop the borrow before new_string.
-    let buf = ls.buff.as_slice();
-    let content: Vec<u8> = if buf.len() >= 2 {
-        buf[1..buf.len() - 1].to_vec()
-    } else {
-        Vec::new()
-    };
+    // The buffer holds the opening quote + content + closing quote; strip the
+    // one-byte delimiter from each end.
+    let content = ls.buff.trim_ends(1);
     let ts = new_string(state, ls, &content)?;
     *seminfo = TokenValue::Str(ts);
     Ok(())
 }
 
-/// Core lexer dispatch: consume and return the next raw token kind.
-///
-/// This is the heart of the lexer: a large `for`-`switch` loop that classifies
-/// the current character and dispatches to the appropriate scanner.
-///
-/// # C source (see llex.c lines 445-562 for full listing)
 /// Whether the active version is the float-only legacy family (5.1/5.2), which
 /// lacks the 5.3 integer operators (`//`, `<<`, `>>`, and the bitwise binops).
 fn is_float_only(state: &LuaState) -> bool {
@@ -1620,26 +1167,51 @@ fn is_float_only(state: &LuaState) -> bool {
     )
 }
 
+/// The lexer's view of the current input character.
+///
+/// `ls.current` is stored as `i32` (a byte, or [`EOZ`] = `-1`) at the stream
+/// boundary; this enum is the lexer's *internal* dispatch shape so the main
+/// scan loop can `match` on byte literals (`Byte(b'=')`) and on end-of-stream
+/// (`Eoz`) directly instead of an `i32` guard chain. It does not cross the
+/// public boundary: scanned tokens are still reported as `TK_*` / ASCII `i32`.
+enum Peek {
+    Byte(u8),
+    Eoz,
+}
+
+/// Classify [`LexState::current`] into the internal [`Peek`] dispatch shape.
+fn peek(ls: &LexState) -> Peek {
+    match u8::try_from(ls.current) {
+        Ok(b) => Peek::Byte(b),
+        Err(_) => Peek::Eoz,
+    }
+}
+
+/// Core lexer dispatch: consume and return the next raw token kind.
+///
+/// The heart of the lexer: a scan loop that classifies the current character
+/// (via [`Peek`]) and dispatches to the appropriate scanner. Single-character
+/// tokens are returned as their ASCII `i32`; multi-character and reserved-word
+/// tokens as the `TK_*` constants.
 fn llex(
     state: &mut LuaState,
     ls: &mut LexState,
     seminfo: &mut TokenValue,
 ) -> Result<i32, LuaError> {
-    // macros.tsv: luaZ_resetbuffer → buf.clear()
     ls.buff.clear();
 
     loop {
-        match ls.current {
-            c if c == b'\n' as i32 || c == b'\r' as i32 => {
+        match peek(ls) {
+            Peek::Byte(b'\n' | b'\r') => {
                 inc_line_number(ls, state)?;
-                // PORT NOTE: skipcomment-equivalent. luaL_loadfile in C-Lua
-                // strips a leading '#' line (Unix shebang). Our test harness
-                // prepends a global-setup preamble to every official test, so
-                // the script's '#' line is not at byte zero. Apply the same
-                // rule at any token-scan line start: treat a line whose first
-                // character is '#' as a single-line comment. This sits in
-                // llex's dispatch loop (not inc_line_number) so it does not
-                // affect newlines inside long-bracket strings.
+                // Shebang handling: the reference loader strips a leading '#'
+                // line (Unix shebang). Our test harness prepends a global-setup
+                // preamble to every official test, so the script's '#' line is
+                // not at byte zero. Apply the same rule at any token-scan line
+                // start: treat a line whose first character is '#' as a
+                // single-line comment. This sits in the dispatch loop (not
+                // inc_line_number) so it does not affect newlines inside
+                // long-bracket strings.
                 if ls.current == b'#' as i32 {
                     while !curr_is_newline(ls) && ls.current != EOZ {
                         advance(ls);
@@ -1647,15 +1219,11 @@ fn llex(
                 }
             }
 
-            c if c == b' ' as i32
-                || c == b'\x0C' as i32
-                || c == b'\t' as i32
-                || c == b'\x0B' as i32 =>
-            {
+            Peek::Byte(b' ' | b'\x0C' | b'\t' | b'\x0B') => {
                 advance(ls);
             }
 
-            c if c == b'-' as i32 => {
+            Peek::Byte(b'-') => {
                 advance(ls);
                 if ls.current != b'-' as i32 {
                     return Ok(b'-' as i32);
@@ -1677,7 +1245,7 @@ fn llex(
                 // loop continues (no token emitted for comments)
             }
 
-            c if c == b'[' as i32 => {
+            Peek::Byte(b'[') => {
                 let sep = skip_sep(state, ls)?;
                 if sep >= 2 {
                     read_long_string(state, ls, Some(seminfo), sep)?;
@@ -1685,11 +1253,10 @@ fn llex(
                 } else if sep == 0 {
                     return Err(lex_error(ls, b"invalid long string delimiter", TK_STRING));
                 }
-                // sep == 1: plain '[', no long string
                 return Ok(b'[' as i32);
             }
 
-            c if c == b'=' as i32 => {
+            Peek::Byte(b'=') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_EQ);
@@ -1697,7 +1264,7 @@ fn llex(
                 return Ok(b'=' as i32);
             }
 
-            c if c == b'<' as i32 => {
+            Peek::Byte(b'<') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_LE);
@@ -1711,7 +1278,7 @@ fn llex(
                 return Ok(b'<' as i32);
             }
 
-            c if c == b'>' as i32 => {
+            Peek::Byte(b'>') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_GE);
@@ -1722,7 +1289,7 @@ fn llex(
                 return Ok(b'>' as i32);
             }
 
-            c if c == b'/' as i32 => {
+            Peek::Byte(b'/') => {
                 advance(ls);
                 if !is_float_only(state) && check_next1(ls, b'/' as i32) {
                     // Floor division `//` is a 5.3 addition; absent in 5.1/5.2,
@@ -1732,7 +1299,7 @@ fn llex(
                 return Ok(b'/' as i32);
             }
 
-            c if c == b'~' as i32 => {
+            Peek::Byte(b'~') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_NE);
@@ -1740,7 +1307,7 @@ fn llex(
                 return Ok(b'~' as i32);
             }
 
-            c if c == b':' as i32 => {
+            Peek::Byte(b':') => {
                 advance(ls);
                 // Lua 5.1 has no `::label::` token; `::` was added with `goto` in
                 // 5.2. Under V51 the second `:` is left for the parser, which
@@ -1753,13 +1320,13 @@ fn llex(
                 return Ok(b':' as i32);
             }
 
-            c if c == b'"' as i32 || c == b'\'' as i32 => {
+            Peek::Byte(b'"' | b'\'') => {
                 let del = ls.current;
                 read_string(state, ls, del, seminfo)?;
                 return Ok(TK_STRING);
             }
 
-            c if c == b'.' as i32 => {
+            Peek::Byte(b'.') => {
                 save_and_next(ls, state)?;
                 if check_next1(ls, b'.' as i32) {
                     if check_next1(ls, b'.' as i32) {
@@ -1773,16 +1340,16 @@ fn llex(
                 }
             }
 
-            c if is_digit(c) => {
+            Peek::Byte(b'0'..=b'9') => {
                 return read_numeral(state, ls, seminfo);
             }
 
-            c if c == EOZ => {
+            Peek::Eoz => {
                 return Ok(TK_EOS);
             }
 
-            c => {
-                if is_lalpha(c) {
+            Peek::Byte(c) => {
+                if is_lalpha(c as i32) {
                     loop {
                         save_and_next(ls, state)?;
                         if !is_lalnum(ls.current) {
@@ -1790,16 +1357,13 @@ fn llex(
                         }
                     }
 
-                    // PORT NOTE: copy buffer bytes to drop borrow before new_string.
-                    let content: Vec<u8> = ls.buff.as_slice().to_vec();
+                    let content = ls.buff.to_owned_text();
                     let ts = new_string(state, ls, &content)?;
 
-                    // PORT NOTE: canonical `lua_types::LuaString` lacks the `extra`
-                    // byte that C-Lua uses to mark reserved words. Recover the
-                    // keyword index directly from the interned bytes via the
-                    // `LUAX_TOKENS` table; the first `NUM_RESERVED` entries are
-                    // the keywords in declaration order, so token id =
-                    // `FIRST_RESERVED + index`.
+                    // Recover the keyword index directly from the interned bytes
+                    // via the `LUAX_TOKENS` table: the first `NUM_RESERVED`
+                    // entries are the keywords in declaration order, so a match
+                    // gives token id = `FIRST_RESERVED + index`.
                     let reserved_token: Option<i32> = LUAX_TOKENS[..NUM_RESERVED]
                         .iter()
                         .position(|kw| *kw == content.as_slice())
@@ -1838,20 +1402,28 @@ fn llex(
     }
 }
 
-// ── Phase A stubs for cross-crate helpers ──────────────────────────────────────
-//
-// The functions below stand in for cross-crate calls that cannot resolve in
-// Phase A.  They will be replaced by proper imports in Phase B.
+// ── Cross-crate helpers ────────────────────────────────────────────────────────
 
-// TODO(port): replace with state.intern_str(bytes) once LuaState gains that
-// method (from lua_vm::string::new_lstr wired in Phase B).
-// TODO_ARCH(phase-b-reconcile): canonical LuaString is constructed via
-// from_bytes; once LuaState::intern_str is wired, route through there instead.
 fn intern_str_stub(state: &mut LuaState, bytes: &[u8]) -> Result<GcRef<LuaString>, LuaError> {
     state.intern_str(bytes)
 }
 
-// TODO(port): replace with lua_vm::object::hex_value(c) in Phase B.
+/// Parse numeral bytes into an integer or float value, or `None` if malformed.
+///
+/// Wraps `lua_vm::object::str2num`, whose C-derived calling convention is an
+/// out-parameter plus a `usize` status (`0` = no parse). The lexer never needs
+/// the consumed-byte count — the whole token buffer is the numeral — so this
+/// reduces the convention to an idiomatic `Option<LuaValue>`: `Some(value)` on
+/// a successful parse, `None` on a malformed numeral.
+fn parse_numeral(bytes: &[u8]) -> Option<lua_types::LuaValue> {
+    let mut out = lua_types::LuaValue::Nil;
+    if lua_vm::object::str2num(bytes, &mut out) == 0 {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 fn hex_value_stub(c: i32) -> u32 {
     match c {
         c if c >= b'0' as i32 && c <= b'9' as i32 => (c - b'0' as i32) as u32,
@@ -1861,12 +1433,11 @@ fn hex_value_stub(c: i32) -> u32 {
     }
 }
 
-// TODO(port): replace with lua_vm::object::utf8_esc_encode(codepoint) in Phase B.
 /// Encode a Unicode codepoint as a Lua-extended UTF-8 byte sequence (1 to 6 bytes).
 ///
-/// Faithful port of `luaO_utf8esc` from lobject.c.  Lua permits codepoints up
-/// to `0x7FFFFFFF` (5- and 6-byte sequences are non-strict UTF-8 but accepted
-/// by `\u{...}` escapes per literals.lua test cases).
+/// Lua permits codepoints up to `0x7FFFFFFF` (5- and 6-byte sequences are
+/// non-strict UTF-8 but accepted by `\u{...}` escapes per literals.lua test
+/// cases).
 fn utf8_encode_stub(codepoint: u32) -> Vec<u8> {
     debug_assert!(codepoint <= 0x7FFF_FFFF);
     if codepoint < 0x80 {
@@ -1888,28 +1459,324 @@ fn utf8_encode_stub(codepoint: u32) -> Vec<u8> {
     buf
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lua_types::LuaVersion;
+    use lua_vm::state::new_state;
+
+    /// A `LexState` whose fields are about to be (re)initialised by
+    /// [`set_input`]; only `source`/`envn`/`version` need to be real up front.
+    fn empty_lexstate(source: GcRef<LuaString>, ver: LuaVersion) -> LexState {
+        LexState {
+            current: EOZ,
+            linenumber: 1,
+            lastline: 1,
+            t: Token::eos(),
+            lookahead: Token::eos(),
+            fs: None,
+            z: ZIO::from_bytes(Vec::new()),
+            buff: LexBuffer::new(),
+            h: None,
+            long_str_anchor: std::collections::HashMap::new(),
+            dyd: None,
+            source: source.clone(),
+            envn: source,
+            version: ver,
+        }
+    }
+
+    /// Build a `LexState` over `src` at version `ver` and drive [`next`] until
+    /// [`TK_EOS`], collecting each token. The lexer is exercised end-to-end (the
+    /// same path the parser takes), so these tests pin scanning behaviour without
+    /// the full parser/oracle round-trip.
+    fn lex(ver: LuaVersion, src: &[u8]) -> Vec<Token> {
+        let mut state = new_state().expect("state init");
+        state.global_mut().lua_version = ver;
+
+        let source = state.intern_str(b"@test").expect("intern source");
+        let firstchar = src.first().map_or(EOZ, |&b| b as i32);
+        let rest: Vec<u8> = src.iter().skip(1).copied().collect();
+
+        let mut ls = empty_lexstate(source.clone(), ver);
+        set_input(&mut state, &mut ls, ZIO::from_bytes(rest), source, firstchar)
+            .expect("set_input");
+
+        let mut out = Vec::new();
+        loop {
+            next(&mut state, &mut ls).expect("next");
+            let kind = ls.t.kind;
+            out.push(ls.t.clone());
+            if kind == TK_EOS {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Just the token-kind sequence, dropping the trailing `TK_EOS`.
+    fn kinds(ver: LuaVersion, src: &[u8]) -> Vec<i32> {
+        let mut v = lex(ver, src);
+        v.pop();
+        v.into_iter().map(|t| t.kind).collect()
+    }
+
+    /// Lex `src` and return the bytes of its single string-literal token.
+    fn one_string(ver: LuaVersion, src: &[u8]) -> Vec<u8> {
+        let toks = lex(ver, src);
+        let str_tok = toks
+            .iter()
+            .find(|t| t.kind == TK_STRING)
+            .expect("a string token");
+        match &str_tok.value {
+            TokenValue::Str(s) => s.as_bytes().to_vec(),
+            _ => panic!("string token without Str payload"),
+        }
+    }
+
+    #[test]
+    fn crlf_and_lfcr_pair_into_single_lines() {
+        // Three logical lines joined by CRLF; the `+` lands on line 3, so a
+        // lex error there must report line 3 (CRLF counts as ONE newline).
+        let toks = lex(LuaVersion::V54, b"a\r\nb\r\n+");
+        // a(name) b(name) +  EOS  -> the '+' is a single-byte token on line 3.
+        assert_eq!(toks[0].kind, TK_NAME);
+        assert_eq!(toks[1].kind, TK_NAME);
+        assert_eq!(toks[2].kind, b'+' as i32);
+        // LFCR also pairs.
+        let toks2 = lex(LuaVersion::V54, b"a\n\rb");
+        assert_eq!(toks2[0].kind, TK_NAME);
+        assert_eq!(toks2[1].kind, TK_NAME);
+        assert_eq!(toks2[2].kind, TK_EOS);
+    }
+
+    #[test]
+    fn crlf_line_number_attribution() {
+        // The error message must carry line 3 for a malformed numeral there.
+        let mut state = new_state().expect("state init");
+        state.global_mut().lua_version = LuaVersion::V54;
+        let source = state.intern_str(b"@t").unwrap();
+        let src = b"\r\n\r\n0x".to_vec();
+        let firstchar = src[0] as i32;
+        let rest: Vec<u8> = src.iter().skip(1).copied().collect();
+        let mut ls = empty_lexstate(source.clone(), LuaVersion::V54);
+        set_input(&mut state, &mut ls, ZIO::from_bytes(rest), source, firstchar).unwrap();
+        // `0x` with no hex digits is a malformed numeral on line 3.
+        let err = loop {
+            match next(&mut state, &mut ls) {
+                Ok(()) if ls.t.kind == TK_EOS => panic!("expected a lex error"),
+                Ok(()) => continue,
+                Err(e) => break e,
+            }
+        };
+        let msg = err.message_lossy();
+        assert!(msg.contains(":3:"), "error should be on line 3, got: {msg}");
+        assert!(msg.contains("malformed number"), "got: {msg}");
+    }
+
+    #[test]
+    fn hex_escape_decodes_to_bytes() {
+        assert_eq!(one_string(LuaVersion::V54, br#""\x41\x42""#), b"AB");
+        assert_eq!(one_string(LuaVersion::V54, br#""\x00\xff""#), b"\x00\xff");
+    }
+
+    #[test]
+    fn utf8_escape_encodes_codepoint() {
+        assert_eq!(one_string(LuaVersion::V54, br#""\u{48}\u{49}""#), b"HI");
+        // U+00E9 (é) → two UTF-8 bytes 0xC3 0xA9.
+        assert_eq!(one_string(LuaVersion::V54, br#""\u{e9}""#), b"\xc3\xa9");
+        // A 6-byte (non-strict) sequence is accepted up to 0x7FFFFFFF in 5.4.
+        assert_eq!(
+            one_string(LuaVersion::V54, br#""\u{7FFFFFFF}""#),
+            b"\xFD\xBF\xBF\xBF\xBF\xBF"
+        );
+    }
+
+    #[test]
+    fn decimal_escape_and_z_skip() {
+        assert_eq!(one_string(LuaVersion::V54, br#""\65\66""#), b"AB");
+        // \z swallows the following whitespace run (including newlines).
+        assert_eq!(one_string(LuaVersion::V54, b"\"a\\z   \n\t b\""), b"ab");
+    }
+
+    #[test]
+    fn long_brackets_with_levels() {
+        assert_eq!(one_string(LuaVersion::V54, b"[[ hello ]]"), b" hello ");
+        assert_eq!(one_string(LuaVersion::V54, b"[==[ hi ]==]"), b" hi ");
+        // A leading newline immediately after the open bracket is dropped.
+        assert_eq!(one_string(LuaVersion::V54, b"[[\nx]]"), b"x");
+        // An inner `]=]` that is not the matching close is kept as content.
+        assert_eq!(one_string(LuaVersion::V54, b"[==[a]=]b]==]"), b"a]=]b");
+    }
+
+    #[test]
+    fn long_string_normalizes_newlines() {
+        // CRLF inside a long string is normalized to a single \n.
+        assert_eq!(one_string(LuaVersion::V54, b"[[a\r\nb]]"), b"a\nb");
+    }
+
+    #[test]
+    fn numeral_int_float_boundary() {
+        // Integer literals → TK_INT with the exact i64; floats → TK_FLT.
+        let dec = lex(LuaVersion::V54, b"3");
+        assert_eq!(dec[0].kind, TK_INT);
+        assert!(matches!(dec[0].value, TokenValue::Int(3)));
+
+        let hex = lex(LuaVersion::V54, b"0x10");
+        assert_eq!(hex[0].kind, TK_INT);
+        assert!(matches!(hex[0].value, TokenValue::Int(16)));
+
+        let flt = lex(LuaVersion::V54, b"3.0");
+        assert_eq!(flt[0].kind, TK_FLT);
+        assert!(matches!(flt[0].value, TokenValue::Float(f) if f == 3.0));
+
+        let expo = lex(LuaVersion::V54, b"1e2");
+        assert_eq!(expo[0].kind, TK_FLT);
+        assert!(matches!(expo[0].value, TokenValue::Float(f) if f == 100.0));
+
+        // A bare dot followed by digits is a float; a lone dot is the '.' token.
+        let dotnum = lex(LuaVersion::V54, b".5");
+        assert_eq!(dotnum[0].kind, TK_FLT);
+    }
+
+    #[test]
+    fn float_only_versions_widen_integer_literals() {
+        // 5.1/5.2 have no integer subtype: every numeral lexes as a float.
+        let v51 = lex(LuaVersion::V51, b"3");
+        assert_eq!(v51[0].kind, TK_FLT);
+        assert!(matches!(v51[0].value, TokenValue::Float(f) if f == 3.0));
+
+        let v52 = lex(LuaVersion::V52, b"42");
+        assert_eq!(v52[0].kind, TK_FLT);
+    }
+
+    #[test]
+    fn version_gated_operators() {
+        // `<<` is a 5.3+ token; on 5.4 it is one TK_SHL.
+        assert_eq!(kinds(LuaVersion::V54, b"1 << 2"), vec![TK_INT, TK_SHL, TK_INT]);
+        // On the float-only family it is NOT a token: two bare '<' bytes.
+        assert_eq!(
+            kinds(LuaVersion::V51, b"1 << 2"),
+            vec![TK_FLT, b'<' as i32, b'<' as i32, TK_FLT]
+        );
+        // `//` floor-division: TK_IDIV on 5.4, two '/' on 5.1.
+        assert_eq!(kinds(LuaVersion::V54, b"7 // 2"), vec![TK_INT, TK_IDIV, TK_INT]);
+        assert_eq!(
+            kinds(LuaVersion::V51, b"7 // 2"),
+            vec![TK_FLT, b'/' as i32, b'/' as i32, TK_FLT]
+        );
+        // `::` label delimiter: TK_DBCOLON on 5.4, two ':' on 5.1.
+        assert_eq!(kinds(LuaVersion::V54, b"::x::"), vec![TK_DBCOLON, TK_NAME, TK_DBCOLON]);
+        assert_eq!(
+            kinds(LuaVersion::V51, b"::x"),
+            vec![b':' as i32, b':' as i32, TK_NAME]
+        );
+    }
+
+    #[test]
+    fn version_gated_reserved_words() {
+        // `goto` is a keyword on 5.2+ but a plain name on 5.1.
+        assert_eq!(kinds(LuaVersion::V54, b"goto"), vec![TK_GOTO]);
+        assert_eq!(kinds(LuaVersion::V51, b"goto"), vec![TK_NAME]);
+        // `global` is never reserved — always a name.
+        assert_eq!(kinds(LuaVersion::V55, b"global"), vec![TK_NAME]);
+        assert_eq!(kinds(LuaVersion::V54, b"global"), vec![TK_NAME]);
+        // An ordinary keyword still maps to its TK_* on every version.
+        assert_eq!(kinds(LuaVersion::V54, b"while"), vec![TK_WHILE]);
+        assert_eq!(kinds(LuaVersion::V51, b"while"), vec![TK_WHILE]);
+    }
+
+    #[test]
+    fn multichar_symbols_and_dots() {
+        assert_eq!(kinds(LuaVersion::V54, b"=="), vec![TK_EQ]);
+        assert_eq!(kinds(LuaVersion::V54, b"~="), vec![TK_NE]);
+        assert_eq!(kinds(LuaVersion::V54, b"<="), vec![TK_LE]);
+        assert_eq!(kinds(LuaVersion::V54, b">="), vec![TK_GE]);
+        assert_eq!(kinds(LuaVersion::V54, b".."), vec![TK_CONCAT]);
+        assert_eq!(kinds(LuaVersion::V54, b"..."), vec![TK_DOTS]);
+        // A lone dot is its single-byte token.
+        assert_eq!(kinds(LuaVersion::V54, b"."), vec![b'.' as i32]);
+    }
+
+    #[test]
+    fn comments_emit_no_tokens() {
+        // Short comment to end of line, then a name.
+        assert_eq!(kinds(LuaVersion::V54, b"-- a comment\nx"), vec![TK_NAME]);
+        // Long comment.
+        assert_eq!(kinds(LuaVersion::V54, b"--[[ block\ncomment ]] y"), vec![TK_NAME]);
+    }
+
+    #[test]
+    fn empty_input_is_just_eos() {
+        let toks = lex(LuaVersion::V54, b"");
+        assert_eq!(toks.len(), 1);
+        assert_eq!(toks[0].kind, TK_EOS);
+    }
+
+    #[test]
+    fn peek_maps_byte_and_eoz() {
+        // The internal dispatch shape: a byte maps to Peek::Byte, EOZ to Peek::Eoz.
+        let mut state = new_state().unwrap();
+        let source = state.intern_str(b"@t").unwrap();
+        let mut ls = empty_lexstate(source, LuaVersion::V54);
+        ls.current = b'=' as i32;
+        assert!(matches!(peek(&ls), Peek::Byte(b'=')));
+        ls.current = EOZ;
+        assert!(matches!(peek(&ls), Peek::Eoz));
+    }
+
+    #[test]
+    fn zio_yields_bytes_then_eoz() {
+        let mut z = ZIO::from_bytes(b"ab".to_vec());
+        assert_eq!(z.getc(), b'a' as i32);
+        assert_eq!(z.getc(), b'b' as i32);
+        assert_eq!(z.getc(), EOZ);
+        assert_eq!(z.getc(), EOZ);
+        // An empty source is immediately EOZ.
+        let mut empty = ZIO::from_bytes(Vec::new());
+        assert_eq!(empty.getc(), EOZ);
+    }
+
+    #[test]
+    fn lexbuffer_extraction_helpers() {
+        let mut b = LexBuffer::new();
+        for &c in b"\"hello\"" {
+            b.push_byte(c);
+        }
+        assert_eq!(b.trim_ends(1), b"hello");
+        assert_eq!(b.to_owned_text(), b"\"hello\"");
+        // Too-short buffer for the requested delimiter width → empty content.
+        let mut tiny = LexBuffer::new();
+        tiny.push_byte(b'"');
+        assert_eq!(tiny.trim_ends(1), b"");
+        // Trailing-NUL trim drops exactly one sentinel.
+        let mut num = LexBuffer::new();
+        for &c in b"123\0" {
+            num.push_byte(c);
+        }
+        assert_eq!(num.without_trailing_nul(), b"123");
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/llex.c  (581 lines, 24 functions)
-//                  src/llex.h  (91 lines; merged)
+//   source:        originally ported from src/llex.c + src/llex.h; the C
+//                  correspondence has since been GRADUATED away (see GRADUATED.md
+//                  and the module-level doc). This file no longer tracks the C
+//                  line-by-line — it is idiomatic Rust guarded by the oracle.
 //   target_crate:  lua-lex
-//   confidence:    medium
-//   todos:         18
-//   port_notes:    12
+//   confidence:    high
+//   todos:         1  (ZIO/LexBuffer move to lua_vm::zio — separate refactor)
+//   port_notes:    0  (C-correspondence crutches removed in idiomatization S1)
 //   unsafe_blocks: 0   (must be 0 outside explicit unsafe-budget crates)
-//   notes:         Logic is faithful to the C.  The main structural differences:
-//                  (1) LexState.L removed — state threaded via fn params;
-//                  (2) save/save_and_next/inclinenumber/helpers are all fallible
-//                  (Result<_, LuaError>) because lexerror is no longer noreturn;
-//                  (3) goto read_save/only_save/no_save in read_string replaced
-//                  by EscapeResult enum; (4) Cross-crate calls (intern_str,
-//                  luaH_getstr/finishset, luaG_addinfo, luaO_str2num,
-//                  luaO_hexavalue, luaO_utf8esc, luaC_fix, luaC_checkGC) are
-//                  stubbed with TODO; (5) LuaError, LuaString, ZIO, LexBuffer,
-//                  LuaState defined as local stubs — Phase B replaces with real
-//                  imports once the crate graph is wired.  Key Phase B tasks:
-//                  wire import paths; move LuaString.extra accessor to pub;
-//                  implement luaX_newstring anchor-table logic.  Numeric
-//                  literal parsing now delegates to lua_vm::object::str2num
-//                  (handles hex integers with wrap-around and hex floats).
+//   notes:         Idiomatized (Sprint 1, P1a): byte cursor is a single-cursor
+//                  chunk reader; numeral parsing returns Option not a C status +
+//                  out-param; token text uses named LexBuffer extraction methods;
+//                  the scan loop dispatches on an internal Peek enum while the
+//                  emitted token kind stays i32 (TK_*) as the lua-parse boundary.
+//                  The oracle that now guards behaviour: bytecode parity (token
+//                  stream → identical luac -l -l), the multiversion_oracle, and
+//                  the literals.lua / errors.lua line-and-message tests. Numeric
+//                  literal parsing delegates to lua_vm::object::str2num. Do NOT
+//                  reach for llex.c to debug this file — see GRADUATED.md.
 // ──────────────────────────────────────────────────────────────────────────────
