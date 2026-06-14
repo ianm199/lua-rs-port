@@ -295,7 +295,8 @@ fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg
                 drop(g);
                 return_resume_slot_buf(state, parent_open_upval_slots);
                 return_resume_value_buf(state, args);
-                push_lit_or_nil(state, b"cannot resume non-suspended coroutine");
+                let msg = non_suspended_resume_message(state);
+                push_lit_or_nil(state, msg);
                 return -1;
             }
         };
@@ -561,6 +562,20 @@ pub(crate) fn borrow_thread_rooted<'a>(
     g.suspended_parent_open_upvals.push(upval_snapshot);
     drop(g);
     RootedThreadBorrow { inner }
+}
+
+/// The wording for "tried to resume a coroutine that is the running (or an
+/// active normal) thread", which changed between versions: Lua 5.1 says
+/// `cannot resume running coroutine`; 5.2 generalized it to
+/// `cannot resume non-suspended coroutine` (the same message now covers a
+/// normal coroutine too). Pinned by `double_resume_running_message_by_version`
+/// in `tests/coro_strengthen.rs` against lua5.1.5 vs lua5.2.4+.
+fn non_suspended_resume_message(state: &LuaState) -> &'static [u8] {
+    if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        b"cannot resume running coroutine"
+    } else {
+        b"cannot resume non-suspended coroutine"
+    }
 }
 
 /// Helper: push a string literal or fall back to Nil on intern failure.
