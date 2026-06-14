@@ -150,6 +150,16 @@ fn project(mut ran: u64, n: u64, s: &mut [u64; 4]) -> u64 {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Whether the argument at stack index `n` carries the integer subtype.
+///
+/// Several `math.*` functions (`abs`, `floor`, `ceil`, `fmod`, `modf`, `type`)
+/// branch on whether an argument is an `Int` versus a `Float`, preserving the
+/// integer subtype on the integer path. This names that recurring predicate so
+/// the branch reads as intent rather than as a raw `matches!` on the stack slot.
+fn arg_is_int(state: &mut LuaState, n: i32) -> bool {
+    matches!(state.value_at(n), LuaValue::Int(_))
+}
+
 /// Convert `d` to integer and push it; push the float unchanged if it doesn't
 /// fit exactly in an i64.
 ///
@@ -172,7 +182,7 @@ fn push_num_int(state: &mut LuaState, d: f64) {
 /// `math.abs(x)` — absolute value, preserving integer type when possible.
 ///
 fn math_abs(state: &mut LuaState) -> Result<usize, LuaError> {
-    if matches!(state.value_at(1), LuaValue::Int(_)) {
+    if arg_is_int(state, 1) {
         let n = state.to_integer(1).unwrap_or(0);
         let n = if n < 0 {
             (0u64.wrapping_sub(n as u64)) as i64
@@ -382,7 +392,7 @@ fn math_toint(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `math.floor(x)` — largest integer ≤ x.
 ///
 fn math_floor(state: &mut LuaState) -> Result<usize, LuaError> {
-    if matches!(state.value_at(1), LuaValue::Int(_)) {
+    if arg_is_int(state, 1) {
         // Must go through the public C-API set_top (relative to the call
         // frame); the inherent LuaState::set_top treats its argument as an
         // absolute StackIdx.
@@ -397,7 +407,7 @@ fn math_floor(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `math.ceil(x)` — smallest integer ≥ x.
 ///
 fn math_ceil(state: &mut LuaState) -> Result<usize, LuaError> {
-    if matches!(state.value_at(1), LuaValue::Int(_)) {
+    if arg_is_int(state, 1) {
         // Public C-API set_top (relative); inherent LuaState::set_top is absolute.
         lua_vm::api::set_top(state, 1)?;
     } else {
@@ -410,9 +420,7 @@ fn math_ceil(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `math.fmod(x, y)` — floating-point remainder (same sign as x).
 ///
 fn math_fmod(state: &mut LuaState) -> Result<usize, LuaError> {
-    if matches!(state.value_at(1), LuaValue::Int(_))
-        && matches!(state.value_at(2), LuaValue::Int(_))
-    {
+    if arg_is_int(state, 1) && arg_is_int(state, 2) {
         let a = state.to_integer(1).unwrap_or(0);
         let d = state.to_integer(2).unwrap_or(0);
         if (d as u64).wrapping_add(1) <= 1 {
@@ -437,7 +445,7 @@ fn math_fmod(state: &mut LuaState) -> Result<usize, LuaError> {
 /// PORT NOTE: Does not use `modf` (avoids `double *` / `float *` ABI mismatch
 /// for non-double `lua_Number`). Instead, uses ceil/floor + subtraction.
 fn math_modf(state: &mut LuaState) -> Result<usize, LuaError> {
-    if matches!(state.value_at(1), LuaValue::Int(_)) {
+    if arg_is_int(state, 1) {
         // Public C-API set_top (relative); inherent LuaState::set_top is absolute.
         lua_vm::api::set_top(state, 1)?; // integer part is the integer itself
         state.push(LuaValue::Float(0.0)); // no fractional part
@@ -558,7 +566,7 @@ fn math_max(state: &mut LuaState) -> Result<usize, LuaError> {
 ///
 fn math_type(state: &mut LuaState) -> Result<usize, LuaError> {
     if matches!(state.type_at(1), LuaType::Number) {
-        if matches!(state.value_at(1), LuaValue::Int(_)) {
+        if arg_is_int(state, 1) {
             state.push_string(b"integer")?;
         } else {
             state.push_string(b"float")?;
