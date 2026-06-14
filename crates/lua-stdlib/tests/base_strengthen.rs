@@ -188,24 +188,43 @@ fn assert_message_must_be_string_pre_5_3_crossversion() {
 }
 
 #[test]
-fn assert_string_coercible_message_is_used_on_all_versions() {
-    // A string-coercible (number) message is accepted on every version: 5.1/5.2
-    // stringify it through `luaL_optstring`; 5.3+ forward it to `error`, which
-    // location-prefixes it because it is string-coercible. Either way the
-    // observable error text ends in the coerced number. (Green at baseline.)
-    let probe = "return (select(2, pcall(function() assert(false, 404) end)):gsub('^.*: ', ''))";
-    for v in ALL {
-        assert_eq!(eval_str(v, probe), b"404", "{v:?}");
+fn assert_number_message_is_stringified_pre_5_3_else_forwarded_crossversion() {
+    // A NUMBER second argument diverges. 5.1/5.2 `luaL_optstring` stringifies it
+    // and `luaL_error` location-prefixes the result, so the error is the STRING
+    // "…: 404". 5.3+ forward the raw value to `error`, which leaves a non-string
+    // object verbatim, so the error is the NUMBER 404 itself. Confirmed against
+    // lua5.{1.5,2.4,3.6,4.7,5.0}.
+    let probe = "return select(2, pcall(function() assert(false, 404) end))";
+    for v in [LuaVersion::V51, LuaVersion::V52] {
+        let lua = Lua::new_versioned(v);
+        match lua.load(probe).eval::<Value>() {
+            Ok(Value::String(s)) => {
+                let bytes = s.as_bytes().unwrap();
+                assert!(bytes.ends_with(b"404"), "{v:?}: `{:?}`", bytes);
+            }
+            other => panic!("{v:?}: assert(false, 404) must be a prefixed string, got {other:?}"),
+        }
     }
-    // The string message path is location-prefixed on every version.
-    for v in ALL {
-        let msg = eval_err(v, "assert(false, 'boom')");
-        assert!(msg.ends_with("boom"), "{v:?}: `{msg}`");
+    for v in [LuaVersion::V53, LuaVersion::V54, LuaVersion::V55] {
+        let lua = Lua::new_versioned(v);
+        match lua.load(probe).eval::<Value>() {
+            Ok(Value::Integer(404)) | Ok(Value::Number(_)) => {}
+            other => panic!("{v:?}: assert(false, 404) must forward the number, got {other:?}"),
+        }
     }
-    // No message at all → the default literal on every version.
+}
+
+#[test]
+fn assert_string_message_and_default_all_versions() {
+    // A string message is location-prefixed on every version (5.1/5.2 via
+    // luaL_error, 5.3+ via error's string-prefix path); the absent-message case
+    // is the default literal on every version. (Green at baseline.)
     for v in ALL {
-        let msg = eval_err(v, "assert(false)");
-        assert!(msg.ends_with("assertion failed!"), "{v:?}: `{msg}`");
+        assert!(eval_err(v, "assert(false, 'boom')").ends_with("boom"), "{v:?}");
+        assert!(
+            eval_err(v, "assert(false)").ends_with("assertion failed!"),
+            "{v:?}"
+        );
     }
 }
 

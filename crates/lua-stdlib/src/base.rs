@@ -1165,9 +1165,23 @@ pub(crate) fn dofile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Raises an error if the first argument is falsy, otherwise passes all
 /// arguments through as return values.
 ///
+/// The message handling is a cross-version split. Lua 5.1/5.2 `luaB_assert`
+/// raise via `luaL_error("%s", luaL_optstring(L, 2, "assertion failed!"))`:
+/// the message must be string-coercible, so a present non-string/non-number
+/// second argument raises `bad argument #2 to 'assert' (string expected,
+/// got <type>)`, a number is stringified, and the result is location-prefixed.
+/// Lua 5.3+ forward the raw second argument (any value) to `error`, so a table
+/// message becomes the error object itself, unprefixed.
 pub(crate) fn assert_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     if state.to_boolean(1) {
         return Ok(state.top() as usize);
+    }
+    if matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+    ) {
+        let msg = state.opt_arg_string(2, b"assertion failed!")?;
+        return Err(state.where_error(1, &msg));
     }
     state.check_arg_any(1)?;
     state.remove(1)?;
