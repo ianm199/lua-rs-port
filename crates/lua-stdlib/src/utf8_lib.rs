@@ -1,13 +1,29 @@
-//! UTF-8 standard library for Lua 5.4.
+//! The `utf8` standard library: `char`, `codepoint`, `codes`, `len`, `offset`,
+//! and `charpattern`. Present from Lua 5.3.
 //!
-//! Port of `lutf8lib.c` (291 lines, 9 functions).
+//! GRADUATED (Phase-2 idiomatization). The line-by-line C correspondence to
+//! `lutf8lib.c` has been removed; what guards this module now is the behavioral
+//! net, in two layers:
+//!   - the official 5.4 suite (`reference/lua-5.4.7-tests/utf8.lua`, run via the
+//!     harness) and the cross-crate `multiversion_oracle`, and
+//!   - `crates/lua-stdlib/tests/utf8_strengthen.rs`, which pins the **version
+//!     seam** the 5.4-only suite cannot see: the decode/encode regime differs
+//!     between 5.3 and 5.4+.
 //!
-//! Provides the `utf8` module with `char`, `codepoint`, `codes`, `len`,
-//! `offset`, and `charpattern`. Supports both strict (Unicode-conformant)
-//! and lax (extended UTF-8, up to `MAX_UTF = 0x7FFFFFFF`) decoding modes.
+//! The version seam is a single source of truth, [`DecodeMode`], resolved once
+//! per call by [`decode_mode_for`]:
+//!   - **5.3** — cap at `MAX_UNICODE`, at most a 4-byte sequence, surrogates
+//!     ALWAYS accepted, the `lax` argument ignored (5.3's `utf8_decode` has no
+//!     strict/lax parameter). `charpattern` stops the lead byte at `\xF4`.
+//!   - **5.4+ strict** (default) — cap at `MAX_UTF` while decoding, then reject
+//!     surrogates and values above `MAX_UNICODE`.
+//!   - **5.4+ lax** — cap at `MAX_UTF`, accept surrogates. `charpattern` widens
+//!     the lead byte to `\xFD`.
 //!
-//! Strict mode rejects surrogates (U+D800..U+DFFF) and values above U+10FFFF.
-//! Lax mode accepts any well-formed byte sequence with a value ≤ MAX_UTF.
+//! LOAD-BEARING (do not reshape — only the validity ceiling is version-split):
+//! the continuation-byte decode loop in [`utf8_decode`] and the backward-fill
+//! encode in [`encode_utf8_codepoint`]. Those carry the bit-exact arithmetic and
+//! are documented in place.
 
 use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_types::error::LuaError;
@@ -17,7 +33,8 @@ const MAX_UNICODE: u32 = 0x10_FFFF;
 
 const MAX_UTF: u32 = 0x7FFF_FFFF;
 
-// 31 bits are needed for MAX_UTF; u32 is sufficient on all Rust targets.
+/// Integer wide enough for a decoded codepoint: 31 bits are needed for
+/// `MAX_UTF`, so `u32` suffices on every Rust target.
 type UtfInt = u32;
 
 /// The 5.4+ `charpattern` (`lutf8lib.c` `UTF8PATT`): the lead-byte range runs to
@@ -87,13 +104,12 @@ fn decode_mode_for(version: lua_types::LuaVersion, lax: bool) -> DecodeMode {
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
-/// Translate a relative string position: negative values count backward from end.
-///
+/// Translate a relative string position: negative values count backward from
+/// the end, clamping to `0` when they reach before the start.
 fn pos_relat(pos: i64, len: usize) -> i64 {
     if pos >= 0 {
         pos
     } else {
-        // 0u - (size_t)pos is the magnitude of pos as an unsigned value.
         let abs_pos = pos.unsigned_abs() as u64;
         if abs_pos > len as u64 {
             0
@@ -111,10 +127,8 @@ fn is_cont(c: u8) -> bool {
 }
 
 /// Return `true` if the byte at 0-based index `pos` in `s` is a continuation
-/// byte, treating out-of-bounds positions as non-continuation.
-///
-/// C strings carry a NUL terminator that is never a continuation byte;
-/// the bounds-check here replaces that guarantee.
+/// byte, treating out-of-bounds (or negative) positions as non-continuation —
+/// the bounds check stands in for the NUL terminator the upstream relies on.
 #[inline]
 fn is_cont_at(s: &[u8], pos: i64) -> bool {
     if pos < 0 {
@@ -125,17 +139,24 @@ fn is_cont_at(s: &[u8], pos: i64) -> bool {
 
 /// Decode one UTF-8 sequence from the start of `s`.
 ///
-/// Returns `None` if the byte sequence is invalid.
-/// Returns `Some((remaining_slice, codepoint))` on success.
+/// Returns `None` if the byte sequence is invalid, else
+/// `Some((remaining_slice, codepoint))`.
 ///
 /// `mode` selects the validity regime (see [`DecodeMode`]): the 5.3 path caps at
 /// `MAX_UNICODE` and accepts surrogates; the 5.4+ strict/lax paths cap at
-/// `MAX_UTF` and differ only on surrogate rejection. The continuation-byte
-/// bit-math below is shared and version-free.
+/// `MAX_UTF` and differ only on surrogate rejection.
 ///
+/// LOAD-BEARING: the continuation-byte loop below is the faithful translation of
+/// `lutf8lib.c`'s `utf8_decode`, including the order-sensitive details that look
+/// odd in isolation — the high-bit walk `while c & 0x40` consumes one
+/// continuation byte per iteration then shifts `c` left so the next leading bit
+/// can be tested; `r` accumulates the low six bits of each continuation byte and
+/// the leading byte's payload is folded in afterward via `(c & 0x7F) << count*5`;
+/// `LIMITS[count]` is the smallest value legal for that sequence length (so a
+/// too-small `r` is an overlong encoding), with `LIMITS[0] = u32::MAX` forcing an
+/// error for a stray non-ASCII byte. Only the validity ceiling is version-split
+/// (via [`DecodeMode`]); the arithmetic is shared and must not be reshaped.
 fn utf8_decode(s: &[u8], mode: DecodeMode) -> Option<(&[u8], UtfInt)> {
-    // LIMITS[count] is the minimum value for a sequence with `count` continuation bytes.
-    // LIMITS[0] = u32::MAX forces an error when a non-ASCII byte has no continuation bytes.
     const LIMITS: [UtfInt; 6] = [u32::MAX, 0x80, 0x800, 0x10000, 0x200000, 0x4000000];
 
     if s.is_empty() {
@@ -147,28 +168,25 @@ fn utf8_decode(s: &[u8], mode: DecodeMode) -> Option<(&[u8], UtfInt)> {
     let advance: usize;
 
     if c < 0x80 {
-        // ASCII fast path — no continuation bytes needed.
         res = c;
         advance = 1;
     } else {
         let mut count: usize = 0;
         let mut r: UtfInt = 0;
 
-        // The C for-loop runs the body first, then applies `c <<= 1` as the update.
         while c & 0x40 != 0 {
             count += 1;
             if count >= s.len() {
-                return None; // string too short for the indicated sequence length
+                return None;
             }
             let cc = s[count] as u32;
 
             if (cc & 0xC0) != 0x80 {
-                return None; // expected continuation byte, got something else
+                return None;
             }
 
             r = (r << 6) | (cc & 0x3F);
 
-            // C for-loop update: c <<= 1
             c <<= 1;
         }
 
@@ -193,11 +211,15 @@ fn utf8_decode(s: &[u8], mode: DecodeMode) -> Option<(&[u8], UtfInt)> {
     Some((&s[advance..], res))
 }
 
-/// Encode a codepoint (≤ `MAX_UTF`) as extended UTF-8 bytes.
+/// Encode a codepoint (≤ `MAX_UTF`) as extended UTF-8 bytes, returned as a
+/// `Vec<u8>` (the upstream fills a fixed buffer backwards).
 ///
-/// Mirrors `luaO_utf8esc` from `lobject.c`, which fills a fixed buffer backwards.
-/// This Rust version builds the bytes naturally and returns a `Vec<u8>`.
-///
+/// LOAD-BEARING: `mfb` ("max value for a first byte") tracks the payload room in
+/// the leading byte, halving each round as another continuation byte is emitted;
+/// the continuation bytes are built low-to-high (reversed at the end) and the
+/// leading byte's marker is `!mfb << 1`. The `wrapping_shl` is required: `!mfb`
+/// overflows a plain `<< 1` in debug builds (e.g. `!0x1F = 0xFFFF_FFE0`,
+/// `<< 1 = 0xFFFF_FFC0`, `as u8 = 0xC0`).
 fn encode_utf8_codepoint(code: u32) -> Vec<u8> {
     debug_assert!(code <= MAX_UTF);
 
@@ -207,10 +229,8 @@ fn encode_utf8_codepoint(code: u32) -> Vec<u8> {
 
     let mut x = code;
     let mut mfb: u32 = 0x3F;
-    // Continuation bytes built in reverse, then reversed at the end.
     let mut bytes_rev: Vec<u8> = Vec::with_capacity(6);
 
-    //    while (x > mfb);
     loop {
         bytes_rev.push(0x80 | (x & 0x3F) as u8);
         x >>= 6;
@@ -220,8 +240,6 @@ fn encode_utf8_codepoint(code: u32) -> Vec<u8> {
         }
     }
 
-    // wrapping_shl avoids a Rust debug-mode overflow panic on `!mfb << 1`
-    // (e.g., !0x1Fu32 = 0xFFFF_FFE0; << 1 = 0xFFFF_FFC0; as u8 = 0xC0).
     let leading = ((!mfb).wrapping_shl(1) as u8) | (x as u8);
 
     let mut result = Vec::with_capacity(bytes_rev.len() + 1);
@@ -268,16 +286,15 @@ fn utf_len(state: &mut LuaState) -> Result<usize, LuaError> {
         b"final position out of bounds"
     };
 
-    // Note: C short-circuits, so --posi only executes when 1 <= posi.
     if posi < 1 {
         return Err(lua_vm::debug::arg_error_impl(state, 2, initial_msg));
     }
-    posi -= 1; // 1-based → 0-based
+    posi -= 1;
     if posi > len as i64 {
         return Err(lua_vm::debug::arg_error_impl(state, 2, initial_msg));
     }
 
-    posj -= 1; // 1-based → 0-based (always decremented, no short-circuit)
+    posj -= 1;
     if posj >= len as i64 {
         return Err(lua_vm::debug::arg_error_impl(state, 3, final_msg));
     }
@@ -287,8 +304,8 @@ fn utf_len(state: &mut LuaState) -> Result<usize, LuaError> {
     while posi <= posj {
         match utf8_decode(&s[posi as usize..], mode) {
             None => {
-                state.push(LuaValue::Nil); // luaL_pushfail
-                state.push(LuaValue::Int(posi + 1)); // 1-based position of failure
+                state.push(LuaValue::Nil);
+                state.push(LuaValue::Int(posi + 1));
                 return Ok(2);
             }
             Some((remaining, _)) => {
@@ -345,9 +362,8 @@ fn codepoint(state: &mut LuaState) -> Result<usize, LuaError> {
     let n_max = (pose - posi + 1) as i32;
     state.ensure_stack(n_max, "string slice too long")?;
 
-    // 0-based: start at (posi - 1), stop before byte index `pose`.
-    let mut pos: usize = (posi - 1) as usize; // 0-based start
-    let end: usize = pose as usize; // 0-based exclusive end
+    let mut pos: usize = (posi - 1) as usize;
+    let end: usize = pose as usize;
     let mut count: usize = 0;
 
     while pos < end {
@@ -356,7 +372,7 @@ fn codepoint(state: &mut LuaState) -> Result<usize, LuaError> {
             Some((remaining, code)) => {
                 state.push(LuaValue::Int(code as i64));
                 count += 1;
-                pos = len - remaining.len(); // advance by decoded character width
+                pos = len - remaining.len();
             }
         }
     }
@@ -364,19 +380,16 @@ fn codepoint(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(count)
 }
 
-/// Encode the codepoint at stack argument `arg` and return the UTF-8 bytes.
+/// Encode the codepoint at stack argument `arg` and return its UTF-8 bytes.
 ///
-/// `Vec<u8>` directly rather than pushing to the stack, avoiding the push/pop
-/// dance that `luaL_Buffer` required.
-///
-/// PORT NOTE: C's `pushutfchar` called `lua_pushfstring(L, "%U", code)` to encode
-/// and push in one step. Here the encoding is extracted so `utf_char` can build
-/// the concatenated result without intermediate stack operations.
+/// The accepted ceiling is version-split (the `utf8.char` `luaL_argcheck`):
+/// 5.3 caps at `MAX_UNICODE`, 5.4+ at `MAX_UTF`. Returning the bytes lets
+/// `utf_char` concatenate them without per-codepoint stack traffic.
 fn get_utf_char_bytes(state: &mut LuaState, arg: i32) -> Result<Vec<u8>, LuaError> {
     let code = state.check_arg_integer(arg)? as u64;
 
     let max_code: u64 = if state.global().lua_version == lua_types::LuaVersion::V53 {
-        0x10FFFF
+        MAX_UNICODE as u64
     } else {
         MAX_UTF as u64
     };
@@ -389,7 +402,7 @@ fn get_utf_char_bytes(state: &mut LuaState, arg: i32) -> Result<Vec<u8>, LuaErro
 
 /// `utf8.char(n1, n2, ...)` → string
 ///
-/// Returns a string formed by the UTF-8 encoding of the given codepoints.
+/// Returns the string formed by the UTF-8 encoding of the given codepoints.
 ///
 fn utf_char(state: &mut LuaState) -> Result<usize, LuaError> {
     let n: i32 = state.stack_top() as i32;
@@ -399,10 +412,6 @@ fn utf_char(state: &mut LuaState) -> Result<usize, LuaError> {
         let s = state.intern_str(&bytes)?;
         state.push(LuaValue::Str(s));
     } else {
-        //    for (i = 1; i <= n; i++) { pushutfchar(L, i); luaL_addvalue(&b); }
-        //    luaL_pushresult(&b);
-        // PORT NOTE: luaL_Buffer replaced by Vec<u8>; codepoints are encoded
-        // directly into the accumulator without intermediate stack push/pop.
         let mut buf: Vec<u8> = Vec::new();
         for i in 1..=n {
             buf.extend_from_slice(&get_utf_char_bytes(state, i)?);
@@ -417,10 +426,16 @@ fn utf_char(state: &mut LuaState) -> Result<usize, LuaError> {
 /// `utf8.offset(s, n [, i])` → integer | nil
 ///
 /// Returns the byte offset where the n-th character (counting from position `i`)
-/// starts. Negative `n` counts from the end. `n == 0` returns the start of the
-/// character that contains position `i`.
-/// Returns `nil` if the character cannot be found.
+/// starts. Negative `n` counts from the end; `n == 0` returns the start of the
+/// character that contains position `i`. Returns `nil` if the character cannot
+/// be found.
 ///
+/// `count` is `n` driven toward zero as characters are crossed. Each step does a
+/// do-while-style inner walk: it moves one byte unconditionally, then skips over
+/// any continuation bytes to land on the next leading byte (forward for `n > 0`,
+/// backward for `n < 0`). Where C stops the inner walk on the NUL terminator,
+/// the bounds check on `posi` does the same job here. Lua 5.5 additionally
+/// returns the character's end byte (inclusive); 5.3/5.4 return only the start.
 fn byte_offset(state: &mut LuaState) -> Result<usize, LuaError> {
     let s: Vec<u8> = state.check_arg_string(1)?.to_vec();
     let len = s.len();
@@ -440,20 +455,17 @@ fn byte_offset(state: &mut LuaState) -> Result<usize, LuaError> {
     if posi_1based < 1 {
         return Err(lua_vm::debug::arg_error_impl(state, 3, pos_msg));
     }
-    let mut posi: i64 = posi_1based - 1; // 1-based → 0-based
+    let mut posi: i64 = posi_1based - 1;
     if posi > len as i64 {
         return Err(lua_vm::debug::arg_error_impl(state, 3, pos_msg));
     }
 
-    // `count` is a mutable copy of `n`; driven to 0 when the target character is found.
     let mut count = n;
 
     if count == 0 {
-        // Scan backward to find the start of the character containing `posi`.
         while posi > 0 && is_cont_at(&s, posi) {
             posi -= 1;
         }
-        // count remains 0
     } else {
         if is_cont_at(&s, posi) {
             return Err(LuaError::runtime(format_args!(
@@ -462,12 +474,7 @@ fn byte_offset(state: &mut LuaState) -> Result<usize, LuaError> {
         }
 
         if count < 0 {
-            //      do { posi--; } while (posi > 0 && iscontp(s + posi));
-            //      n++;
-            //    }
             while count < 0 && posi > 0 {
-                // do-while: always decrements at least once, then skips back over
-                // any continuation bytes to land on a leading byte.
                 loop {
                     posi -= 1;
                     if posi == 0 || !is_cont_at(&s, posi) {
@@ -477,14 +484,8 @@ fn byte_offset(state: &mut LuaState) -> Result<usize, LuaError> {
                 count += 1;
             }
         } else {
-            //    while (n > 0 && posi < (lua_Integer)len) {
-            //      do { posi++; } while (iscontp(s + posi));  /* cannot pass '\0' */
-            //      n--;
-            //    }
-            count -= 1; // do not move for the 1st character
+            count -= 1;
             while count > 0 && posi < len as i64 {
-                // C relies on the NUL terminator to stop the inner do-while.
-                // Rust uses an explicit bounds check instead.
                 loop {
                     posi += 1;
                     if !is_cont_at(&s, posi) {
@@ -497,47 +498,41 @@ fn byte_offset(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     if count != 0 {
-        state.push(LuaValue::Nil); // luaL_pushfail: character not found
+        state.push(LuaValue::Nil);
         return Ok(1);
     }
 
-    state.push(LuaValue::Int(posi + 1)); // 0-based → 1-based (initial position)
+    state.push(LuaValue::Int(posi + 1));
 
-    // Lua 5.5 additionally returns the byte position where the character ends
-    // (inclusive). 5.3/5.4 return only the start.
     if state.global().lua_version != lua_types::LuaVersion::V55 {
         return Ok(1);
     }
 
-    // Multi-byte character? (high bit set on the leading byte)
     if s.get(posi as usize).is_some_and(|&b| b & 0x80 != 0) {
-        // A continuation byte at the start means the position is mid-character;
-        // mirror the C guard. (Practically unreachable on the success branch.)
         if is_cont_at(&s, posi) {
             return Err(LuaError::runtime(format_args!(
                 "initial position is a continuation byte"
             )));
         }
-        // Skip forward over trailing continuation bytes to land on the last
-        // byte of this character.
         while is_cont_at(&s, posi + 1) {
             posi += 1;
         }
     }
-    // One-byte character: final position equals the initial position.
-    state.push(LuaValue::Int(posi + 1)); // 0-based → 1-based (final position)
+    state.push(LuaValue::Int(posi + 1));
     Ok(2)
 }
 
 /// Internal iterator body shared by `iter_aux_strict` and `iter_aux_lax`.
 ///
 /// Stack on entry (from the generic for): (1) string, (2) current byte position
-/// (0-based; initially pushed as 0 by `iter_codes`).
+/// (0-based; initially pushed as 0 by `iter_codes`). Advances past any leading
+/// continuation bytes, decodes the next character, and returns
+/// `(next_1based_pos, codepoint)`, or nothing (0) when the string is exhausted.
+/// A decode failure — or a decoded sequence immediately followed by a stray
+/// continuation byte — raises "invalid UTF-8 code".
 ///
-/// Advances past any leading continuation bytes, decodes the next character,
-/// and returns `(next_1based_pos, codepoint)`.  Returns nothing (0) when the
-/// string is exhausted.
-///
+/// `strict` is the requested mode; the actual [`DecodeMode`] is resolved against
+/// the version (5.3 ignores it, decoding in its own regime).
 fn iter_aux(state: &mut LuaState, strict: bool) -> Result<usize, LuaError> {
     let s: Vec<u8> = state.check_arg_string(1)?.to_vec();
     let len = s.len();
@@ -553,39 +548,37 @@ fn iter_aux(state: &mut LuaState, strict: bool) -> Result<usize, LuaError> {
     }
 
     if (n as usize) >= len {
-        return Ok(0); // no more codepoints
+        return Ok(0);
     }
 
-    //    if (next == NULL || iscontp(next)) return luaL_error(L, MSGInvalid);
     match utf8_decode(&s[n as usize..], mode) {
         None => Err(lua_vm::debug::c_api_runtime(
             state,
             b"invalid UTF-8 code".to_vec(),
         )),
         Some((remaining, code)) => {
-            let next_pos = len - remaining.len(); // 0-based index of the next character
-                                                  // valid sequence indicates a malformed input stream.
+            let next_pos = len - remaining.len();
             if next_pos < len && is_cont(s[next_pos]) {
                 return Err(lua_vm::debug::c_api_runtime(
                     state,
                     b"invalid UTF-8 code".to_vec(),
                 ));
             }
-            state.push(LuaValue::Int((n + 1) as i64)); // 1-based position for next iteration
+            state.push(LuaValue::Int((n + 1) as i64));
             state.push(LuaValue::Int(code as i64));
             Ok(2)
         }
     }
 }
 
-/// Strict iterator body: rejects surrogates and values > MAX_UNICODE.
-///
+/// Strict iterator body: 5.4+ reject surrogates and values > `MAX_UNICODE`
+/// (5.3 decodes in its own regime regardless).
 fn iter_aux_strict(state: &mut LuaState) -> Result<usize, LuaError> {
     iter_aux(state, true)
 }
 
-/// Lax iterator body: accepts extended UTF-8 up to MAX_UTF.
-///
+/// Lax iterator body: 5.4+ accept extended UTF-8 up to `MAX_UTF`
+/// (5.3 decodes in its own regime regardless).
 fn iter_aux_lax(state: &mut LuaState) -> Result<usize, LuaError> {
     iter_aux(state, false)
 }
@@ -654,14 +647,12 @@ pub fn open_utf8(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ──────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/lutf8lib.c  (291 lines, 9 functions)
 //   target_crate:  lua-stdlib
-//   confidence:    high
-//   todos:         0
-//   unsafe_blocks: 0   (must be 0 outside explicit unsafe-budget crates)
-//   notes:         Core UTF-8 logic (utf8_decode, encode_utf8_codepoint,
-//                  pos_relat, is_cont_at) is a faithful translation. LuaState
-//                  API names reconciled against state_stub overrides. No unsafe
-//                  blocks; NUL-terminator reliance in C replaced by Rust bounds
-//                  checks throughout.
+//   unsafe_blocks: 0
+//   load-bearing:  the utf8_decode continuation-byte loop and the
+//                  encode_utf8_codepoint backward-fill — bit-exact arithmetic,
+//                  only the validity ceiling is version-split (DecodeMode).
+//   net:           utf8.lua (official 5.4), multiversion_oracle, and the
+//                  lua-stdlib utf8_strengthen tests (the 5.3-vs-5.4+ decode
+//                  seam), plus check.sh 5.1-5.5. See GRADUATED.md "utf8".
 // ──────────────────────────────────────────────────────────────────────────
