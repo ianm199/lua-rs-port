@@ -621,7 +621,6 @@ fn math_random(state: &mut LuaState) -> Result<usize, LuaError> {
             // 5.4/5.5 `random(0)` returns a full-range integer; 5.1/5.2/5.3 have
             // no such special case — it is `[1, 0]`, an empty interval.
             if up == 0 && !is_v53 && !float_only {
-                // I2UInt(rv) = rv (trivial for u64)
                 state.push(LuaValue::Int(rv as i64));
                 return Ok(1);
             }
