@@ -247,7 +247,6 @@ if floatbits < intbits then
   assert(minint > -2^intbits)
   assert(maxint <= 2^intbits)
   assert(minint >= -2^intbits)
-  print("DBG: end of fmax block (line 240)")
 else
   print("testing order (floats can represent all integers)")
   assert(maxint < maxint + 1.0)
@@ -303,7 +302,6 @@ checkcompt(msgf2i, ("return 2.0^%d & 1"):format(intbits - 1))
 checkcompt("field 'huge'", "return math.huge << 1")
 checkcompt(msgf2i, ("return 1 | 2.0^%d"):format(intbits - 1))
 checkcompt(msgf2i, "return 2.3 ~ 0.0")
-print("DBG: after checkcompt block (line 295)")
 
 
 -- testing overflow errors when converting from float to integer (runtime)
@@ -336,21 +334,14 @@ end
 
 -- 'minint' should be representable as a float no matter the precision
 assert(f2i(minint + 0.0) == minint)
-print("DBG: after f2i block (line 327)")
 
 
 -- testing numeric strings
 
-print("DBG: line 331-pre")
 assert("2" + 1 == 3)
-print("DBG: line 332")
 assert("2 " + 1 == 3)
-print("DBG: line 333")
 assert(" -2 " + 1 == -1)
-print("DBG: line 334")
 assert(" -0xa " + 1 == -9)
-print("DBG: line 335")
-print("DBG: after numeric string tests (line 335)")
 
 
 -- Literal integer Overflows (new behavior in 5.3.3)
@@ -358,7 +349,6 @@ do
   -- no overflows
   assert(eqT(tonumber(tostring(maxint)), maxint))
   assert(eqT(tonumber(tostring(minint)), minint))
-  print("DBG: line 343")
 
   -- add 1 to last digit as a string (it cannot be 9...)
   local function incd (n)
@@ -373,26 +363,21 @@ do
   -- 'tonumber' with overflow by 1
   assert(eqT(tonumber(incd(maxint)), maxint + 1.0))
   assert(eqT(tonumber(incd(minint)), minint - 1.0))
-  print("DBG: line 357")
 
   -- large numbers
   assert(eqT(tonumber("1"..string.rep("0", 30)), 1e30))
   assert(eqT(tonumber("-1"..string.rep("0", 30)), -1e30))
-  print("DBG: line 361")
 
   -- hexa format still wraps around
   assert(eqT(tonumber("0x1"..string.rep("0", 30)), 0))
-  print("DBG: line 364")
 
   -- lexer in the limits
   assert(minint == load("return " .. minint)())
   assert(eqT(maxint, load("return " .. maxint)()))
-  print("DBG: line 368")
 
   assert(eqT(10000000000000000000000.0, 10000000000000000000000))
   assert(eqT(-10000000000000000000000.0, -10000000000000000000000))
 end
-print("DBG: after tonumber overflow tests (line 371)")
 
 
 -- testing 'tonumber'
@@ -492,7 +477,6 @@ assert(not f(tonumber('1\0 ')))
 assert(not f(tonumber('e1')))
 assert(not f(tonumber('e  1')))
 assert(not f(tonumber(' 3.4.5 ')))
-print("DBG: after invalid tonumber tests (line 470)")
 
 
 -- testing 'tonumber' for invalid hexadecimal formats
@@ -549,7 +533,6 @@ assert(0.1e-30 > 0.9E-31 and 0.9E30 < 0.1e31)
 assert(0.123456 > 0.123455)
 
 assert(tonumber('+1.23E18') == 1.23*10.0^18)
-print("DBG: after hex/float numerals (line 526)")
 
 -- testing order operators
 assert(not(1<1) and (1<2) and not(2<1))
@@ -581,7 +564,6 @@ assert(eqT(-10.0 % 2, 0.0))
 assert(eqT(-10.0 % -2, 0.0))
 assert(math.pi - math.pi % 1 == 3)
 assert(math.pi - math.pi % 0.001 == 3.141)
-print("DBG: after mod operator tests (line 557)")
 
 do   -- very small numbers
   local i, j = 0, 20000
@@ -691,7 +673,6 @@ assert(eq(math.log(2, 2), 1))
 assert(eq(math.log(9, 3), 2))
 assert(eq(math.exp(0), 1))
 assert(eq(math.sin(10), math.sin(10%(2*math.pi))))
-print("DBG: after math fn tests (line 666)")
 
 
 assert(tonumber(' 1.3e-2 ') == 1.3e-2)

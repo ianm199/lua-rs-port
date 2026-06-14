@@ -1,2 +1,2 @@
 _soft=true; _port=true; _nomsg=true; _U=false; arg=arg or {}; _G=_G or _ENV; if _VERSION==nil then _VERSION="Lua 5.4" end
-dofile([[/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/reference/lua-c/testes/verybig.lua]])
+dofile([[/Users/ianmclaughlin/PycharmProjects/rustExperiments/lua-rs-port/.claude/worktrees/agent-a6510a657eb3fea14/reference/lua-c/testes/verybig.lua]])

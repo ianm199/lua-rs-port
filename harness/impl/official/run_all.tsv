@@ -5,8 +5,6 @@ big	PASS	-
 bitwise	PASS	-
 bwcoercion	PASS	-
 calls	PASS	-
-calls_head313	PASS	-
-calls_isolated_tmp	PASS	-
 closure	PASS	-
 code	PASS	-
 constructs	PASS	-
@@ -15,11 +13,8 @@ cstack	PASS	-
 db	PASS	-
 errors	PASS	-
 events	PASS	-
-files-debug	PASS	-
 files	PASS	-
 gc	PASS	-
-gc_part	PASS	-
-gctmp	PASS	-
 gengc	PASS	-
 goto	PASS	-
 heavy	PASS	-
@@ -29,14 +24,8 @@ main	PASS	-
 math	PASS	-
 nextvar	PASS	-
 pm	PASS	-
-repro_closure	PASS	-
 sort	PASS	-
-sort_repro	PASS	-
 strings	PASS	-
-strings_part1	PASS	-
-test1	PASS	-
-test_bitor2	PASS	-
-test_weak	PASS	-
 tpack	PASS	-
 tracegc	PASS	-
 utf8	PASS	-
