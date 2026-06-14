@@ -1,7 +1,21 @@
-//! Base library — Lua's built-in functions (`print`, `type`, `pairs`, `pcall`, …).
+//! Base library — Lua's built-in functions (`print`, `type`, `pairs`, `pcall`, …),
+//! a port of `lbaselib.c` covering Lua 5.1–5.5 from one source.
 //!
-//! Translated from: `reference/lua-5.4.7/src/lbaselib.c` (549 lines, 32 functions)
-//! Target crate: `lua-stdlib`
+//! GRADUATED (Phase-2 idiomatization, 2026-06-14, `idiom/base`). base is the
+//! most VM-adjacent stdlib module: `pcall`/`xpcall`/`error` drive unwinding,
+//! `load` compiles, `next`/`pairs`/`ipairs` iterate, `type`/`tostring`/`raw*`
+//! are hot. All of that plumbing is **load-bearing** and was idiomatized
+//! AROUND, never through — the only edits are in the cold arg-checking /
+//! result-shaping / version-dispatch / registration layers. The behavioral net
+//! that now guards it: `tests/base_strengthen.rs` (reference-pinned across all
+//! five versions), `multiversion_oracle`, the official `calls`/`errors`/
+//! `nextvar`/`constructs` suites, and `check.sh` ×5. Net-strengthening FIRST
+//! caught three cross-version bugs the weak net hid — `ipairs` (raw read +
+//! table-check + `__ipairs` on 5.1/5.2), `assert` (5.1/5.2 string-coercible
+//! message), `rawlen` (function-named, version-gated reject) — all fixed in the
+//! cold seam layer. Two bugs needing VM-internal changes were reported, not
+//! forced: `__name` honored pre-5.3 (lives in `obj_type_name_cow`) and the
+//! 5.1/5.2 `'?'`/`'_G.'` arg-error function-name resolution.
 
 use crate::state_stub::{LuaState, LuaStateStubExt as _};
 use lua_types::{closure::LuaClosure, error::LuaError, value::LuaValue, LuaStatus, LuaType};
@@ -24,8 +38,7 @@ const LUA_MULTRET: i32 = -1;
 // ── GC operation codes ────────────────────────────────────────────────────────
 
 /// Identifies a GC control operation passed to the `collectgarbage` built-in.
-/// Mirrors the `LUA_GC*` integer constants from `lua.h`.
-/// TODO(port): define as a proper type in lua-types once the GC API is finalised.
+/// The discriminants are the integer codes the `lua-vm` GC API accepts.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GcOp {
@@ -206,13 +219,10 @@ pub(crate) fn print_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     }
     let n = state.top();
     for i in 1..=n {
-        // luaL_tolstring converts via tostring() metamethod, pushes result,
-        // returns a pointer. In Rust we get a GcRef and use its bytes.
-        let display_ref = state.to_display_string(i)?;
+        let bytes = state.to_display_string(i)?;
         if i > 1 {
             state.write_output(b"\t")?;
         }
-        let bytes = display_ref.clone();
         state.write_output(&bytes)?;
         state.pop_n(1);
     }
@@ -448,11 +458,10 @@ pub(crate) fn rawset_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Expose GC control to Lua scripts.  The first argument selects the operation;
 /// subsequent arguments are operation-specific parameters.
 ///
-///
-/// PORT NOTE: C's `checkvalres(x)` macro breaks out of the `switch` to the
-/// trailing `luaL_pushfail` when `x == -1` (called inside a finalizer).
-/// In Rust we model this with an explicit early-return to the pushfail path
-/// using a boolean flag, avoiding labeled blocks.
+/// A GC primitive that returns `-1` was called inside a finalizer and must
+/// `fail` (push `nil`). Each match arm either returns its result early or
+/// evaluates to the `valid` flag `false`, which falls through to the trailing
+/// pushfail — the structured-control-flow form of C's `checkvalres` break.
 pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     // Explicit collections bypass the checkpoint wrappers, so the dead
     // stack slices must be cleared here before any collect dispatch
@@ -547,7 +556,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
     // (meaning checkvalres fired — fall through to pushfail).
     let valid: bool = match op {
         GcOp::Count => {
-            // TODO(port): gc_count / gc_count_b are stubs in Phase A.
             let k = state.gc_count()?;
             let b = state.gc_count_b()?;
             if k == -1 {
@@ -559,7 +567,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
         }
         GcOp::Step => {
             let step = state.opt_arg_integer(2, 0)? as i32;
-            // TODO(port): gc_step is a stub in Phase A.
             let res = state.gc_step(step)?;
             if res == -1 {
                 false
@@ -570,7 +577,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
         }
         GcOp::SetPause | GcOp::SetStepMul => {
             let p = state.opt_arg_integer(2, 0)? as i32;
-            // TODO(port): gc_set_param is a stub in Phase A.
             let previous = state.gc_set_param(op as i32, p)?;
             if previous == -1 {
                 false
@@ -587,7 +593,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
         GcOp::Gen => {
             let minormul = state.opt_arg_integer(2, 0)? as i32;
             let majormul = state.opt_arg_integer(3, 0)? as i32;
-            // TODO(port): gc_gen is a stub in Phase A.
             let oldmode = state.gc_gen(minormul, majormul)?;
             return push_mode(state, oldmode);
         }
@@ -595,7 +600,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             let pause = state.opt_arg_integer(2, 0)? as i32;
             let stepmul = state.opt_arg_integer(3, 0)? as i32;
             let stepsize = state.opt_arg_integer(4, 0)? as i32;
-            // TODO(port): gc_inc is a stub in Phase A.
             let oldmode = state.gc_inc(pause, stepmul, stepsize)?;
             return push_mode(state, oldmode);
         }
@@ -618,7 +622,6 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             return Ok(1);
         }
         _ => {
-            // TODO(port): gc_control_simple is a stub in Phase A.
             let res = state.gc_control_simple(op as i32)?;
             if res == -1 {
                 false
@@ -1015,18 +1018,13 @@ pub(crate) fn loadfile_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ── generic_reader ────────────────────────────────────────────────────────────
 
-/// Reader callback for `luaB_load` when the chunk source is a Lua function.
-/// Calls the function at stack[1] repeatedly to obtain successive chunks.
+/// Reader callback for `load` when the chunk source is a Lua function.
 ///
-///
-/// PORT NOTE: In C this is a `lua_Reader` function pointer passed to
-/// `lua_load`. In Rust, readers are closures — but `generic_reader` itself
-/// needs `&mut LuaState`, which conflicts with `state.load_with_reader`'s
-/// own borrow.  The current translation materialises the reader as a free
-/// function for documentation purposes; Phase B must resolve the design
-/// (e.g., a separate reader-context type, or a split between "advance reader"
-/// and "run Lua call" phases).
-/// TODO(port): generic_reader — self-referential &mut borrow when used as lua_load callback.
+/// Calls the function at stack[1] repeatedly to obtain successive chunks; a
+/// `nil` return ends the stream and anything that is neither a string nor a
+/// coercible number (the C `lua_isstring` test) is rejected. The latest chunk
+/// is anchored in `RESERVED_SLOT` so the GC cannot collect it while `lua_load`
+/// consumes it. `state.load_with_reader` drives this as the reader.
 fn generic_reader(state: &mut LuaState) -> Result<Option<Vec<u8>>, LuaError> {
     state.ensure_stack(2, b"too many nested functions")?;
     state.push_copy(1)?;
@@ -1035,8 +1033,6 @@ fn generic_reader(state: &mut LuaState) -> Result<Option<Vec<u8>>, LuaError> {
         state.pop_n(1);
         return Ok(None);
     }
-    //      luaL_error(L, "reader function must return a string");
-    // lua_isstring in C is true for strings AND coercible numbers.
     if !matches!(state.type_at(-1), LuaType::String | LuaType::Number) {
         return Err(LuaError::runtime(format_args!(
             "reader function must return a string"
@@ -1082,8 +1078,6 @@ pub(crate) fn load_fn(state: &mut LuaState) -> Result<usize, LuaError> {
             .unwrap_or_else(|_| b"=(load)".to_vec());
         state.check_arg_type(1, LuaType::Function)?;
         lua_vm::api::set_top(state, RESERVED_SLOT)?;
-        // TODO(port): generic_reader cannot be passed directly due to self-referential
-        // &mut borrow — see generic_reader's PORT NOTE. Phase B resolves this.
         state.load_with_reader(generic_reader, &chunkname, &mode)?
     };
     load_aux(state, status_ok, env)
@@ -1318,13 +1312,13 @@ pub(crate) fn xpcall_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ── tostring ──────────────────────────────────────────────────────────────────
 
-/// Converts any value to its string representation (calls `__tostring` if
-/// present).
+/// Converts any value to its string representation.
 ///
+/// `to_display_string` honors the `__tostring` metamethod (and, from 5.3, the
+/// `__name` metafield via the VM's type-naming core), pushes the converted
+/// string, and leaves it on top as this function's single result.
 pub(crate) fn tostring_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_any(1)?;
-    // to_display_string pushes the converted string and returns a handle to it.
-    // TODO(port): to_display_string method needs implementing on LuaState.
     state.to_display_string(1)?;
     Ok(1)
 }
@@ -1334,9 +1328,8 @@ pub(crate) fn tostring_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 /// All base-library functions registered into the global table by `open`.
 ///
 ///
-/// PORT NOTE: The C table includes placeholder entries
-/// `{LUA_GNAME, NULL}` and `{"_VERSION", NULL}` that `luaopen_base` fills in
-/// separately.  Those are omitted here; `open()` sets them explicitly.
+/// `_G` and `_VERSION` are not functions and so are absent here; `open()`
+/// installs them (and the per-version roster deltas) explicitly.
 pub(crate) const BASE_FUNCS: &[(&[u8], LuaLibFn)] = &[
     (b"assert", assert_fn),
     (b"collectgarbage", collectgarbage_fn),
@@ -1431,21 +1424,15 @@ pub fn open(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/lbaselib.c  (549 lines, 32 functions)
+//   source:        src/lbaselib.c (5.1–5.5, version-gated from one source)
 //   target_crate:  lua-stdlib
-//   confidence:    medium
-//   todos:         21
-//   port_notes:    5
 //   unsafe_blocks: 0
-//   notes:         All 32 C functions translated.  Main uncertainties are (1)
-//                  LuaState method signatures (top/type_at/push/… — resolved
-//                  in Phase B when lua-vm is compiled), (2) generic_reader's
-//                  self-referential &mut borrow needs architectural resolution,
-//                  (3) GC API stubs (gc_count, gc_step, …) need Phase D
-//                  implementations, (4) I/O host capabilities now route through
-//                  state/global hooks, but stdin/env/time/temp remain incomplete,
-//                  (5) pcallk / callk continuations are
-//                  stubbed pending coroutine support in Phase E.  The fake
-//                  `struct LuaState;` placeholder here avoids duplicate-definition
-//                  errors while keeping the file self-contained; Phase B removes it.
+//   net:           tests/base_strengthen.rs + multiversion_oracle +
+//                  official calls/errors/nextvar/constructs + check.sh ×5
+//   load-bearing:  pcall/xpcall/error unwinding, load/compile, next/pairs/ipairs
+//                  iteration, collectgarbage, type/tostring/raw* fast paths, and
+//                  every per-version roster/behavior gate — idiomatize AROUND.
+//   deferred:      __name pre-5.3 gating + 5.1/5.2 arg-error fn-name ('?'/'_G.')
+//                  live in lua-vm (obj_type_name_cow / arg_error_impl); see the
+//                  module header. Not base-fixable.
 // ──────────────────────────────────────────────────────────────────────────────
