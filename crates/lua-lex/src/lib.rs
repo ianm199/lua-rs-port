@@ -390,16 +390,17 @@ pub enum TokenValue {
 
 // ── Token ─────────────────────────────────────────────────────────────────────
 
-// types.tsv: Token → Token;  Token.token → i32 (Phase A; TODO: TokenKind enum Phase B)
 /// A single lexed token with its semantic payload.
 ///
 /// `kind` is an `i32` whose value is either an ASCII byte code (for single-byte
 /// tokens like `+`, `-`, `[`) or one of the `TK_*` constants (for reserved
 /// words, multi-char symbols, and literals).
 ///
-/// TODO(port): Phase B — replace `kind: i32` with a proper `TokenKind` enum
-/// covering both single-byte and named tokens (e.g. `TokenKind::Char(u8)` +
-/// named variants).
+/// The `i32` kind is the **cross-crate boundary**: `lua-parse` and the error
+/// formatters consume these `TK_*` codes directly, so it stays an integer by
+/// design rather than a typed enum. The lexer's own scan loop does its
+/// dispatch on the internal [`Peek`] enum instead — the typed-match lives
+/// inside the lexer, the integer codes cross the boundary.
 #[derive(Clone)]
 pub struct Token {
     pub kind: i32,
@@ -1616,12 +1617,6 @@ fn read_string(
     Ok(())
 }
 
-/// Core lexer dispatch: consume and return the next raw token kind.
-///
-/// This is the heart of the lexer: a large `for`-`switch` loop that classifies
-/// the current character and dispatches to the appropriate scanner.
-///
-/// # C source (see llex.c lines 445-562 for full listing)
 /// Whether the active version is the float-only legacy family (5.1/5.2), which
 /// lacks the 5.3 integer operators (`//`, `<<`, `>>`, and the bitwise binops).
 fn is_float_only(state: &LuaState) -> bool {
@@ -1631,17 +1626,42 @@ fn is_float_only(state: &LuaState) -> bool {
     )
 }
 
+/// The lexer's view of the current input character.
+///
+/// `ls.current` is stored as `i32` (a byte, or [`EOZ`] = `-1`) at the stream
+/// boundary; this enum is the lexer's *internal* dispatch shape so the main
+/// scan loop can `match` on byte literals (`Byte(b'=')`) and on end-of-stream
+/// (`Eoz`) directly instead of an `i32` guard chain. It does not cross the
+/// public boundary: scanned tokens are still reported as `TK_*` / ASCII `i32`.
+enum Peek {
+    Byte(u8),
+    Eoz,
+}
+
+/// Classify [`LexState::current`] into the internal [`Peek`] dispatch shape.
+fn peek(ls: &LexState) -> Peek {
+    match u8::try_from(ls.current) {
+        Ok(b) => Peek::Byte(b),
+        Err(_) => Peek::Eoz,
+    }
+}
+
+/// Core lexer dispatch: consume and return the next raw token kind.
+///
+/// The heart of the lexer: a scan loop that classifies the current character
+/// (via [`Peek`]) and dispatches to the appropriate scanner. Single-character
+/// tokens are returned as their ASCII `i32`; multi-character and reserved-word
+/// tokens as the `TK_*` constants.
 fn llex(
     state: &mut LuaState,
     ls: &mut LexState,
     seminfo: &mut TokenValue,
 ) -> Result<i32, LuaError> {
-    // macros.tsv: luaZ_resetbuffer → buf.clear()
     ls.buff.clear();
 
     loop {
-        match ls.current {
-            c if c == b'\n' as i32 || c == b'\r' as i32 => {
+        match peek(ls) {
+            Peek::Byte(b'\n' | b'\r') => {
                 inc_line_number(ls, state)?;
                 // PORT NOTE: skipcomment-equivalent. luaL_loadfile in C-Lua
                 // strips a leading '#' line (Unix shebang). Our test harness
@@ -1658,15 +1678,11 @@ fn llex(
                 }
             }
 
-            c if c == b' ' as i32
-                || c == b'\x0C' as i32
-                || c == b'\t' as i32
-                || c == b'\x0B' as i32 =>
-            {
+            Peek::Byte(b' ' | b'\x0C' | b'\t' | b'\x0B') => {
                 advance(ls);
             }
 
-            c if c == b'-' as i32 => {
+            Peek::Byte(b'-') => {
                 advance(ls);
                 if ls.current != b'-' as i32 {
                     return Ok(b'-' as i32);
@@ -1688,7 +1704,7 @@ fn llex(
                 // loop continues (no token emitted for comments)
             }
 
-            c if c == b'[' as i32 => {
+            Peek::Byte(b'[') => {
                 let sep = skip_sep(state, ls)?;
                 if sep >= 2 {
                     read_long_string(state, ls, Some(seminfo), sep)?;
@@ -1696,11 +1712,10 @@ fn llex(
                 } else if sep == 0 {
                     return Err(lex_error(ls, b"invalid long string delimiter", TK_STRING));
                 }
-                // sep == 1: plain '[', no long string
                 return Ok(b'[' as i32);
             }
 
-            c if c == b'=' as i32 => {
+            Peek::Byte(b'=') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_EQ);
@@ -1708,7 +1723,7 @@ fn llex(
                 return Ok(b'=' as i32);
             }
 
-            c if c == b'<' as i32 => {
+            Peek::Byte(b'<') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_LE);
@@ -1722,7 +1737,7 @@ fn llex(
                 return Ok(b'<' as i32);
             }
 
-            c if c == b'>' as i32 => {
+            Peek::Byte(b'>') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_GE);
@@ -1733,7 +1748,7 @@ fn llex(
                 return Ok(b'>' as i32);
             }
 
-            c if c == b'/' as i32 => {
+            Peek::Byte(b'/') => {
                 advance(ls);
                 if !is_float_only(state) && check_next1(ls, b'/' as i32) {
                     // Floor division `//` is a 5.3 addition; absent in 5.1/5.2,
@@ -1743,7 +1758,7 @@ fn llex(
                 return Ok(b'/' as i32);
             }
 
-            c if c == b'~' as i32 => {
+            Peek::Byte(b'~') => {
                 advance(ls);
                 if check_next1(ls, b'=' as i32) {
                     return Ok(TK_NE);
@@ -1751,7 +1766,7 @@ fn llex(
                 return Ok(b'~' as i32);
             }
 
-            c if c == b':' as i32 => {
+            Peek::Byte(b':') => {
                 advance(ls);
                 // Lua 5.1 has no `::label::` token; `::` was added with `goto` in
                 // 5.2. Under V51 the second `:` is left for the parser, which
@@ -1764,13 +1779,13 @@ fn llex(
                 return Ok(b':' as i32);
             }
 
-            c if c == b'"' as i32 || c == b'\'' as i32 => {
+            Peek::Byte(b'"' | b'\'') => {
                 let del = ls.current;
                 read_string(state, ls, del, seminfo)?;
                 return Ok(TK_STRING);
             }
 
-            c if c == b'.' as i32 => {
+            Peek::Byte(b'.') => {
                 save_and_next(ls, state)?;
                 if check_next1(ls, b'.' as i32) {
                     if check_next1(ls, b'.' as i32) {
@@ -1784,16 +1799,16 @@ fn llex(
                 }
             }
 
-            c if is_digit(c) => {
+            Peek::Byte(b'0'..=b'9') => {
                 return read_numeral(state, ls, seminfo);
             }
 
-            c if c == EOZ => {
+            Peek::Eoz => {
                 return Ok(TK_EOS);
             }
 
-            c => {
-                if is_lalpha(c) {
+            Peek::Byte(c) => {
+                if is_lalpha(c as i32) {
                     loop {
                         save_and_next(ls, state)?;
                         if !is_lalnum(ls.current) {
