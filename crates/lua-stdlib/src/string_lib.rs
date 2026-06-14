@@ -154,11 +154,10 @@ struct GMatchIterState {
     pos: usize,
     /// End of the last match, used to avoid zero-length infinite loops.
     last_match: Option<usize>,
-    /// The two version seams, resolved ONCE at iterator creation so the
-    /// per-match `gmatch_aux` step never re-reads `state.global()` (a `RefCell`
-    /// borrow): `dedup` = the 5.3.3 `e != lastmatch` empty-match rule;
-    /// `bound_depth` = the 5.2+ `MAX_CC_CALLS` "pattern too complex" guard.
-    dedup: bool,
+    /// The 5.2+ `MAX_CC_CALLS` "pattern too complex" guard, resolved ONCE at
+    /// iterator creation so the per-match step never re-reads `state.global()`
+    /// (a `RefCell` borrow). The empty-match-dedup seam is bound separately, by
+    /// the choice of [`gmatch_aux`] vs [`gmatch_aux_legacy`].
     bound_depth: bool,
 }
 
@@ -1295,10 +1294,29 @@ pub fn str_match(state: &mut LuaState) -> Result<usize, LuaError> {
 /// Continuation function for `string.gmatch` iterator closure.
 ///
 ///
+/// The 5.3+ `gmatch` iterator step (the default registered by [`gmatch`]).
+///
 /// Reads the iterator's three closure upvalues: 1 and 2 are the traced source
 /// and pattern strings; 3 is a userdata whose host payload ([`GMatchIterState`])
 /// holds the mutable byte positions advanced across calls.
+///
+/// `DEDUP` is monomorphized — `true` for this 5.3+ entry, `false` for
+/// [`gmatch_aux_legacy`] (5.1/5.2). Specializing on it (rather than reading a
+/// runtime flag in this per-match-hot function) keeps the 5.3+ path's codegen
+/// byte-identical to the pre-P2c single-version matcher; the empty-match seam
+/// costs nothing on the common path.
 pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
+    gmatch_step::<true>(state)
+}
+
+/// The 5.1/5.2 `gmatch` iterator step (no `lastmatch` empty-match de-dup; the
+/// pre-5.3.3 advance rule). Registered by [`gmatch`] only on those versions.
+pub fn gmatch_aux_legacy(state: &mut LuaState) -> Result<usize, LuaError> {
+    gmatch_step::<false>(state)
+}
+
+#[inline(always)]
+fn gmatch_step<const DEDUP: bool>(state: &mut LuaState) -> Result<usize, LuaError> {
     let s_val = state.value_at(upvalue_index(1));
     let p_val = state.value_at(upvalue_index(2));
     let (LuaValue::Str(s_str), LuaValue::Str(p_str)) = (&s_val, &p_val) else {
@@ -1317,9 +1335,9 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 
     let s: &[u8] = s_str.as_bytes();
     let p: &[u8] = p_str.as_bytes();
-    let (start_pos, last_match, dedup, bound_depth) = {
+    let (start_pos, last_match, bound_depth) = {
         let iter = iter_state.borrow();
-        (iter.pos, iter.last_match, iter.dedup, iter.bound_depth)
+        (iter.pos, iter.last_match, iter.bound_depth)
     };
 
     let ls = s.len();
@@ -1339,7 +1357,7 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
         }
         ms.reset_level();
         if let Some(e) = match_pat(&mut ms, src, 0)? {
-            if !dedup || Some(e) != last_match {
+            if !DEDUP || Some(e) != last_match {
                 hit = Some((src, e));
                 break;
             }
@@ -1360,7 +1378,7 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
             // 5.3+ stores the raw match end and de-dups via `last_match` on the
             // next call. Pre-5.3 has no `last_match`; it advances past an empty
             // match by one position (`if (e == src) newstart++`).
-            iter.pos = if dedup || e != src { e } else { e + 1 };
+            iter.pos = if !DEDUP && e == src { e + 1 } else { e };
             iter.last_match = Some(e);
         }
         return push_captures(state, &ms, Some((src, e)));
@@ -1371,9 +1389,12 @@ pub fn gmatch_aux(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `string.gmatch(s, pattern [, init])` — return an iterator for all matches.
 ///
-/// Builds the iterator closure consumed by [`gmatch_aux`]: the source and
-/// pattern become traced upvalues 1 and 2, and a fresh userdata holding a
-/// [`GMatchIterState`] becomes upvalue 3 (the mutable byte positions).
+/// Builds the iterator closure consumed by [`gmatch_aux`] (5.3+) or
+/// [`gmatch_aux_legacy`] (5.1/5.2): the source and pattern become traced
+/// upvalues 1 and 2, and a fresh userdata holding a [`GMatchIterState`] becomes
+/// upvalue 3 (the mutable byte positions). The empty-match-dedup seam is bound
+/// at creation by picking the closure, so the per-match step never branches on
+/// it (see [`gmatch_step`]).
 pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
     let s_ref = match state.to_lua_string(1) {
         Some(r) => r,
@@ -1397,6 +1418,7 @@ pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
     }
 
     let version = state.global().lua_version;
+    let dedup = matcher_dedups_empty_match(version);
 
     lua_vm::api::set_top(state, 2)?;
 
@@ -1406,12 +1428,12 @@ pub fn gmatch(state: &mut LuaState) -> Result<usize, LuaError> {
     let iter_state: Rc<dyn Any> = Rc::new(RefCell::new(GMatchIterState {
         pos: init,
         last_match: None,
-        dedup: matcher_dedups_empty_match(version),
         bound_depth: matcher_bounds_depth(version),
     }));
     iter_ud.set_host_value(Some(iter_state));
 
-    state.push_c_closure(gmatch_aux, 3)?;
+    let aux = if dedup { gmatch_aux } else { gmatch_aux_legacy };
+    state.push_c_closure(aux, 3)?;
     Ok(1)
 }
 
