@@ -1,19 +1,27 @@
-//! Coroutine library — port of `lcorolib.c`.
+//! Coroutine library — the `coroutine.*` standard-library table: `create`,
+//! `resume`, `running`, `status`, `wrap`, `yield`, `isyieldable`, and `close`.
 //!
-//! Provides the `coroutine.*` standard-library table: `create`, `resume`,
-//! `running`, `status`, `wrap`, `yield`, `isyieldable`, and `close`.
+//! This module is the **cold shell** around coroutine execution: argument
+//! checking, the `COS_*` status-string mapping, the `wrap` closure setup, the
+//! cross-thread argument/result transfer scaffolding, and version-gated
+//! registration. The actual control transfer — resume/yield stack save and
+//! restore — lives in `lua-vm` (`lua_vm::do_::lua_resume` / `lua_yieldk`) and is
+//! load-bearing; this module calls into it but does not implement it.
 //!
-//! # Phase A–D stub notice
+//! # Graduation (Idiomatization Sprint 2, Phase 2 — `coroutine`)
 //!
-//! Every function that requires actual coroutine execution (`resume`, `yield`,
-//! cross-thread `xmove`, `new_thread`, `close_thread`) is **unimplemented** and
-//! will panic at runtime.  The argument-checking and result-packaging logic is
-//! translated faithfully so that Phase E can drop in the real implementations
-//! without restructuring.  Phase E wires real stackful coroutines via
-//! `corosensei`.  See PORTING.md §2 #6.
-//!
-//! Translated from: `reference/lua-5.4.7/src/lcorolib.c` (210 lines, 12 functions)
-//! Target crate: `lua-stdlib`
+//! Idiomatized AROUND the resume/yield machinery, never through it. The
+//! behavioral net guarding this module's cold surface is
+//! `crates/lua-stdlib/tests/coro_strengthen.rs` (the version seams:
+//! `running` arity 5.1-vs-5.2+, `isyieldable` 5.3+, `close` 5.4+ + its
+//! suspended→dead transition and the 5.4-errors/5.5-unwinds self-close, the
+//! resume/wrap error wording, status transitions across a yield) plus the
+//! official `coroutine.lua` suite and `multiversion_oracle`. Net-strengthening
+//! caught one real bug: the resume-of-running error used the 5.2+ wording on
+//! 5.1 — fixed via `non_suspended_resume_message`. Left load-bearing: the
+//! cross-thread snapshot/rooting (`RootedThreadBorrow`, the resume-pool
+//! buffers, the GC stack snapshots), the `LuaThreadClose` panic-unwind path
+//! that implements 5.5 self-close, and every version gate.
 
 use std::cell::Cell;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
@@ -121,18 +129,16 @@ const COS_YIELD: i32 = 2;
 /// Coroutine is normal — it resumed another coroutine and is waiting.
 const COS_NORM: i32 = 3;
 
-/// Human-readable status strings indexed by the `COS_*` constants above.
-/// Pushed onto the Lua stack as byte strings.
-///
+/// Human-readable status strings indexed by the `COS_*` constants above,
+/// pushed onto the Lua stack as byte strings by `coroutine.status`.
 const STAT_NAMES: [&[u8]; 4] = [b"running", b"dead", b"suspended", b"normal"];
 
 // ── Registration table ────────────────────────────────────────────────────────
 
-/// Registration table for the `coroutine` standard library.
-///
-///
-/// Each entry is `(name_bytes, function_pointer)`. Phase B resolves
-/// `lua_CFunction` to the canonical type alias from `lua-types`.
+/// Registration table for the `coroutine` standard library — one
+/// `(name_bytes, function_pointer)` entry per `coroutine.*` function. The
+/// per-version roster (which entries actually register) is filtered in
+/// [`open_coroutine`]; this table is the full superset.
 pub const CO_FUNCS: &[(&[u8], lua_CFunction)] = &[
     (b"create", co_create),
     (b"resume", co_resume),
@@ -172,16 +178,20 @@ fn get_opt_co(state: &mut LuaState) -> Result<GcRef<lua_types::value::LuaThread>
 }
 
 /// Returns one of the `COS_*` status codes describing `co` relative to the
-/// calling thread `state`. Mirrors `auxstatus` in `lcorolib.c` exactly,
-/// reading the target coroutine's `status`, call-frame depth, and stack
-/// top through `GlobalState::threads`.
+/// calling thread `state`, reading the target coroutine's `status`,
+/// call-frame depth, and stack top through `GlobalState::threads`:
 ///
-/// The main thread (id 0) is never stored in the registry, so a value
-/// pointing at it is always "running" when it is the current thread.
-/// Phase E-1 cannot resume coroutines, so any registry-resident thread
-/// is either suspended (initial state, function still on stack) or dead
-/// (empty stack).
+/// - `co` is the current thread → `COS_RUN` (running).
+/// - `co` is the main thread (never stored in the registry) → `COS_NORM`.
+/// - `co` is not in the registry → `COS_DEAD`.
+/// - otherwise classify by the registered thread's `status`: a yielded thread
+///   is `COS_YIELD`; a thread with live frames (it resumed a child) is
+///   `COS_NORM`; an `Ok` thread with no frames is `COS_DEAD` if its stack is
+///   empty, else `COS_YIELD` (suspended at its initial frame, function still
+///   staged on the stack).
 ///
+/// The transition table this produces is pinned by `status_transitions_*` in
+/// `tests/coro_strengthen.rs`.
 fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> i32 {
     let co_id = co.id;
     let entry_rc = {
@@ -200,10 +210,9 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
     let co_state = match entry_rc.try_borrow() {
         Ok(state) => state,
         Err(_) => {
-            // Nested resumes can hold a mutable borrow of a parent coroutine.
-            // In that case, the safest fallback is to report the target as
-            // "normal" (active but not suspended/dead), which matches the
-            // common nested-resume status for the parent thread.
+            // A thread already mutably borrowed is one that resumed a child and
+            // is waiting up the call stack — i.e. a normal (active, not
+            // suspended/dead) coroutine, so report COS_NORM.
             return COS_NORM;
         }
     };
@@ -234,16 +243,16 @@ fn aux_status(state: &mut LuaState, co: &GcRef<lua_types::value::LuaThread>) -> 
 /// Returns the number of result values (≥ 0) on success, or `-1` on error
 /// with the error object left on top of `state`'s stack.
 ///
-/// Phase E-3 adds cross-thread open-upvalue mirroring around the resume
-/// boundary: before yielding control, the parent's open-upvalue values
-/// are snapshotted into `GlobalState::cross_thread_upvals` so the
-/// coroutine body can read and write them through
-/// `LuaState::upvalue_get` / `upvalue_set`. On resume return, the
-/// (possibly mutated) cache entries are flushed back into the parent's
-/// stack. This is the alternative to a stack-refactor that would let
-/// the parent's `LuaState` be reached through `Rc<RefCell<_>>` while it
-/// is held by `&mut` further up the call stack.
-///
+/// Cross-thread open-upvalue mirroring rides the resume boundary: before
+/// yielding control, the parent's open-upvalue values are snapshotted into
+/// `GlobalState::cross_thread_upvals` so the coroutine body can read and write
+/// them through `LuaState::upvalue_get` / `upvalue_set`. On resume return, the
+/// (possibly mutated) cache entries are flushed back into the parent's stack.
+/// This is the alternative to a stack-refactor that would let the parent's
+/// `LuaState` be reached through `Rc<RefCell<_>>` while it is held by `&mut`
+/// further up the call stack. Load-bearing: do not collapse the snapshot /
+/// flush handshake — it is what keeps cross-thread upvalues coherent and
+/// rooted across the resume.
 fn aux_resume(state: &mut LuaState, co: GcRef<lua_types::value::LuaThread>, narg: i32) -> i32 {
     let co_id = co.id;
     let entry_rc = {
@@ -593,16 +602,17 @@ fn push_lit_or_nil(state: &mut LuaState, bytes: &[u8]) {
 /// On success pushes `true` followed by all values yielded or returned by `co`.
 /// On failure pushes `false` followed by the error object.
 ///
+/// The argument count handed to [`aux_resume`] is the stack top minus one: the
+/// coroutine itself sits at index 1 and is not forwarded as an argument.
+///
+/// A sandbox budget trip is uncatchable: it re-raises into the caller frame
+/// instead of returning `false, msg`, so code cannot keep a runaway coroutine
+/// alive by resuming it in a loop.
 pub fn co_resume(state: &mut LuaState) -> Result<usize, LuaError> {
     let co = get_co(state)?;
-    // PORT NOTE: lua_gettop returns the argument count; -1 excludes the coroutine
-    // itself which sits at index 1.
     let narg = state.get_top() - 1;
     let r = aux_resume(state, co, narg);
     if r < 0 {
-        // A sandbox budget trip is uncatchable: re-raise into the caller frame
-        // instead of returning `false, msg`, so code cannot keep a runaway
-        // coroutine alive by resuming it in a loop.
         if state.sandbox_aborting() {
             let top = state.get_top();
             let err_val = state.value_at(top);
@@ -659,16 +669,9 @@ fn aux_wrap(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `coroutine.create(f)` — create a new coroutine that will run function `f`.
 ///
-/// Pushes the new thread value and returns 1.
-///
-/// Phase E-1: allocates a real `LuaState` registered in
-/// `GlobalState::threads`, with `f` staged on the new thread's stack so
-/// `coroutine.status` reports `"suspended"`. The full `xmove` from the
-/// caller's stack arrives in slice 02b; for this slice the body is
-/// cloned via `value_at(1)`, which has the same net stack effect since
-/// `lua_newthread` in C also leaves only the thread value on the
-/// caller's stack.
-///
+/// Allocates a real `LuaState` registered in `GlobalState::threads`, with `f`
+/// staged on the new thread's stack so `coroutine.status` reports
+/// `"suspended"`. Pushes the new thread value and returns 1.
 pub fn co_create(state: &mut LuaState) -> Result<usize, LuaError> {
     state.check_arg_type(1, LuaType::Function)?;
     let body = state.value_at(1);
@@ -753,17 +756,17 @@ pub fn co_isyieldable(state: &mut LuaState) -> Result<usize, LuaError> {
 
 /// `coroutine.running()` — return the current coroutine plus a boolean.
 ///
-/// The boolean is `true` when the current coroutine is the main thread.
+/// `push_thread` pushes the current `LuaState` as a thread value and returns
+/// `true` iff it is the main thread.
 ///
+/// The return arity is version-gated (pinned by `running_in_*_arity_by_version`
+/// in `tests/coro_strengthen.rs`). From 5.2 the result is `(thread, ismain)`
+/// where `ismain` is `true` for the main thread. Lua 5.1 has no `ismain`
+/// boolean: it returns `nil` in the main coroutine and only the running thread
+/// (one value) inside a coroutine (verified against lua5.1.5; see
+/// `specs/followup/5.1-roster-syntax.md` §1).
 pub fn co_running(state: &mut LuaState) -> Result<usize, LuaError> {
-    // TODO(port): push_thread pushes a Thread value for the current LuaState and
-    // returns true iff it is the main thread; Phase B wire-up needed.
     let is_main = state.push_thread()?;
-    // Lua 5.1's `coroutine.running()` returns nil in the main coroutine and only
-    // the running thread (one value) inside a coroutine — the second `is-main`
-    // boolean is a 5.2 addition. Verified against lua5.1.5:
-    // `coroutine.running()` in main prints `nil`. See
-    // specs/followup/5.1-roster-syntax.md §1.
     if matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
         if is_main {
             state.pop_n(1);
@@ -954,17 +957,25 @@ pub fn open_coroutine(state: &mut LuaState) -> Result<usize, LuaError> {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PORT STATUS
-//   source:        src/lcorolib.c  (210 lines, 12 functions)
 //   target_crate:  lua-stdlib
-//   confidence:    medium
-//   todos:         21
-//   port_notes:    2
 //   unsafe_blocks: 0
-//   notes:         All coroutine execution primitives (resume, yield, xmove,
-//                  new_thread, close_thread) are Phase E stubs that panic.
-//                  Argument-checking / result-packaging logic is faithfully
-//                  translated so Phase E can drop in real implementations.
-//                  The CO_FUNCS table type references lua_CFunction which is
-//                  resolved in Phase B.  LuaState / GcRef<LuaState> / LuaStatus
-//                  imports are all deferred to Phase B.
+//   load-bearing:  this module is the cold shell — arg checking, the COS_*
+//                  status mapping, the wrap closure, the cross-thread
+//                  argument/result transfer scaffolding, and version-gated
+//                  registration. The resume/yield CONTROL TRANSFER (stack save
+//                  and restore) lives in lua-vm (lua_vm::do_::lua_resume /
+//                  lua_yieldk) and is load-bearing; so are the cross-thread
+//                  rooting machinery (RootedThreadBorrow, the resume-pool
+//                  buffers, the GC stack snapshots), the LuaThreadClose
+//                  panic-unwind that implements 5.5 self-close, and every
+//                  version gate.
+//   net:           behavior is pinned by tests/coro_strengthen.rs (the version
+//                  seams), the official coroutine.lua suite, multiversion
+//                  oracle, and check.sh 5.1-5.5. See GRADUATED.md "coroutine".
+//   known-gap:     the 5.1 yield-from-outside / yield-across-C-call wording is
+//                  "attempt to yield across metamethod/C-call boundary" in the
+//                  reference but "attempt to yield from outside a coroutine"
+//                  here — the message originates in lua-vm's lua_yieldk (a
+//                  cross-cutting yield guard, not this module). NOT fixed here:
+//                  the single-source fix is a version gate in lua-vm/src/do_.rs.
 // ──────────────────────────────────────────────────────────────────────────────
