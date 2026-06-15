@@ -250,6 +250,71 @@ dispatch (pays in CPI/wall), and the **GC pacer** rewrite. None are
 idiomatization. Reproduce: `bash harness/bench/instr-count.sh --workloads
 fibonacci,mandelbrot_long,method_calls --branch-sim`.
 
+## NaN-boxing — `unsafe` scoping and sequencing (2026-06-14)
+
+The decomposition above names NaN-boxing the value representation as the single
+biggest remaining hot-path lever (`LuaValue` 16 B → 8 B halves the per-value
+memory traffic that dominates `fibonacci`/`mandelbrot`'s 2.3×). This is the
+feasibility scope for it. **Headline: the *amount* of `unsafe` is small; the
+*stakes* of it are the highest in the codebase.**
+
+**Codebase facts that shape it** (`crates/lua-types/src/{value,closure,gc}.rs`):
+
+- `LuaValue` is 10 variants: 3 immediates (`Nil`/`Bool`/`Int`/`Float`), 4
+  single-`GcRef` (`Str`/`Table`/`UserData`/`Thread`), `LightUserData(*mut
+  c_void)`, and `Function(LuaClosure)`. `LuaClosure` itself reduces to
+  `{Lua(GcRef), C(GcRef), LightC(fn-ptr)}` — **every non-immediate variant is one
+  pointer-width thing**, so they all fit a NaN payload; no fat variant forces a
+  re-box.
+- `GcRef<T>(Gc<T>)` and **`Gc<T>` is currently a thin newtype around `Rc<T>`**.
+  This matters (see sequencing).
+- The **entire core is `unsafe = 0`** (`harness/unsafe-budgets.toml`:
+  lua-types/lex/parse/code/vm/stdlib all 0; only `lua-rs-runtime` = 5, all
+  Miri-verified). The all-zero core is the port's headline.
+
+**The `unsafe` surface is small + encapsulable** — one `NanBox(u64)` module with
+a safe public API, ~**8–15 `unsafe` blocks** (a budget bump like `lua-types 0→~10`,
+`lua-vm 0→~3`), not a sprinkle:
+
+- the float half is **free** — `f64::{to_bits,from_bits}` are safe;
+- packing a pointer: `Rc::into_raw` is **safe**; the `unsafe` is the reverse
+  trip + ownership — `Rc::from_raw`, a deref-to-borrow that doesn't consume the
+  refcount, `Drop` (decode → drop the owned `Rc`), `Clone` (decode → bump → re-
+  encode), and the GC `Trace` impl (decode every boxed value to mark it);
+- tag space: ~8 pointer-bearing variants but the 4 `GcRef<T: Trace>` collapse to
+  **one "GC pointer" tag** (the heap object's header discriminates the concrete
+  type at decode time), so it fits the ~3–4 tag bits a quiet-NaN payload affords.
+
+**Why the small count understates the cost — three real burdens:**
+
+1. **It breaks the all-zero core** — puts `unsafe` into the *value type* and the
+   *hot loop*, the most load-bearing places and the exact property the project
+   advertises. A philosophy decision, not just a budget line.
+2. **GC-integration correctness is the real risk** — every boxed value must be
+   decodable by the tracer; one wrong/missed decode is a use-after-free. The
+   #189/#140 rooting bugs show how subtle value-lifetime correctness already is
+   *without* an opaque encoding; NaN-boxing adds a layer the GC must see through.
+3. **Miri/provenance + multi-target tax** — int↔pointer round-trips fight strict
+   provenance (`expose_provenance`/`with_exposed_provenance`, permissive-
+   provenance Miri runs), and **wasm32** has 32-bit pointers, so its NaN-encoding
+   differs from native 64-bit — two encodings to maintain and validate to the
+   project's Miri bar.
+
+**Sequencing — the most important takeaway:** because `Gc<T>` is **currently
+`Rc`**, a `NanBox` would have to hand-manage refcounts in `Drop`/`Clone` (the
+leak/double-free-prone part). But the live frontier is the **generational tracing
+GC** (issues #104/#113; the `gc/generational-wip`, `issue-93-gc-current` branches),
+which moves `GcRef` to a traced `NonNull`. With a *tracing* GC, NaN-boxing is much
+cleaner: the value no longer *owns* the pointer (the collector does), so
+`NanBox::Drop` has no refcount work — it just needs to be **traceable**. So
+**NaN-box after the GC rewrite settles, coupled to it — not bolted onto today's
+`Rc`** (the harder version of the same work).
+
+**No safe shortcut:** sub-16 B is unsafe-or-nothing — an `f64` has no spare
+bit-patterns except NaN, so niche optimization can't shrink a tag+float+pointer
+union below 16 B; the R2 diet already extracted the safe minimum (24→16 B). The
+8 B requires the NaN trick, which requires the `unsafe`.
+
 ## Mental Model
 
 **Decomposition (P2.1 rig, 2026-06-09, the most important measured fact in
