@@ -67,7 +67,12 @@ fix. Thread the version into `obj_type_name_cow`.
 
 ---
 
-## F3 — 5.1 yield-from-outside-a-coroutine wording
+## F3 — 5.1 yield-from-outside-a-coroutine wording — ✅ FIXED 2026-06-14
+
+Fixed by gating the `!is_yieldable()` block in `do_::lua_yieldk` so 5.1 returns
+its single message (`attempt to yield across metamethod/C-call boundary`); 5.2+
+unchanged. Reference-pinned by `v_yield_outside_coroutine_wording_crossversion`
+in `multiversion_oracle` (PR #211). Original finding below.
 
 **Divergence.** Yielding from the main coroutine / across a C-call boundary: 5.1
 reference says `attempt to yield across metamethod/C-call boundary`; we say
