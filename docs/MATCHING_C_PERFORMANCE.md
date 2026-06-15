@@ -35,6 +35,15 @@ cost of profiling sessions and bench commits. Use them. Don't re-derive.
 
 ## The headline finding
 
+> **UPDATE 2026-06-14 (read this first):** the *Rust-idiom-tax* rows below have
+> since been **harvested** (the #146–#185 perf sprints + a perf-neutral Stage-2
+> idiomatization sweep). The residual ~2.3× hot-path gap is now dominated by the
+> **value representation (NaN-boxing) and dispatch (computed-goto)** axis, *not*
+> recoverable idiom tax. See `PERFORMANCE_MODEL.md` → "Post-idiomatization gap
+> decomposition (2026-06-14)" for the measured decomposition and the
+> safety-tax-vs-NaN-boxing distinction. The finding below is the (still valid)
+> historical starting point.
+
 **Most of the performance gap between a faithful safe-Rust port and the
 original C is not a safety tax. It's a Rust-idiom tax.**
 

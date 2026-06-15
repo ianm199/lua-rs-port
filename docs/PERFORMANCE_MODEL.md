@@ -170,6 +170,86 @@ Specific existing-key setter opcodes are.
   per-element API layering (pending confirmation). Label it a stdlib row;
   do not average it with VM rows or let it mask VM regressions.
 
+## Post-idiomatization gap decomposition — safety tax vs representation (2026-06-14)
+
+The most important model update since the 2026-06-02 "headline finding" in
+`MATCHING_C_PERFORMANCE.md`. That finding called the gap a *Rust-idiom tax*,
+"recoverable without `unsafe`," and listed bolded rows (clones-where-C-uses-
+pointers, `RefCell`-on-hot-path, hot allocations, un-inlined accessors). **Those
+rows have since been HARVESTED** by the #146–#185 perf sprints (e.g. pingpong
+2.00→1.35×) and the Stage-2 idiomatization sweep (all 11 stdlib modules + lexer/
+parser, PRs #192–#209) was measured **performance-neutral** — it deliberately
+left the hot `vm::execute` loop alone. So the recoverable-without-`unsafe` idiom
+tax is largely **paid down**; what remains is a different axis.
+
+**Measured hot-path Ir ratios (ours / C, cachegrind `--branch-sim`, main
+`15da0f09`):**
+
+| workload | Ir ratio | total branch-mispredicts vs C | isolates |
+|---|---:|---|---|
+| `fibonacci` | **2.35×** | ≈ **equal** (1110 ×2.35 ≈ 2604) | value-shuffle + int arith |
+| `mandelbrot_long` | **2.39×** | ≈ equal (lower density) | float compute |
+| `method_calls` | **2.34×** | ≈ **280× MORE** (761 vs 6 /M-insn) | call dispatch |
+| `binarytrees` | 2.00× | slightly more | alloc / GC |
+| `string_ops` (counterpoint) | **0.97×** | — | idiomatic stdlib — *fewer* than C |
+
+The **pure compute/dispatch/call hot path is ~2.3× C's instructions**; the ~1.5×
+"overall" ratio is *diluted* by string/IO/alloc workloads where idiomatic code
+matches or beats C (`string_ops` at 0.97× is the proof that idiomatic ≠ slow —
+the surplus lives only in the tightest inner loops).
+
+**The 2.3× decomposes along three independent axes:**
+
+- **(A) C-port-shape / Rust-idiom tax** — the bolded 2026-06-02 rows. Recoverable
+  without `unsafe`; **largely harvested**. The "perf stopping line" was reached
+  here. Stage-2 idiomatization correctly left the hot loop alone (already tuned;
+  the dispatch shape already ≈ idiomatic-fast Rust; and T5a showed touching it
+  regresses CPI for zero gain).
+- **(B) Safety tax** — bounds checks, `GcRef`/`Rc` refcount traffic, unwind glue.
+  *Extra checks on the same 16 B value.* ~5–15 % of our Ir (ablation). Removable
+  only by `unsafe` (strip checks), keeping the value layout. Predictable
+  instructions.
+- **(C) Representation + dispatch (the unsafe/nightly axis — the DOMINANT
+  residual):**
+  - *Value representation:* `LuaValue` is a ~16 B safe tagged enum; C's NaN-boxed
+    `TValue` is 8 B. Every value the VM moves is 2× the bytes → roughly **doubles
+    the value-movement instructions** on value-shuffle-heavy hot code. This is the
+    bulk of `fibonacci`/`mandelbrot`'s 2.3×. Lever: **NaN-boxing** (re-encode the
+    value into an 8 B `u64`) — pays in Ir *and* cache; `unsafe`, anti-idiomatic.
+  - *Dispatch:* our `match`-over-opcodes is one indirect branch; C's computed-goto
+    gives each opcode its own branch the predictor learns. Lever: **computed-goto**
+    (nightly/`unsafe`) — pays in CPI/wall, ~invisible in Ir.
+
+**The evidence that pins (B)/(C) over (A)** — the branch-mispredict density:
+
+- `fibonacci`/`mandelbrot` run 2.3× the instructions but mispredict **≈ the same
+  total** as C → the surplus is **predictable padding** (bounds checks that pass,
+  refcount ops, 16 B value moves) = safety + representation, **not** branchy
+  bad-C-port logic. If axis (A) dominated, we'd see *more* mispredicts, not equal.
+- `method_calls` mispredicts ~**280×** more than C (761 vs 6 /M-insn) → the
+  computed-goto dispatch gap (C), invisible in Ir, loud in CPI/wall.
+- Corroboration: the wall ratios above (`method_calls` 1.80× *wall* vs 2.34× *Ir*)
+  — wall **lower** than Ir confirms the extra instructions are cheap/predictable.
+
+**Safety tax vs NaN-boxing — the distinction (two independent `unsafe` levers):**
+
+- *Safety tax* = extra **checks** on the **same** 16 B value. Removing it deletes
+  guard instructions, keeps the layout. Small (~instruction count).
+- *NaN-boxing* = a **smaller encoding** of the value (8 B vs 16 B). Removing the
+  gap re-encodes the value, halving memory traffic. Large (~memory bandwidth /
+  cache; mostly wall + CPI, which Ir under-counts).
+- Analogy: safety tax = a guard checking your ticket at each gate (same car, extra
+  work per gate); NaN-boxing = a car half the size, so twice as many fit per lane
+  (same gates, less traffic).
+
+**Verdict:** idiomatization is **exhausted as a perf lever** — axis (A) is
+harvested and the hot loop's C-shape coincides with idiomatic-fast Rust. The
+remaining big levers are all the `unsafe`/nightly axis: **NaN-boxing** the value
+representation (the single biggest; pays in Ir + cache), **computed-goto**
+dispatch (pays in CPI/wall), and the **GC pacer** rewrite. None are
+idiomatization. Reproduce: `bash harness/bench/instr-count.sh --workloads
+fibonacci,mandelbrot_long,method_calls --branch-sim`.
+
 ## Mental Model
 
 **Decomposition (P2.1 rig, 2026-06-09, the most important measured fact in
