@@ -270,6 +270,59 @@ def fmt_ratio(v: float) -> str:
     return f"{v:.2f}×"
 
 
+def build_payload(history: dict[str, Any]) -> dict[str, Any]:
+    """The chart-data object the dashboard bakes inline AND that the omniLua
+    performance page fetches as series.json — one source of truth for both."""
+    series_defs: dict[str, dict[str, str]] = {}
+    for workload in WORKLOADS:
+        color = WORKLOAD_COLORS[workload]
+        series_defs[f"wall_ratio_{workload}"] = {"label": workload, "color": color, "metric": "wall_ratio"}
+        series_defs[f"rss_ratio_{workload}"] = {"label": workload, "color": color, "metric": "rss_ratio"}
+    series_defs["tests_pass_rate"] = {"label": "official suite pass-rate", "color": "#0f8f68", "metric": "pass_rate"}
+
+    series_with_tests = dict(history["series"])
+    series_with_tests["tests_pass_rate"] = history["test_points"]
+
+    return {
+        "generated_at": history["generated_at"],
+        "point_count": history["point_count"],
+        "commit_count": history["commit_count"],
+        "signature": history["signature"],
+        "headline": history["headline"],
+        "points": history["points"],
+        "series": series_with_tests,
+        "series_defs": series_defs,
+        "wall_ids": [f"wall_ratio_{w}" for w in WORKLOADS],
+        "rss_ids": [f"rss_ratio_{w}" for w in WORKLOADS],
+        "test_ids": ["tests_pass_rate"],
+        "test_points": history["test_points"],
+    }
+
+
+def chart_data(history: dict[str, Any]) -> dict[str, Any]:
+    """Lean wall/RSS chart subset the omniLua performance page fetches as
+    series.json: only the series the charts plot, with minimal per-point fields
+    (drops the flat ``points`` table, ``evidence``, ``runs`` the dashboard keeps)."""
+    payload = build_payload(history)
+    chart_ids = set(payload["wall_ids"]) | set(payload["rss_ids"])
+    return {
+        "generated_at": payload["generated_at"],
+        "signature": payload["signature"],
+        "headline": payload["headline"],
+        "wall_ids": payload["wall_ids"],
+        "rss_ids": payload["rss_ids"],
+        "series_defs": {sid: payload["series_defs"][sid] for sid in chart_ids},
+        "series": {
+            sid: [
+                {"ts": p["ts"], "commit": p["commit"], "subject": p.get("commit_subject", ""), "value": p["value"]}
+                for p in pts
+            ]
+            for sid, pts in payload["series"].items()
+            if sid in chart_ids
+        },
+    }
+
+
 def render_html(history: dict[str, Any]) -> str:
     headline = history["headline"]
     best_w, best_v = headline["best_workload"]
@@ -304,33 +357,7 @@ def render_html(history: dict[str, Any]) -> str:
         <div class="subtle">{html.escape(worst_w)}</div>
       </div>
     """)
-    series_defs = {}
-    for workload in WORKLOADS:
-        color = WORKLOAD_COLORS[workload]
-        series_defs[f"wall_ratio_{workload}"] = {"label": workload, "color": color, "metric": "wall_ratio"}
-        series_defs[f"rss_ratio_{workload}"] = {"label": workload, "color": color, "metric": "rss_ratio"}
-    series_defs["tests_pass_rate"] = {"label": "official suite pass-rate", "color": "#0f8f68", "metric": "pass_rate"}
-
-    wall_ids = [f"wall_ratio_{w}" for w in WORKLOADS]
-    rss_ids = [f"rss_ratio_{w}" for w in WORKLOADS]
-
-    series_with_tests = dict(history["series"])
-    series_with_tests["tests_pass_rate"] = history["test_points"]
-
-    payload = {
-        "generated_at": history["generated_at"],
-        "point_count": history["point_count"],
-        "commit_count": history["commit_count"],
-        "signature": history["signature"],
-        "points": history["points"],
-        "series": series_with_tests,
-        "series_defs": series_defs,
-        "wall_ids": wall_ids,
-        "rss_ids": rss_ids,
-        "test_ids": ["tests_pass_rate"],
-        "test_points": history["test_points"],
-    }
-    history_json = json.dumps(payload, separators=(",", ":"))
+    history_json = json.dumps(build_payload(history), separators=(",", ":"))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -936,6 +963,10 @@ def build(out_dir: Path, *, quiet: bool = False) -> None:
         encoding="utf-8",
     )
     (out_dir / "index.html").write_text(render_html(history), encoding="utf-8")
+    (out_dir / "series.json").write_text(
+        json.dumps(chart_data(history), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     if not quiet:
         print(f"wrote {out_dir / 'index.html'}")
         print(f"points: {history['point_count']} over {history['commit_count']} commits")
