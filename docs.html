@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>omniLua — docs</title>
+  <meta name="description" content="How to use omniLua: install the CLI, embed the pure-Rust Lua runtime in a Rust program (functions, tables, errors, scope, custom types), sandbox untrusted scripts, run it in the browser or Node, pick a Lua version, and use LuaRocks.">
+  <meta property="og:title" content="omniLua — documentation">
+  <meta property="og:description" content="Getting started, the CLI, embedding in Rust, sandboxing, browser/Node, versions, and LuaRocks.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ianm199.github.io/omnilua/docs.html">
+  <meta property="og:image" content="https://ianm199.github.io/omnilua/assets/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23f4efe4'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='19' font-style='italic' font-weight='700' fill='%23221c15' text-anchor='middle'%3Eo%3Ctspan fill='%23b3411f'%3EL%3C/tspan%3E%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..600&family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="frame">
+      <a class="wordmark" href="./index.html">omni<span class="dot">L</span>ua<span class="tag">every lua, everywhere</span></a>
+      <nav class="mast-nav">
+        <a href="./index.html#capabilities">Capabilities</a>
+        <a href="./index.html#playground">Playground</a>
+        <a class="cta" href="./docs.html">Docs</a>
+        <a href="./performance.html">Performance</a>
+        <a href="https://github.com/ianm199/omnilua">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="frame">
+    <div class="docs-layout">
+      <aside class="docs-side">
+        <nav>
+          <a class="top" href="#getting-started">Getting started</a>
+          <a class="top" href="#cli">The CLI</a>
+          <span class="grp">
+            <a class="top" href="#embedding">Embedding in Rust</a>
+            <a class="sub" href="#embed-run">Run &amp; read back</a>
+            <a class="sub" href="#embed-values">Values in</a>
+            <a class="sub" href="#embed-fns">Rust functions</a>
+            <a class="sub" href="#embed-tables">Tables</a>
+            <a class="sub" href="#embed-errors">Errors</a>
+            <a class="sub" href="#embed-userdata">Custom types</a>
+            <a class="sub" href="#embed-scope">Borrowed state</a>
+          </span>
+          <a class="top" href="#sandboxing">Sandboxing</a>
+          <a class="top" href="#browser">Browser &amp; Node</a>
+          <a class="top" href="#versions">Versions</a>
+          <a class="top" href="#luarocks">LuaRocks</a>
+        </nav>
+      </aside>
+
+      <article class="doc">
+        <div class="doc-lede">
+          <h1>Using <em>omniLua</em></h1>
+          <p>Three ways to run Lua with one pure-Rust runtime — a CLI, a Rust embedding crate, and a wasm package. Every example below is real and copy-pasteable.</p>
+        </div>
+
+        <section class="doc-sec" id="getting-started">
+          <h2>Getting started</h2>
+          <p class="lead-in">Pick the surface you need. They share one core, so behaviour matches across all three.</p>
+          <div class="install-row">
+            <div class="install">
+              <div class="ih">Command line</div>
+              <code><span class="pr">$</span> cargo install omnilua-cli</code>
+            </div>
+            <div class="install">
+              <div class="ih">Embed in Rust</div>
+              <code><span class="cm"># Cargo.toml</span><br>omnilua = "0.2"</code>
+            </div>
+            <div class="install">
+              <div class="ih">Browser / Node</div>
+              <code><span class="pr">$</span> npm install omnilua</code>
+            </div>
+          </div>
+          <div class="note">
+            <span class="nl">Note</span>
+            <p>The crate is <code>omnilua-cli</code> but the binary it installs is <code>omnilua</code>. The embedding crate and the npm package are both named <code>omnilua</code>.</p>
+          </div>
+          <p>New here? Run a one-liner to confirm the install, then jump to your path below.</p>
+          <div class="codeblock">
+            <div class="cb-head">terminal <span class="lang">sh</span></div>
+            <pre><span class="pr">$</span> omnilua -e <span style="color:var(--good)">'print("hello, omniLua")'</span>
+hello, omniLua</pre>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="cli">
+          <h2>The CLI</h2>
+          <p>The <code>omnilua</code> binary is a drop-in <code>lua</code>: run a file, evaluate an expression, pipe a program in, or open a REPL.</p>
+          <div class="codeblock">
+            <div class="cb-head">terminal <span class="lang">sh</span></div>
+            <pre><span class="pr">$</span> omnilua script.lua                <span class="cm"># run a file</span>
+<span class="pr">$</span> omnilua -e <span style="color:var(--good)">'print(1 + 2)'</span>        <span class="cm"># evaluate an expression</span>
+<span class="pr">$</span> echo <span style="color:var(--good)">'print("hi")'</span> | omnilua -    <span class="cm"># read a program from stdin</span>
+<span class="pr">$</span> omnilua                            <span class="cm"># no args → interactive REPL</span>
+<span class="pr">$</span> omnilua -i script.lua             <span class="cm"># run a file, then drop into the REPL</span>
+<span class="pr">$</span> omnilua -l inspect script.lua     <span class="cm"># require a module before the script</span>
+<span class="pr">$</span> omnilua -v                         <span class="cm"># print the version banner</span></pre>
+          </div>
+          <p>Choose a Lua version with the <code>OMNILUA_VERSION</code> environment variable (<code>5.1</code> through <code>5.5</code>; default <code>5.4</code>):</p>
+          <div class="codeblock">
+            <div class="cb-head">terminal <span class="lang">sh</span></div>
+            <pre><span class="pr">$</span> OMNILUA_VERSION=5.1 omnilua script.lua</pre>
+          </div>
+          <p>Run untrusted scripts under hard CPU and memory caps. Limits are uncatchable from inside Lua and <code>--sandbox</code> also strips host-access globals:</p>
+          <div class="codeblock">
+            <div class="cb-head">terminal <span class="lang">sh</span></div>
+            <pre><span class="pr">$</span> omnilua --sandbox --max-instructions=5000000 --max-memory=64M untrusted.lua</pre>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="embedding">
+          <h2>Embedding in Rust</h2>
+          <p class="lead-in">The <code>omnilua</code> crate is an embedding API shaped after <code>mlua</code> — but pure Rust, with no <code>liblua</code>, no C toolchain, and no build script. The same code compiles to <code>wasm32-unknown-unknown</code>.</p>
+          <div class="codeblock">
+            <div class="cb-head">Cargo.toml <span class="lang">toml</span></div>
+            <pre>[dependencies]
+omnilua = "0.2"</pre>
+          </div>
+          <p>Functions in these examples return <code>omnilua::Result&lt;T&gt;</code>, so <code>?</code> propagates Lua errors as an <code>omnilua::Error</code> (see <a href="#embed-errors">Errors</a>).</p>
+
+          <h3 id="embed-run">Run a chunk &amp; read the result back</h3>
+          <p><code>lua.load(src)</code> compiles a chunk; <code>.exec()</code> runs it and discards results, while <code>.eval::&lt;T&gt;()</code> runs it and converts the return value into a Rust type.</p>
+          <div class="codeblock">
+            <div class="cb-head">main.rs <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, Result};
+
+<span class="kw">fn</span> main() -&gt; Result&lt;()&gt; {
+    <span class="kw">let</span> lua = Lua::new();
+
+    <span class="cm">// Run a chunk and discard its result.</span>
+    lua.load(<span style="color:var(--good)">r#"print("hello from Lua")"#</span>).exec()?;
+
+    <span class="cm">// Run a chunk and read a typed value back.</span>
+    <span class="kw">let</span> answer: i64 = lua.load(<span style="color:var(--good)">"return 6 * 7"</span>).eval()?;
+    <span class="kw">assert_eq!</span>(answer, 42);
+    Ok(())
+}</pre>
+          </div>
+
+          <h3 id="embed-values">Pass Rust values in</h3>
+          <p>Set globals from Rust with <code>lua.globals().set(name, value)</code>. Numbers, booleans, strings, tables, and functions all convert automatically.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre>lua.globals().set(<span style="color:var(--good)">"name"</span>, <span style="color:var(--good)">"omniLua"</span>)?;
+lua.globals().set(<span style="color:var(--good)">"answer"</span>, 42)?;
+lua.load(<span style="color:var(--good)">r#"print(name .. " => " .. answer)"#</span>).exec()?;</pre>
+          </div>
+
+          <h3 id="embed-fns">Register Rust functions</h3>
+          <p><code>lua.create_function</code> turns a Rust closure into a Lua-callable function. Its first argument is the <code>&amp;Lua</code>; the second is the call arguments — a single type, or a tuple for several. Return any convertible value.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="cm">// One argument in, one value out.</span>
+<span class="kw">let</span> greet = lua.create_function(|_, who: String| {
+    Ok(<span class="kw">format!</span>(<span style="color:var(--good)">"hello, {who}"</span>))
+})?;
+lua.globals().set(<span style="color:var(--good)">"greet"</span>, greet)?;
+
+<span class="cm">// Several arguments arrive as a tuple.</span>
+<span class="kw">let</span> add = lua.create_function(|_, (a, b): (i64, i64)| Ok(a + b))?;
+lua.globals().set(<span style="color:var(--good)">"add"</span>, add)?;
+
+<span class="kw">let</span> msg: String = lua.load(<span style="color:var(--good)">r#"return greet("world")"#</span>).eval()?;
+<span class="kw">let</span> sum: i64 = lua.load(<span style="color:var(--good)">"return add(2, 3)"</span>).eval()?;</pre>
+          </div>
+          <div class="note">
+            <span class="nl">Note</span>
+            <p>Use <code>create_function_mut</code> when the closure needs to capture mutable state. A re-entrant call errors with "already borrowed" rather than aliasing.</p>
+          </div>
+
+          <h3 id="embed-tables">Tables</h3>
+          <p>Build tables in Rust with <code>lua.create_table()</code>, or read one back out of Lua by evaluating to <code>omnilua::Table</code>.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, Result, Table};
+
+<span class="cm">// Build a table in Rust and hand it to Lua.</span>
+<span class="kw">let</span> config = lua.create_table()?;
+config.set(<span style="color:var(--good)">"host"</span>, <span style="color:var(--good)">"localhost"</span>)?;
+config.set(<span style="color:var(--good)">"port"</span>, 8080)?;
+lua.globals().set(<span style="color:var(--good)">"config"</span>, config)?;
+
+<span class="cm">// Read a table back out of Lua.</span>
+<span class="kw">let</span> point: Table = lua.load(<span style="color:var(--good)">"return { x = 3, y = 4 }"</span>).eval()?;
+<span class="kw">let</span> x: i64 = point.get(<span style="color:var(--good)">"x"</span>)?;</pre>
+          </div>
+
+          <h3 id="embed-errors">Errors</h3>
+          <p>A Lua error surfaces in Rust as an <code>omnilua::Error</code>. It <code>Display</code>s the full message, derefs to the inner <code>LuaError</code>, and — importantly — <em>preserves the raised Lua value</em>, so re-raising it through <code>pcall</code>/<code>xpcall</code> returns the original object.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, Result};
+
+<span class="kw">let</span> result: Result&lt;()&gt; = lua.load(<span style="color:var(--good)">"error('boom')"</span>).exec();
+<span class="kw">match</span> result {
+    Ok(()) =&gt; {}
+    Err(err) =&gt; {
+        <span class="cm">// Display gives the full message + traceback.</span>
+        <span class="kw">eprintln!</span>(<span style="color:var(--good)">"{err}"</span>);
+        <span class="cm">// Or inspect it: err.kind() / err.as_lua_error() / err.message_lossy()</span>
+        <span class="kw">let</span> _msg = err.message_lossy();
+    }
+}</pre>
+          </div>
+
+          <h3 id="embed-userdata">Custom types (UserData)</h3>
+          <p>Expose a Rust type to Lua by implementing <code>UserData</code> and registering methods, fields, and metamethods. Hand an owned instance to Lua with <code>lua.create_userdata</code>.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, Result, UserData, UserDataMethods};
+
+<span class="kw">struct</span> Counter { n: i64 }
+
+<span class="kw">impl</span> UserData <span class="kw">for</span> Counter {
+    <span class="kw">fn</span> add_methods&lt;M: UserDataMethods&lt;Self&gt;&gt;(m: &amp;<span class="kw">mut</span> M) {
+        m.add_method(<span style="color:var(--good)">"get"</span>, |_, this, ()| Ok(this.n));
+        m.add_method_mut(<span style="color:var(--good)">"add"</span>, |_, this, by: i64| {
+            this.n += by;
+            Ok(this.n)
+        });
+        m.add_field_method_get(<span style="color:var(--good)">"n"</span>, |_, this| Ok(this.n));
+    }
+}
+
+<span class="kw">let</span> counter = lua.create_userdata(Counter { n: 0 })?;
+lua.globals().set(<span style="color:var(--good)">"counter"</span>, counter)?;
+lua.load(<span style="color:var(--good)">r#"
+    counter:add(5)
+    print(counter:get())   -- 5
+    print(counter.n)       -- 5
+"#</span>).exec()?;</pre>
+          </div>
+          <p>Operator overloading and other metamethods go in <code>add_meta_methods</code> via the <code>MetaMethod</code> enum (<code>Add</code>, <code>Eq</code>, <code>Index</code>, <code>ToString</code>, …).</p>
+
+          <h3 id="embed-scope">Lend borrowed (non-<code>'static</code>) state</h3>
+          <p>Most embedding APIs require <code>'static</code> data. <code>lua.scope</code> lends a borrow — say a game engine's <code>&amp;mut World</code> — to Lua for exactly one call. A handle that escapes the closure errors cleanly instead of dangling, and mutations are visible to the host afterwards.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="cm">// `Counter` from above, but borrowed from the host for one call.</span>
+<span class="kw">let</span> <span class="kw">mut</span> counter = Counter { n: 0 };
+lua.scope(|s| {
+    <span class="kw">let</span> c = s.create_userdata_ref_mut(&amp;lua, &amp;<span class="kw">mut</span> counter)?;
+    lua.globals().set(<span style="color:var(--good)">"counter"</span>, &amp;c)?;
+    lua.load(<span style="color:var(--good)">"counter:add(10)"</span>).exec()
+})?;
+<span class="kw">assert_eq!</span>(counter.n, 10); <span class="cm">// the host sees the mutation</span></pre>
+          </div>
+          <div class="note">
+            <span class="nl">Reference</span>
+            <p>The full embedding API — every conversion, <code>create_function_mut</code>, the <code>scope</code> function variants, and the <code>#[derive(LuaUserData)]</code> macro — lives on <a href="https://docs.rs/omnilua">docs.rs</a>. A runnable Bevy example ships in the <a href="https://github.com/ianm199/omnilua">project repository</a>.</p>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="sandboxing">
+          <h2>Sandboxing untrusted scripts</h2>
+          <p><code>Lua::sandboxed</code> returns a Lua state plus a <code>Sandbox</code> handle. The budget is uncatchable from inside Lua; <code>SandboxConfig::strict()</code> also removes host-access globals (<code>os.execute</code>, <code>io</code>, <code>load</code>, <code>require</code>, <code>debug</code>, …).</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, SandboxConfig, TripReason};
+
+<span class="cm">// strict(): 10M instructions, 64 MiB, host globals removed.</span>
+<span class="kw">let</span> (lua, sandbox) = Lua::sandboxed(SandboxConfig::strict())?;
+
+<span class="kw">let</span> result = lua.load(<span style="color:var(--good)">"while true do end"</span>).exec();
+<span class="kw">assert!</span>(result.is_err());
+<span class="kw">assert_eq!</span>(sandbox.tripped(), Some(TripReason::Instructions));
+
+sandbox.reset(); <span class="cm">// refill the budget before the next run</span></pre>
+          </div>
+          <p>Or configure the limits yourself — any field may be <code>None</code> to leave it uncapped:</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">let</span> config = SandboxConfig {
+    instruction_limit: Some(5_000_000),
+    memory_limit_bytes: Some(32 * 1024 * 1024),
+    check_interval: 256,
+    remove_globals: <span class="kw">vec!</span>[b<span style="color:var(--good)">"os"</span>.to_vec(), b<span style="color:var(--good)">"io"</span>.to_vec()],
+};
+<span class="kw">let</span> (lua, sandbox) = Lua::sandboxed(config)?;</pre>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="browser">
+          <h2>Browser &amp; Node</h2>
+          <p>The npm package <code>omnilua</code> ships the whole runtime as one <code>.wasm</code> module — no Emscripten, no bundled C interpreter. <code>loadLuaRs</code> is for the browser; <code>loadLuaRsNode</code> is for Node.</p>
+          <div class="codeblock">
+            <div class="cb-head">browser <span class="lang">js</span></div>
+            <pre><span class="kw">import</span> { loadLuaRs, luaRsWasmUrl } <span class="kw">from</span> <span style="color:var(--good)">"omnilua"</span>;
+
+<span class="kw">const</span> { lua } = <span class="kw">await</span> loadLuaRs(luaRsWasmUrl, {
+  onStdout: (chunk) =&gt; console.log(chunk),
+});
+
+lua.exec(<span style="color:var(--good)">'print("hello from wasm")'</span>);
+
+<span class="cm">// tryExec returns a result object instead of throwing.</span>
+<span class="kw">const</span> r = lua.tryExec(<span style="color:var(--good)">"return 1 +"</span>);   <span class="cm">// syntax error</span>
+console.log(r.ok, r.error);</pre>
+          </div>
+          <div class="codeblock">
+            <div class="cb-head">node <span class="lang">js</span></div>
+            <pre><span class="kw">import</span> { loadLuaRsNode } <span class="kw">from</span> <span style="color:var(--good)">"omnilua/node"</span>;
+
+<span class="kw">const</span> { lua } = <span class="kw">await</span> loadLuaRsNode({
+  onStdout: (chunk) =&gt; process.stdout.write(chunk),
+});
+lua.exec(<span style="color:var(--good)">'print("hello from node")'</span>);</pre>
+          </div>
+          <p>Sandboxing is exposed over the wasm ABI too:</p>
+          <div class="codeblock">
+            <div class="cb-head">js <span class="lang">js</span></div>
+            <pre>lua.setLimits({ maxInstructions: 5_000_000, maxMemory: 64 * 1024 * 1024, strict: <span class="kw">true</span> });
+<span class="kw">const</span> r = lua.tryExec(<span style="color:var(--good)">"while true do end"</span>);
+console.log(r.ok);           <span class="cm">// false</span>
+console.log(lua.lastTrip());  <span class="cm">// "instructions"</span>
+lua.sandboxReset();           <span class="cm">// refill for the next run</span></pre>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="versions">
+          <h2>Versions</h2>
+          <p>One core runs Lua 5.1, 5.2, 5.3, 5.4, and 5.5, selected per instance. The version is resolved once on a cold path, so the bytecode loop carries no per-version cost.</p>
+          <div class="codeblock">
+            <div class="cb-head">rust <span class="lang">rust</span></div>
+            <pre><span class="kw">use</span> omnilua::{Lua, LuaVersion};
+<span class="kw">let</span> lua = Lua::new_versioned(LuaVersion::V51); <span class="cm">// V51 … V55</span></pre>
+          </div>
+          <div class="codeblock">
+            <div class="cb-head">cli / browser <span class="lang">sh · js</span></div>
+            <pre><span class="pr">$</span> OMNILUA_VERSION=5.3 omnilua script.lua
+
+<span class="cm">// wasm: choose at load, or switch in place</span>
+<span class="kw">const</span> { lua } = <span class="kw">await</span> loadLuaRs(luaRsWasmUrl, { version: <span style="color:var(--good)">"5.3"</span> });
+lua.setVersion(<span style="color:var(--good)">"5.1"</span>);</pre>
+          </div>
+          <p>See the differences run live, one snippet across all five, in the <a href="./index.html#playground">playground</a>.</p>
+        </section>
+
+        <section class="doc-sec" id="luarocks">
+          <h2>LuaRocks</h2>
+          <p>omniLua runs the stock LuaRocks 3.11.1 client — it is just a Lua program — and installs pure-Lua rocks (<code>inspect</code>, <code>dkjson</code>, <code>argparse</code>, <code>middleclass</code>, <code>say</code>, <code>luassert</code>).</p>
+          <div class="codeblock">
+            <div class="cb-head">terminal <span class="lang">sh</span></div>
+            <pre><span class="pr">$</span> omnilua /path/to/luarocks-3.11.1/src/bin/luarocks \
+      --tree ./rocks-tree install inspect</pre>
+          </div>
+          <div class="note">
+            <span class="nl">Note</span>
+            <p>Native C rocks are not supported yet — only pure-Lua rocks. This is Lua source/runtime compatibility, not C&nbsp;API/ABI compatibility.</p>
+          </div>
+        </section>
+
+        <section class="doc-sec" id="more">
+          <h2>Going further</h2>
+          <div class="next">
+            <a class="btn" href="https://docs.rs/omnilua">Full API on docs.rs ↗</a>
+            <a class="btn ghost" href="./index.html#playground">Try the playground ▸</a>
+            <a class="btn ghost" href="./performance.html">Performance</a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer>
+    <div class="frame">
+      <div class="flinks">
+        <a href="./index.html">Home</a>
+        <a href="https://github.com/ianm199/omnilua">GitHub ↗</a>
+        <a href="https://crates.io/crates/omnilua">crates.io ↗</a>
+        <a href="https://www.npmjs.com/package/omnilua">npm ↗</a>
+        <a href="https://docs.rs/omnilua">docs.rs ↗</a>
+        <a href="./performance.html">Performance</a>
+      </div>
+      <p class="colophon">omniLua is a port of <a href="https://www.lua.org/">Lua</a>, created by Roberto Ierusalimschy, Luiz Henrique de Figueiredo, and Waldemar Celes at PUC-Rio. Lua and this port are both distributed under the MIT license. <em>Set in Fraunces, Spectral &amp; IBM&nbsp;Plex&nbsp;Mono.</em></p>
+    </div>
+  </footer>
+
+  <script>
+    /* External links open in a new tab. */
+    document.querySelectorAll('a[href^="http"]').forEach(a => { a.target = "_blank"; a.rel = "noopener"; });
+
+    /* Scroll-spy: highlight the sidebar link for whichever section is in view. */
+    const links = [...document.querySelectorAll(".docs-side a")];
+    const byId = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+    const heads = [...document.querySelectorAll(".doc [id]")].filter(el => byId.has(el.id));
+    const visible = new Set();
+
+    function refresh() {
+      let active = null;
+      for (const el of heads) { if (visible.has(el.id)) { active = el.id; break; } }
+      if (!active) return;
+      links.forEach(a => a.classList.remove("active"));
+      byId.get(active).classList.add("active");
+    }
+
+    const obs = new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (e.isIntersecting) visible.add(e.target.id);
+        else visible.delete(e.target.id);
+      }
+      refresh();
+    }, { rootMargin: "-84px 0px -68% 0px", threshold: 0 });
+
+    heads.forEach(h => obs.observe(h));
+  </script>
+</body>
+</html>

@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>omniLua — performance</title>
+  <meta name="description" content="omniLua benchmarks vs reference C: ~1.37× wall-time geomean across the tracked workloads, faster than C on three of them, and a safety tax of roughly zero. The residual gap is value representation and dispatch, not memory safety.">
+  <meta property="og:title" content="omniLua — performance">
+  <meta property="og:description" content="Competitive with reference C, not LuaJIT. The safety tax is ~0% of wall time; the residual gap is representation, not safety.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ianm199.github.io/omnilua/performance.html">
+  <meta property="og:image" content="https://ianm199.github.io/omnilua/assets/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23f4efe4'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='19' font-style='italic' font-weight='700' fill='%23221c15' text-anchor='middle'%3Eo%3Ctspan fill='%23b3411f'%3EL%3C/tspan%3E%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..600&family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="frame">
+      <a class="wordmark" href="./index.html">omni<span class="dot">L</span>ua<span class="tag">every lua, everywhere</span></a>
+      <nav class="mast-nav">
+        <a href="./index.html#capabilities">Capabilities</a>
+        <a href="./index.html#playground">Playground</a>
+        <a href="./docs.html">Docs</a>
+        <a href="./performance.html">Performance</a>
+        <a class="cta" href="https://github.com/ianm199/omnilua">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="frame" id="top">
+    <section class="hero" style="padding-bottom:36px">
+      <h1 class="rise" style="font-size:clamp(40px,7vw,80px)">Performance,<br><em>measured.</em></h1>
+      <p class="sub rise d1">omniLua is competitive with reference C, not faster than it, and not LuaJIT. What it <b>is</b> able to say precisely: the cost of memory safety is roughly zero, and the residual gap to C is value representation and dispatch — both recoverable, neither structural to safety.</p>
+    </section>
+
+    <section style="padding-top:0;border-top:0">
+      <div class="stats rise d2">
+        <div class="stat"><div class="s-num">1.37<span class="x">×</span></div><div class="s-lbl">wall-time geomean<br>dashboard workloads, stock</div></div>
+        <div class="stat win"><div class="s-num">0.42<span class="x">×</span></div><div class="s-lbl">table_ops_long<br>2.4× faster than C</div></div>
+        <div class="stat win"><div class="s-num">~0<span class="x">%</span></div><div class="s-lbl">safety tax<br>bounds + RefCell guards</div></div>
+        <div class="stat"><div class="s-num">1.72<span class="x">×</span></div><div class="s-lbl">peak memory geomean<br>vs reference C</div></div>
+      </div>
+    </section>
+
+    <section id="numbers">
+      <div class="sec-head">
+        <span class="sec-num">§&nbsp;01</span>
+        <h2>The numbers</h2>
+        <span class="sec-rule"></span>
+      </div>
+      <p class="sec-intro">Ratio = omniLua ÷ reference C on the same workload; lower is better, parity is <code>1.00×</code>. The headline below is the latest benchmarked commit by workload; the trajectory charts under it plot every commit — zoom each with its own y-max and window controls (the earliest commits are pre-optimization, so zoom out to see them), hover a point for the commit, click a legend chip to mute a series.</p>
+
+      <div class="chart-block" id="snapshot">
+        <h3>Latest commit, by workload</h3>
+        <p class="chsub">Wall-time ratio at the most recent benchmarked commit (<span id="gen-stamp"></span>), fastest to slowest.</p>
+        <div id="bars" class="bars"></div>
+        <div class="bars-legend">
+          <span><i style="background:var(--good)"></i> faster than C</span>
+          <span><i style="background:var(--ink-soft)"></i> typical</span>
+          <span><i style="background:var(--accent)"></i> slower (≥1.9×)</span>
+          <span>│ parity (1.00×)</span>
+        </div>
+      </div>
+
+      <div class="chart-block">
+        <h3>Wall-time ratio over commits</h3>
+        <p class="chsub">Execution time vs reference C, per workload, at every benchmarked commit.</p>
+        <div class="chart-controls">
+          <span class="grp"><span class="glabel">y-max</span><span class="pillset" id="wall-ymax"></span></span>
+          <span class="grp"><span class="glabel">commits</span><span class="pillset" id="wall-window"></span></span>
+        </div>
+        <div class="chart-wrap"><svg id="wall-chart" role="img" aria-label="Wall-time ratio per workload over commits"></svg></div>
+        <div class="chart-legend" id="wall-legend"></div>
+      </div>
+
+      <div class="chart-block">
+        <h3>Memory (RSS) ratio over commits</h3>
+        <p class="chsub">Peak resident-set vs reference C, per workload, at every benchmarked commit.</p>
+        <div class="chart-controls">
+          <span class="grp"><span class="glabel">y-max</span><span class="pillset" id="rss-ymax"></span></span>
+          <span class="grp"><span class="glabel">commits</span><span class="pillset" id="rss-window"></span></span>
+        </div>
+        <div class="chart-wrap"><svg id="rss-chart" role="img" aria-label="RSS ratio per workload over commits"></svg></div>
+        <div class="chart-legend" id="rss-legend"></div>
+      </div>
+
+      <p class="methodology">
+        <b>Provenance.</b> omniLua ÷ reference PUC-Rio Lua&nbsp;5.4.7, best wall-clock of interleaved ref/omniLua pairs per commit (<code>harness/bench/compare.sh</code>), recorded to the evidence ledger and plotted live above; the standalone <a href="./harness/bench/history/">dashboard</a> renders the same data with per-commit detail. The earliest commits show large ratios (pre-optimization) — clip them with the y-max control. At the latest benchmarked commit the wall geomean is ≈1.37× across the tracked workloads; three beat C outright — the table-bulk benchmarks, where omniLua's table representation pays off. The slowest rows are GC- and call-heavy (<code>gc_pressure</code>, <code>binarytrees</code>, <code>closure_ops</code>). Perf claims follow <code>docs/MEASUREMENT_PROTOCOL.md</code>.
+      </p>
+    </section>
+
+    <section id="gap">
+      <div class="sec-head">
+        <span class="sec-num">§&nbsp;02</span>
+        <h2>Where the gap is</h2>
+        <span class="sec-rule"></span>
+      </div>
+      <p class="sec-intro">A common assumption is that safe Rust is slow because of bounds checks and runtime borrow guards. We ablated exactly that. It is not where the time goes.</p>
+
+      <div class="decomp">
+        <div class="d zero">
+          <div class="d-tax">~0%</div>
+          <h3>Safety tax</h3>
+          <p>Removing bounds checks and <code>RefCell</code> guards recovers roughly zero reliable wall time. Memory safety is not the cost. The unsafe budget stays at zero outside the GC, the dynamic-library loader, and the wasm pointer ABI.</p>
+        </div>
+        <div class="d">
+          <div class="d-tax">16 vs 8</div>
+          <h3>Representation</h3>
+          <p>Each Lua value is <code>16</code> bytes where C packs <code>8</code> (NaN-boxing not yet done). That wider value — copied through every register move — is the largest share of the residual ≈2.3× instruction-count gap on the hot path. It is a known, recoverable lever.</p>
+        </div>
+        <div class="d">
+          <div class="d-tax">dispatch</div>
+          <h3>Dispatch &amp; layout</h3>
+          <p>The rest is interpreter dispatch and code layout — the gap between a <code>match</code> loop and C's computed-goto threading. PGO recovers part of it; the remainder tracks the representation work above.</p>
+        </div>
+      </div>
+
+      <p class="lead" style="margin-top:44px">The headline, stated plainly: <em style="font-style:italic;color:var(--accent)">the residual gap to C is representation, not safety.</em> That is the difference between a wall the project is stuck behind and a lever it has not yet pulled.</p>
+    </section>
+
+    <section id="not">
+      <div class="sec-head">
+        <span class="sec-num">§&nbsp;03</span>
+        <h2>What it is not</h2>
+        <span class="sec-rule"></span>
+      </div>
+      <div class="aside">
+        <p>This is <b>not LuaJIT</b>, and it is not faster than reference C in general — it is a faithful bytecode interpreter that happens to be pure, safe Rust. If you need LuaJIT-class throughput or a decades-mature binding, use <a href="https://github.com/mlua-rs/mlua">mlua</a>. omniLua's argument is reach and safety at a competitive constant factor: the same runtime native and on <code>wasm32</code>, with the cost of that safety measured at roughly nothing.</p>
+      </div>
+      <div class="hero-cta" style="margin-top:34px">
+        <a class="btn" href="./harness/bench/history/">Live per-commit dashboard ↗</a>
+        <a class="btn ghost" href="./index.html#playground">Try it in the playground ▸</a>
+      </div>
+      <p class="methodology" style="margin-top:24px">The benchmark harness measures the omniLua / reference-C ratio (wall + RSS), not absolute throughput — the ratio is the only fair number across machines. Methodology: <code>harness/bench/compare.sh</code>; perf claims follow the frozen-baseline interleaved A/B protocol in <code>docs/MEASUREMENT_PROTOCOL.md</code>.</p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="frame">
+      <div class="flinks">
+        <a href="./index.html">Home</a>
+        <a href="https://github.com/ianm199/omnilua">GitHub ↗</a>
+        <a href="https://crates.io/crates/omnilua">crates.io ↗</a>
+        <a href="https://www.npmjs.com/package/omnilua">npm ↗</a>
+        <a href="https://docs.rs/omnilua">docs.rs ↗</a>
+      </div>
+      <p class="honesty">≈1.37× geomean of reference-C wall time across the tracked workloads (≈1.3× with PGO) — competitive, not faster, and not LuaJIT. Numbers are tracked per-commit; the safety tax is measured, not assumed.</p>
+      <p class="colophon">omniLua is a port of <a href="https://www.lua.org/">Lua</a>, created by Roberto Ierusalimschy, Luiz Henrique de Figueiredo, and Waldemar Celes at PUC-Rio. Lua and this port are both distributed under the MIT license. <em>Set in Fraunces, Spectral &amp; IBM&nbsp;Plex&nbsp;Mono.</em></p>
+    </div>
+  </footer>
+
+  <div class="chart-tip" id="chart-tip"></div>
+
+  <script>
+    /* The "nice graphs": live per-commit benchmark trajectory, fetched from the
+       same ledger-derived data the standalone dashboard uses (emitted by
+       harness/bench/history.py as series.json). One source of truth. */
+    const SERIES_URL = "./harness/bench/history/series.json";
+
+    /* Fallback snapshot if series.json can't be fetched — last verified full
+       run, commit 941aec5 (2026-06-13), so the section is never empty. */
+    const FALLBACK = [
+      ["table_ops_long", 0.43], ["table_hash_pressure", 0.82], ["table_field_index", 1.17],
+      ["string_ops_long", 1.27], ["coroutine_pingpong", 1.33], ["mandelbrot", 1.34],
+      ["string_ops", 1.47], ["binarytrees", 1.53], ["fibonacci", 1.56],
+      ["gc_pressure", 1.75], ["global_settabup_same", 2.12], ["method_calls", 2.16],
+      ["table_setfield_same", 2.30],
+    ];
+
+    const SVGNS = "http://www.w3.org/2000/svg";
+    const muted = new Set();
+    let DATA = null;
+
+    /* Per-chart zoom controls, matching the old dashboard's range so the early
+       pre-optimization spikes can be zoomed out to. Defaults: y-max 10×, last 50. */
+    const YMAX_PRESETS = [
+      { label: "3×", value: 3 }, { label: "10×", value: 10 }, { label: "30×", value: 30 },
+      { label: "100×", value: 100 }, { label: "all", value: Infinity },
+    ];
+    const WINDOW_PRESETS = [
+      { label: "10", value: 10 }, { label: "25", value: 25 }, { label: "50", value: 50 },
+      { label: "all", value: Infinity },
+    ];
+    const chartState = { wall: { yi: 1, wi: 2 }, rss: { yi: 1, wi: 2 } };
+
+    const tip = document.getElementById("chart-tip");
+    function showTip(evt, html) { tip.innerHTML = html; tip.classList.add("show"); moveTip(evt); }
+    function moveTip(evt) { tip.style.left = (evt.clientX + 14) + "px"; tip.style.top = (evt.clientY + 14) + "px"; }
+    function hideTip() { tip.classList.remove("show"); }
+
+    function el(name, attrs) {
+      const n = document.createElementNS(SVGNS, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      return n;
+    }
+    function wlOf(id) { return id.replace(/^(wall|rss)_ratio_/, ""); }
+    function shortCommit(c) { return (c || "").slice(0, 7); }
+
+    function orderedTs(ids) {
+      const seen = new Set(); const out = [];
+      for (const id of ids) for (const p of (DATA.series[id] || [])) {
+        if (!seen.has(p.ts)) { seen.add(p.ts); out.push(p.ts); }
+      }
+      out.sort();
+      return out;
+    }
+
+    function drawChart(svgId, ids, yMaxVal, winVal) {
+      const svg = document.getElementById(svgId);
+      const W = 1120, H = 420, m = { l: 58, r: 20, t: 22, b: 60 };
+      svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+      svg.innerHTML = "";
+
+      const allTs = orderedTs(ids);
+      if (!allTs.length) return;
+      const n = Number.isFinite(winVal) ? Math.min(winVal, allTs.length) : allTs.length;
+      const winTs = allTs.slice(allTs.length - n);
+      const allow = new Set(winTs);
+      const xi = new Map(winTs.map((t, i) => [t, i]));
+      const maxI = Math.max(1, winTs.length - 1);
+
+      const active = ids.filter(id => !muted.has(id));
+      let auto = 1.5;
+      for (const id of active) for (const p of (DATA.series[id] || [])) if (allow.has(p.ts)) auto = Math.max(auto, p.value);
+      const yMax = Number.isFinite(yMaxVal) ? yMaxVal : Math.ceil(auto * 1.05 * 10) / 10;
+
+      const cW = W - m.l - m.r, cH = H - m.t - m.b;
+      const X = t => m.l + (xi.get(t) ?? 0) / maxI * cW;
+      const Y = v => m.t + (yMax - Math.min(v, yMax)) / yMax * cH;
+
+      const step = yMax <= 3 ? 0.5 : (yMax <= 12 ? 2 : (yMax <= 40 ? 5 : (yMax <= 120 ? 20 : Math.ceil(yMax / 60) * 10)));
+      for (let v = 0; v <= yMax + 1e-6; v += step) {
+        svg.appendChild(el("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), class: "gridline" }));
+        const t = el("text", { x: m.l - 9, y: Y(v) + 4, "text-anchor": "end", class: "axis-text" });
+        t.textContent = (v >= 10 ? v.toFixed(0) : v.toFixed(2)) + "×";
+        svg.appendChild(t);
+      }
+      if (yMax >= 1) {
+        svg.appendChild(el("line", { x1: m.l, x2: W - m.r, y1: Y(1), y2: Y(1), class: "parity-line" }));
+        const pt = el("text", { x: W - m.r, y: Y(1) - 6, "text-anchor": "end", class: "parity-text" });
+        pt.textContent = "parity 1.00×";
+        svg.appendChild(pt);
+      }
+      svg.appendChild(el("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: "axis-line" }));
+
+      const labelEvery = Math.ceil(winTs.length / 9);
+      winTs.forEach((ts, i) => {
+        if (i % labelEvery !== 0 && i !== winTs.length - 1) return;
+        let commit = "";
+        for (const id of ids) { const p = (DATA.series[id] || []).find(q => q.ts === ts); if (p) { commit = p.commit; break; } }
+        const tx = X(ts);
+        const t = el("text", { x: tx, y: H - m.b + 18, "text-anchor": "end", class: "axis-text", transform: `rotate(-32 ${tx} ${H - m.b + 18})` });
+        t.textContent = shortCommit(commit);
+        svg.appendChild(t);
+      });
+
+      for (const id of active) {
+        const spec = DATA.series_defs[id];
+        const pts = (DATA.series[id] || []).filter(p => allow.has(p.ts));
+        if (!pts.length) continue;
+        svg.appendChild(el("path", { class: "series-line", stroke: spec.color, d: pts.map((p, i) => `${i ? "L" : "M"} ${X(p.ts).toFixed(1)} ${Y(p.value).toFixed(1)}`).join(" ") }));
+        for (const p of pts) {
+          const over = p.value > yMax;
+          if (over) {
+            const tx = X(p.ts), ty = m.t + 1;
+            svg.appendChild(el("polygon", { points: `${tx},${ty} ${tx - 5},${ty + 8} ${tx + 5},${ty + 8}`, fill: spec.color }));
+          } else {
+            svg.appendChild(el("circle", { cx: X(p.ts), cy: Y(p.value), r: 3, fill: spec.color }));
+          }
+          const hit = el("circle", { cx: X(p.ts), cy: over ? m.t + 5 : Y(p.value), r: 10, fill: "transparent" });
+          const html = `<div class="tv">${p.value.toFixed(2)}× <span class="tm">${spec.label}</span></div><div class="tm">${shortCommit(p.commit)} · ${p.subject || ""}</div>`;
+          hit.addEventListener("mouseenter", e => showTip(e, html));
+          hit.addEventListener("mousemove", moveTip);
+          hit.addEventListener("mouseleave", hideTip);
+          svg.appendChild(hit);
+        }
+      }
+    }
+
+    function buildLegend(legendId, ids, redraw) {
+      const wrap = document.getElementById(legendId);
+      wrap.innerHTML = "";
+      for (const id of ids) {
+        const spec = DATA.series_defs[id];
+        const lg = document.createElement("span");
+        lg.className = "lg" + (muted.has(id) ? " muted" : "");
+        lg.innerHTML = `<span class="sw" style="background:${spec.color}"></span>${spec.label}`;
+        lg.addEventListener("click", () => {
+          if (muted.has(id)) muted.delete(id); else muted.add(id);
+          redraw();
+        });
+        wrap.appendChild(lg);
+      }
+    }
+
+    function renderPills(containerId, presets, activeIdx, onPick) {
+      const c = document.getElementById(containerId);
+      c.innerHTML = "";
+      presets.forEach((p, i) => {
+        const b = document.createElement("button");
+        b.textContent = p.label;
+        if (i === activeIdx) b.classList.add("active");
+        b.addEventListener("click", () => onPick(i));
+        c.appendChild(b);
+      });
+    }
+
+    function redrawWall() {
+      const st = chartState.wall;
+      drawChart("wall-chart", DATA.wall_ids, YMAX_PRESETS[st.yi].value, WINDOW_PRESETS[st.wi].value);
+      buildLegend("wall-legend", DATA.wall_ids, redrawWall);
+      renderPills("wall-ymax", YMAX_PRESETS, st.yi, i => { st.yi = i; redrawWall(); });
+      renderPills("wall-window", WINDOW_PRESETS, st.wi, i => { st.wi = i; redrawWall(); });
+    }
+
+    function redrawRss() {
+      const st = chartState.rss;
+      drawChart("rss-chart", DATA.rss_ids, YMAX_PRESETS[st.yi].value, WINDOW_PRESETS[st.wi].value);
+      buildLegend("rss-legend", DATA.rss_ids, redrawRss);
+      renderPills("rss-ymax", YMAX_PRESETS, st.yi, i => { st.yi = i; redrawRss(); });
+      renderPills("rss-window", WINDOW_PRESETS, st.wi, i => { st.wi = i; redrawRss(); });
+    }
+
+    function renderCharts() {
+      redrawWall();
+      redrawRss();
+    }
+
+    function renderBars(rows) {
+      const SCALE = 2.5;
+      const barsEl = document.getElementById("bars");
+      barsEl.innerHTML = "";
+      for (const [name, r] of rows) {
+        const cls = r < 1.0 ? "win" : (r >= 1.9 ? "slow" : "");
+        const w = Math.min(100, (r / SCALE) * 100);
+        const div = document.createElement("div");
+        div.className = "bar-row";
+        div.innerHTML =
+          `<div class="bl">${name}</div>` +
+          `<div class="bar-track"><div class="par" style="left:${(1.0 / SCALE) * 100}%"></div>` +
+          `<div class="bar-fill ${cls}" style="width:${w}%"></div></div>` +
+          `<div class="bv ${cls}">${r.toFixed(2)}×</div>`;
+        barsEl.appendChild(div);
+      }
+    }
+
+    function latestSnapshot() {
+      return DATA.wall_ids
+        .map(id => { const s = DATA.series[id]; return s && s.length ? [wlOf(id), s[s.length - 1].value] : null; })
+        .filter(Boolean)
+        .sort((a, b) => a[1] - b[1]);
+    }
+
+    function fallback(msg) {
+      for (const cid of ["wall-chart", "rss-chart"]) {
+        const svg = document.getElementById(cid);
+        svg.outerHTML = `<div class="chart-fallback">Live trajectory unavailable (${msg}). The standalone <a href="./harness/bench/history/">dashboard</a> has the full per-commit charts.</div>`;
+      }
+      document.getElementById("gen-stamp").textContent = "last verified run, 941aec5";
+      renderBars(FALLBACK);
+    }
+
+    async function boot() {
+      document.querySelectorAll('a[href^="http"]').forEach(a => { a.target = "_blank"; a.rel = "noopener"; });
+      try {
+        const resp = await fetch(SERIES_URL, { cache: "no-store" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        DATA = await resp.json();
+        renderCharts();
+        renderBars(latestSnapshot());
+        const wallSeries = DATA.series[DATA.wall_ids[0]];
+        document.getElementById("gen-stamp").textContent = wallSeries[wallSeries.length - 1].commit.slice(0, 7);
+      } catch (e) {
+        fallback(String(e && e.message ? e.message : e));
+      }
+    }
+
+    boot();
+    window.addEventListener("resize", () => { if (DATA) renderCharts(); });
+  </script>
+</body>
+</html>
