@@ -332,3 +332,36 @@ Re-verified through `specs/oracle/diff_one.sh`. **CONFIRMED** = reproduced this 
 | 61 | high | gc-collectgarbage | 5.4 | `local order = {}; local mt = {__gc = function(t) table.insert(order, t` | `4,3,2,1,5` → `5,4,3,2,1` | Finalizers must be called in reverse allocation order (last allocated = first finalized).  |
 | 62 | high | gc-collectgarbage | 5.5 | `local order = {}; local mt = {__gc = function(t) table.insert(order, t` | `1,3,2` → `3,2,1` | In Lua 5.5 (generational GC), finalizers must also be called in reverse allocation order w |
 | 63 | medium | gc-collectgarbage | 5.2,5.3 | `local mt = {__gc = function(t) error("gc error") end}; local obj = set` | `PROG: error in __gc metamethod ((command` → `PROG: error in __gc metamethod ((command` | In Lua 5.2 and 5.3, when a __gc finalizer raises an error, the runtime prints just the err |
+---
+
+## Results — autonomous fix campaign (2026-06-21)
+
+Four file-disjoint worktree agents (string / stdlib / frontend / vm) fixed the
+Tier 1–3 + safe Tier-4 queue, each oracle-gated, merged into
+`fix/multiversion-compat`. **~31 distinct bugs fixed, all confirmed MATCH vs the
+reference; zero 5.4/5.5 suite regression.**
+
+| Version | our-bug files before → after | file pass-rate before → after |
+|---|---|---|
+| 5.1 | 12 → 10 | 8/20 (40%) → 11/21 (52%) |
+| 5.2 | 11 → 7  | 13/24 (54%) → 17/24 (71%) |
+| 5.3 | 7 → 6   | 20/27 (74%) → 21/27 (78%) |
+| 5.4 | 0 → 0   | 100% (no regression) |
+| 5.5 | 0 → 0   | 100% (no regression) |
+
+**Baseline hardening:** four latent bugs that also affected the shipped 5.4/5.5
+are now fixed without regressing either suite — `gsub` numeric replacement,
+`%g`/`%e` negative-zero sign, `stack overflow` location prefix, and `__tostring`
+accepting a number return.
+
+**Why whole-file pass-rates moved less than per-bug count:** official test files
+abort on their *first* divergence and carry deep failure chains; a file flips to
+PASS only when every bug in it is drained. Many remaining file-failures are gated
+behind the **deferred architectural items** (task: supervised follow-up):
+- `calls.lua` needs bytecode dump headers (5.1/5.2/5.3) **+** `load` reader
+  streaming **+** the 5.2 `_ENV`-injection `nupvalues==1` rule;
+- `errors.lua`/`gc.lua`/`goto.lua` need the funcname-per-version resolver (F1),
+  goto-to-enclosing-label upvalue closing, and the gsub chain's later links.
+- Residual cosmetic dep flagged by 3 agents: 5.1 pcall arg-errors should name a
+  C function `'?'` (5.1 recorded no C names); gate `find_func_name_in_loaded` off
+  for V51 in `crates/lua-vm/src/debug.rs::arg_error_impl`.
