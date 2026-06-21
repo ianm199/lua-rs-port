@@ -1326,6 +1326,17 @@ fn format_var_info(kind: Option<&[u8]>, name: Option<&[u8]>) -> Vec<u8> {
 /// frame, e.g. `" (local 'x')"` or `" (upvalue 'y')"`. Used in error messages.
 ///
 fn var_info(state: &LuaState, val_idx: StackIdx) -> Vec<u8> {
+    let (kind, name) = var_info_parts(state, val_idx);
+    format_var_info(kind.as_deref(), name.as_deref())
+}
+
+/// Resolves the `(kind, name)` description for the value at `val_idx` in the
+/// current call frame (e.g. `(b"local", b"x")`), returning owned bytes so the
+/// caller can choose the message ordering. Returns `(None, None)` when no
+/// information is available. Splits the lookup out of `var_info` so the
+/// type-error constructors can build the 5.1/5.2 `<kind> '<name>' (a <type>
+/// value)` ordering as well as the 5.3+ `a <type> value (<kind> '<name>')` one.
+fn var_info_parts(state: &LuaState, val_idx: StackIdx) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     let ci_idx = state.current_ci_idx();
     let ci = state.get_ci(ci_idx).clone();
     let mut kind: Option<&[u8]> = None;
@@ -1350,29 +1361,51 @@ fn var_info(state: &LuaState, val_idx: StackIdx) -> Vec<u8> {
             }
         }
     }
-    format_var_info(
-        kind,
-        if kind.is_some() {
-            Some(&name_owned)
-        } else {
-            None
-        },
-    )
+    match kind {
+        Some(k) => (Some(k.to_vec()), Some(name_owned)),
+        None => (None, None),
+    }
 }
 
 // ─── Error-raising functions ──────────────────────────────────────────────────
 
-/// Internal helper: raises a type error with the given `extra` info string.
+/// Internal helper: raises a type error attributing the failure to the value
+/// `val` (operation `op`) with optional `(kind, name)` variable info.
 ///
-fn typeerror_inner(state: &LuaState, val: &LuaValue, op: &[u8], extra: &[u8]) -> LuaError {
+/// The attribution ordering is version-gated, mirroring `luaG_typeerror`:
+/// 5.1/5.2 put the variable clause first — `attempt to <op> <kind> '<name>'
+/// (a <type> value)` — while 5.3+ trail it — `attempt to <op> a <type> value
+/// (<kind> '<name>')`. With no variable info both collapse to `attempt to <op>
+/// a <type> value`.
+fn typeerror_inner_parts(
+    state: &LuaState,
+    val: &LuaValue,
+    op: &[u8],
+    kind: Option<&[u8]>,
+    name: Option<&[u8]>,
+) -> LuaError {
     let t = state.obj_type_name(val);
+    let legacy_order = matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+    );
     let mut msg = Vec::new();
     msg.extend_from_slice(b"attempt to ");
     msg.extend_from_slice(op);
-    msg.extend_from_slice(b" a ");
-    msg.extend_from_slice(&t);
-    msg.extend_from_slice(b" value");
-    msg.extend_from_slice(extra);
+    if let (true, Some(k), Some(n)) = (legacy_order, kind, name) {
+        msg.extend_from_slice(b" ");
+        msg.extend_from_slice(k);
+        msg.extend_from_slice(b" '");
+        msg.extend_from_slice(n);
+        msg.extend_from_slice(b"' (a ");
+        msg.extend_from_slice(&t);
+        msg.extend_from_slice(b" value)");
+    } else {
+        msg.extend_from_slice(b" a ");
+        msg.extend_from_slice(&t);
+        msg.extend_from_slice(b" value");
+        msg.extend_from_slice(&format_var_info(kind, name));
+    }
     prefixed_runtime(state, msg)
 }
 
@@ -1385,8 +1418,45 @@ pub(crate) fn type_error(
     val_idx: StackIdx,
     op: &[u8],
 ) -> LuaError {
-    let extra = var_info(state, val_idx);
-    typeerror_inner(state, val, op, &extra)
+    let (kind, name) = var_info_parts(state, val_idx);
+    typeerror_inner_parts(state, val, op, kind.as_deref(), name.as_deref())
+}
+
+/// Raises an arithmetic-coercion type error (the `<=5.3` core path that owns
+/// string coercion via `luaG_opinterror`/`luaG_aritherror`). Identical to
+/// `type_error` except for when a `constant` operand is reported:
+///
+/// - **5.1** never attributes a `constant` for arithmetic — its `getobjname`
+///   has no `OP_LOADK` case, so `-"abc"` and `"abc"+1` both give a bare
+///   `... a string value`.
+/// - **5.2/5.3** attribute a `constant` only for unary minus (the operand is a
+///   live register the bytecode can trace back); a binary operand passed to
+///   `luaG_typeerror` from `luaO_arith` points into the constant table, so
+///   `varinfo` reports nothing.
+///
+/// The `constant` kind was wired into 5.4 arithmetic wording differently and
+/// 5.4/5.5 never reach this path.
+pub(crate) fn arith_type_error(
+    state: &LuaState,
+    val: &LuaValue,
+    val_idx: StackIdx,
+    op: &[u8],
+    binary: bool,
+) -> LuaError {
+    let (kind, name) = var_info_parts(state, val_idx);
+    let is_constant = matches!(kind.as_deref(), Some(b"constant"));
+    let suppress_constant = is_constant
+        && match state.global().lua_version {
+            lua_types::LuaVersion::V51 => true,
+            lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53 => binary,
+            _ => false,
+        };
+    let (kind, name) = if suppress_constant {
+        (None, None)
+    } else {
+        (kind, name)
+    };
+    typeerror_inner_parts(state, val, op, kind.as_deref(), name.as_deref())
 }
 
 /// Variant of `type_error` for bytecode paths where the target isn't on the
@@ -1401,15 +1471,28 @@ pub(crate) fn type_error_with_hint(
     kind: &[u8],
     name: &[u8],
 ) -> LuaError {
-    let extra = format_var_info(Some(kind), Some(name));
     let t = obj_type_name_static(val);
+    let legacy_order = matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+    );
     let mut msg = Vec::new();
     msg.extend_from_slice(b"attempt to ");
     msg.extend_from_slice(op);
-    msg.extend_from_slice(b" a ");
-    msg.extend_from_slice(t);
-    msg.extend_from_slice(b" value");
-    msg.extend_from_slice(&extra);
+    if legacy_order {
+        msg.extend_from_slice(b" ");
+        msg.extend_from_slice(kind);
+        msg.extend_from_slice(b" '");
+        msg.extend_from_slice(name);
+        msg.extend_from_slice(b"' (a ");
+        msg.extend_from_slice(t);
+        msg.extend_from_slice(b" value)");
+    } else {
+        msg.extend_from_slice(b" a ");
+        msg.extend_from_slice(t);
+        msg.extend_from_slice(b" value");
+        msg.extend_from_slice(&format_var_info(Some(kind), Some(name)));
+    }
     prefixed_runtime(state, msg)
 }
 
@@ -1437,12 +1520,12 @@ pub(crate) fn call_error(state: &LuaState, val: &LuaValue, val_idx: StackIdx) ->
     let ci = state.get_ci(ci_idx).clone();
     let mut name: Option<Vec<u8>> = None;
     let kind = funcname_from_call(state, &ci, &mut name);
-    let extra = if kind.is_some() {
-        format_var_info(kind, name.as_deref())
+    let (kind, name) = if kind.is_some() {
+        (kind.map(|k| k.to_vec()), name)
     } else {
-        var_info(state, val_idx)
+        var_info_parts(state, val_idx)
     };
-    typeerror_inner(state, val, b"call", &extra)
+    typeerror_inner_parts(state, val, b"call", kind.as_deref(), name.as_deref())
 }
 
 /// Raises a "bad 'for' <what>" error.

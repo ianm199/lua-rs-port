@@ -503,7 +503,17 @@ pub(crate) fn try_bin_tm(
     // t's metamethod via `call_bin_tm`, and the coercible success path
     // (`"3" + 2`) still flows through the string metamethod below, preserving
     // 5.3 float-promotion semantics. See specs/followup/5.3-coerce-err.md.
-    if matches!(state.global().lua_version, lua_types::LuaVersion::V53)
+    //
+    // 5.1/5.2 own arithmetic string coercion in the core the same way: a
+    // non-coercible string operand raises `attempt to perform arithmetic on a
+    // <type> value` (`luaG_aritherror` → `luaG_typeerror`, no metamethod-name
+    // attribution and no spurious `[C]: in metamethod` frame). They share this
+    // intercept; the per-version message ordering is applied downstream in
+    // `debug::type_error`.
+    if matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
+    )
         && matches!(
             event,
             TagMethod::Add
@@ -548,11 +558,12 @@ pub(crate) fn try_bin_tm(
                 } else {
                     (p2, p2_idx.unwrap_or(StackIdx(0)))
                 };
-                return Err(crate::debug::type_error(
+                return Err(crate::debug::arith_type_error(
                     state,
                     bad,
                     bad_idx,
                     b"perform arithmetic on",
+                    !unary,
                 ));
             }
         }

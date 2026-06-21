@@ -893,6 +893,20 @@ pub(crate) fn forprep_legacy(state: &mut LuaState, ra: StackIdx) -> Result<(), L
     let plimit = state.get_at(ra + 1);
     let pstep = state.get_at(ra + 2);
 
+    // 5.1/5.2 `OP_FORPREP` coerce in source order init → limit → step, so the
+    // *initial value* is the first reported when several operands are
+    // non-numeric (`for i='a','b'` blames the initial value, not the limit).
+    // 5.3 reordered the checks to limit → step → init (it clamps the limit
+    // first via `forlimit`), which the shared path below already mirrors.
+    if matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+    ) && !matches!(init, LuaValue::Int(_))
+        && tonumber(&init).is_none()
+    {
+        return Err(crate::debug::for_error(state, &init, b"initial value"));
+    }
+
     if let (LuaValue::Int(initv), LuaValue::Int(stepv)) = (&init, &pstep) {
         let (initv, stepv) = (*initv, *stepv);
         if let Some((ilimit, stopnow)) = forlimit_legacy(&plimit, stepv) {
