@@ -89,6 +89,26 @@ fn push_mode(state: &mut LuaState, oldmode: i32) -> Result<usize, LuaError> {
     Ok(1)
 }
 
+/// Push the result of `collectgarbage("generational"|"incremental")`.
+///
+/// 5.4/5.5 return the previous mode as a STRING name (`"incremental"` /
+/// `"generational"`) via [`push_mode`]. 5.2 — the only pre-5.4 family that
+/// accepts these options — instead returns the previous mode as the INTEGER 0
+/// (`lua_pushinteger(L, lua_gc(...))` in lua5.2.4's `lbaselib.c`, where the GC
+/// mode is the integer constant `0`). The version that owns the running state
+/// selects the form.
+fn push_gc_mode(
+    state: &mut LuaState,
+    version: lua_types::LuaVersion,
+    oldmode: i32,
+) -> Result<usize, LuaError> {
+    if matches!(version, lua_types::LuaVersion::V52) {
+        state.push(LuaValue::Int(0));
+        return Ok(1);
+    }
+    push_mode(state, oldmode)
+}
+
 // ── Helper: finish_pcall ──────────────────────────────────────────────────────
 
 /// Shared result-adjustment logic for `pcall` and `xpcall`.
@@ -341,7 +361,18 @@ pub(crate) fn tonumber_fn(state: &mut LuaState) -> Result<usize, LuaError> {
 pub(crate) fn error_fn(state: &mut LuaState) -> Result<usize, LuaError> {
     let level = state.opt_arg_integer(2, 1)? as i32;
     lua_vm::api::set_top(state, 1)?;
-    if state.type_at(1) == LuaType::String && level > 0 {
+    let ty = state.type_at(1);
+    // 5.1/5.2 prepend the `luaL_where` location to a string OR a number error
+    // value (their guard is `lua_isstring`, which is true for numbers since
+    // numbers coerce to strings); `lua_concat` then stringifies the number. 5.3
+    // tightened this to strict strings only (`ttisstring`), so a number error is
+    // re-raised unchanged. 5.4 is the unchangeable baseline; the number branch is
+    // gated to the legacy family.
+    let legacy_number_prefix = matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+    ) && ty == LuaType::Number;
+    if (ty == LuaType::String || legacy_number_prefix) && level > 0 {
         state.push_where(level)?;
         state.push_copy(1)?;
         state.concat(2)?;
@@ -496,6 +527,57 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
         GcOp::SetPause,
         GcOp::SetStepMul,
     ];
+    // 5.2 accepts `generational`/`incremental` (both return the PREVIOUS GC mode
+    // as the integer 0 — there is no string mode name pre-5.4) and `isrunning`,
+    // but NOT 5.3's narrower roster. 5.3 removed `generational`/`incremental`
+    // entirely (they raise `invalid option`), keeping only the incremental knobs.
+    // Verified by probing lua5.2.4 / lua5.3.6 (`specs/followup` GC roster). The
+    // 5.2-only `setmajorinc` is a generational-GC param this reused incremental
+    // core does not carry, so it is left out of scope here.
+    static OPTS_52: &[&[u8]] = &[
+        b"stop",
+        b"restart",
+        b"collect",
+        b"count",
+        b"step",
+        b"setpause",
+        b"setstepmul",
+        b"isrunning",
+        b"generational",
+        b"incremental",
+    ];
+    static OPTS_NUM_52: &[GcOp] = &[
+        GcOp::Stop,
+        GcOp::Restart,
+        GcOp::Collect,
+        GcOp::Count,
+        GcOp::Step,
+        GcOp::SetPause,
+        GcOp::SetStepMul,
+        GcOp::IsRunning,
+        GcOp::Gen,
+        GcOp::Inc,
+    ];
+    static OPTS_53: &[&[u8]] = &[
+        b"stop",
+        b"restart",
+        b"collect",
+        b"count",
+        b"step",
+        b"setpause",
+        b"setstepmul",
+        b"isrunning",
+    ];
+    static OPTS_NUM_53: &[GcOp] = &[
+        GcOp::Stop,
+        GcOp::Restart,
+        GcOp::Collect,
+        GcOp::Count,
+        GcOp::Step,
+        GcOp::SetPause,
+        GcOp::SetStepMul,
+        GcOp::IsRunning,
+    ];
     static OPTS_54: &[&[u8]] = &[
         b"stop",
         b"restart",
@@ -546,6 +628,10 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
         (OPTS_55, OPTS_NUM_55)
     } else if matches!(version, lua_types::LuaVersion::V51) {
         (OPTS_51, OPTS_NUM_51)
+    } else if matches!(version, lua_types::LuaVersion::V52) {
+        (OPTS_52, OPTS_NUM_52)
+    } else if matches!(version, lua_types::LuaVersion::V53) {
+        (OPTS_53, OPTS_NUM_53)
     } else {
         (OPTS_54, OPTS_NUM_54)
     };
@@ -562,6 +648,15 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
                 false
             } else {
                 state.push(LuaValue::Float(k as f64 + b as f64 / 1024.0));
+                // 5.2 returns a SECOND result, the byte remainder `b` (0..1024)
+                // — `lua_pushinteger(L, lua_gc(L, LUA_GCCOUNTB, 0))`. 5.3 dropped
+                // it (`collectgarbage("count")` is one value there on), so the
+                // second result is gated to V52. Verified against lua5.2.4 /
+                // lua5.3.6.
+                if matches!(version, lua_types::LuaVersion::V52) {
+                    state.push(LuaValue::Int(b as i64));
+                    return Ok(2);
+                }
                 return Ok(1);
             }
         }
@@ -594,14 +689,14 @@ pub(crate) fn collectgarbage_fn(state: &mut LuaState) -> Result<usize, LuaError>
             let minormul = state.opt_arg_integer(2, 0)? as i32;
             let majormul = state.opt_arg_integer(3, 0)? as i32;
             let oldmode = state.gc_gen(minormul, majormul)?;
-            return push_mode(state, oldmode);
+            return push_gc_mode(state, version, oldmode);
         }
         GcOp::Inc => {
             let pause = state.opt_arg_integer(2, 0)? as i32;
             let stepmul = state.opt_arg_integer(3, 0)? as i32;
             let stepsize = state.opt_arg_integer(4, 0)? as i32;
             let oldmode = state.gc_inc(pause, stepmul, stepsize)?;
-            return push_mode(state, oldmode);
+            return push_gc_mode(state, version, oldmode);
         }
         GcOp::Param => {
             // 5.5 collectgarbage("param", name [, value]): read or write a GC
@@ -856,6 +951,66 @@ pub(crate) fn set_func_env_at_level(
         }
     }
     Ok(())
+}
+
+/// `debug.getfenv(o)` — Lua 5.1 only.
+///
+/// Returns the environment of object `o` *directly* (`db_getfenv` =
+/// `luaL_checkany; lua_getfenv`). Unlike the global `getfenv`, the argument is
+/// the object itself, never a stack level: `debug.getfenv(1)` returns `nil`
+/// because the number 1 has no environment. A function returns its `_ENV`
+/// environment; a value with no environment returns `nil`. Absent argument
+/// raises `value expected`.
+///
+/// Gap: 5.1 userdata/thread environments live in fields this reused modern core
+/// does not expose, so those return `nil` here rather than their stored table.
+/// The common function/non-function cases match lua5.1.5.
+pub(crate) fn debug_getfenv_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    if state.type_at(1) == LuaType::None {
+        return Err(lua_vm::debug::arg_error_impl(state, 1, b"value expected"));
+    }
+    let obj = state.value_at(1);
+    if matches!(obj, LuaValue::Function(_)) {
+        let env = fenv_read(state, &obj);
+        state.push(env);
+    } else {
+        state.push(LuaValue::Nil);
+    }
+    Ok(1)
+}
+
+/// `debug.setfenv(o, t)` — Lua 5.1 only.
+///
+/// Sets object `o`'s environment to table `t` and returns `o` (`db_setfenv` =
+/// `luaL_checktype(2, TABLE); lua_setfenv`). For a Lua closure this installs a
+/// fresh closed `_ENV` upvalue cell (the same private-environment isolation
+/// `setfenv` uses). An object whose environment cannot be set raises
+/// `'setfenv' cannot change environment of given object`.
+pub(crate) fn debug_setfenv_fn(state: &mut LuaState) -> Result<usize, LuaError> {
+    state.check_arg_type(2, LuaType::Table)?;
+    let new_env = state.value_at(2);
+    let obj = state.value_at(1);
+    match &obj {
+        LuaValue::Function(LuaClosure::Lua(lcl)) => {
+            if let Some(idx) = fenv_env_upval_index(lcl) {
+                let uv = state.new_upval_closed(new_env);
+                lcl.set_upval(idx, uv);
+                state.gc().obj_barrier(lcl, &uv);
+            }
+        }
+        LuaValue::Function(_) => {
+            return Err(
+                state.where_error(1, b"'setfenv' cannot change environment of given object")
+            );
+        }
+        _ => {
+            return Err(
+                state.where_error(1, b"'setfenv' cannot change environment of given object")
+            );
+        }
+    }
+    state.push(obj);
+    Ok(1)
 }
 
 // ── next ──────────────────────────────────────────────────────────────────────
@@ -1445,7 +1600,16 @@ pub fn open(state: &mut LuaState) -> Result<usize, LuaError> {
 //   load-bearing:  pcall/xpcall/error unwinding, load/compile, next/pairs/ipairs
 //                  iteration, collectgarbage, type/tostring/raw* fast paths, and
 //                  every per-version roster/behavior gate — idiomatize AROUND.
+//   version-gated: error() prefixes luaL_where onto a NUMBER value on 5.1/5.2
+//                  (lua_isstring true for numbers) but only strict strings on
+//                  5.3+. collectgarbage "count" returns a 2nd byte-remainder
+//                  result on 5.2 only; "generational"/"incremental" are valid on
+//                  5.2 (return integer 0) / 5.4+ (return the string mode) but
+//                  invalid on 5.3 (per-version OPTS_5x sets). debug_getfenv_fn/
+//                  debug_setfenv_fn are the 5.1 object-form fenv accessors used
+//                  by debug_lib (distinct from the level-aware getfenv/setfenv).
 //   deferred:      __name pre-5.3 gating + 5.1/5.2 arg-error fn-name ('?'/'_G.')
 //                  live in lua-vm (obj_type_name_cow / arg_error_impl); see the
-//                  module header. Not base-fixable.
+//                  module header. Not base-fixable. 5.2 collectgarbage
+//                  "setmajorinc" (a generational-GC param) is also out of scope.
 // ──────────────────────────────────────────────────────────────────────────────
