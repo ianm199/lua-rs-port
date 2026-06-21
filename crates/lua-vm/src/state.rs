@@ -3664,14 +3664,25 @@ impl LuaState {
             _ => Err(LuaError::type_error(&val, "convert to string")),
         }
     }
+    /// Parses `s` as a Lua number, returning `(value, consumed)` on success.
+    ///
+    /// `object::str2num` is number-model-blind and yields an integer whenever
+    /// the text parses as one. The float-only versions (5.1/5.2) have no integer
+    /// subtype, so a string coercion there is normalised to a float: otherwise
+    /// `tonumber("10")` would carry an integer payload that diverges from the
+    /// reference on any path that inspects the subtype.
     pub fn str_to_num(&mut self, s: &[u8]) -> Option<(LuaValue, usize)> {
         let mut out = LuaValue::Nil;
         let sz = crate::object::str2num(s, &mut out);
         if sz == 0 {
-            None
-        } else {
-            Some((out, sz))
+            return None;
         }
+        if self.global().lua_version.number_model() == lua_types::NumberModel::FloatOnly {
+            if let LuaValue::Int(i) = out {
+                out = LuaValue::Float(i as f64);
+            }
+        }
+        Some((out, sz))
     }
 
     #[inline(always)]

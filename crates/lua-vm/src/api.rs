@@ -447,9 +447,23 @@ impl LuaState {
                 if let LuaValue::Str(s) = result {
                     return Ok(s.as_bytes().to_vec());
                 }
-                return Err(LuaError::runtime(format_args!(
-                    "'__tostring' must return a string"
-                )));
+                let legacy_no_check = matches!(
+                    self.global().lua_version,
+                    lua_types::LuaVersion::V51 | lua_types::LuaVersion::V52
+                );
+                if matches!(result, LuaValue::Int(_) | LuaValue::Float(_)) {
+                    return Ok(crate::object::num_to_string(self, &result)?
+                        .as_bytes()
+                        .to_vec());
+                }
+                if legacy_no_check {
+                    let display_idx = StackIdx(top.0 - 1).0 as i32;
+                    return display_default_bytes(self, &result, display_idx);
+                }
+                return Err(crate::debug::c_api_runtime(
+                    self,
+                    b"'__tostring' must return a string".to_vec(),
+                ));
             }
         }
         let bytes: Vec<u8> = match &v {
@@ -858,6 +872,51 @@ impl LuaState {
         self.gc_pre_collect_clear();
         self.gc().check_step();
         Ok(u)
+    }
+}
+
+/// Opaque identity pointer for a `LuaValue`, mirroring `to_pointer` but keyed on
+/// the value rather than a stack index. Returns `None` for value-typed values
+/// that have no identity (nil, bool, numbers).
+fn value_pointer(o: &LuaValue) -> Option<usize> {
+    match o {
+        LuaValue::Function(LuaClosure::LightC(f)) => Some(*f as usize),
+        LuaValue::LightUserData(p) => Some(*p as usize),
+        LuaValue::Str(s) => Some(GcRef::identity(s)),
+        LuaValue::Table(t) => Some(GcRef::identity(t)),
+        LuaValue::Function(LuaClosure::Lua(f)) => Some(GcRef::identity(f)),
+        LuaValue::Function(LuaClosure::C(f)) => Some(GcRef::identity(f)),
+        LuaValue::UserData(u) => Some(GcRef::identity(u)),
+        LuaValue::Thread(t) => Some(GcRef::identity(t)),
+        _ => None,
+    }
+}
+
+/// Formats `val` to its default `tostring` bytes without consulting any
+/// metamethod (`"true"`/`"false"`/`"nil"`, numbers, or `"<type>: 0x<addr>"`).
+/// Used for the Lua 5.1/5.2 `tostring` path, where `__tostring` may return any
+/// type and the raw return value is used as-is. `_idx` identifies the slot the
+/// value already occupies; callers must not push a new copy.
+fn display_default_bytes(
+    state: &mut LuaState,
+    val: &LuaValue,
+    _idx: i32,
+) -> Result<Vec<u8>, LuaError> {
+    match val {
+        LuaValue::Str(s) => Ok(s.as_bytes().to_vec()),
+        LuaValue::Int(_) | LuaValue::Float(_) => {
+            Ok(crate::object::num_to_string(state, val)?.as_bytes().to_vec())
+        }
+        LuaValue::Bool(b) => Ok(if *b { b"true".to_vec() } else { b"false".to_vec() }),
+        LuaValue::Nil => Ok(b"nil".to_vec()),
+        _ => {
+            let kind = crate::tagmethods::obj_type_name(state, val)?;
+            let ptr = value_pointer(val).unwrap_or(0);
+            let mut buf = kind;
+            buf.extend_from_slice(b": 0x");
+            buf.extend_from_slice(format!("{:x}", ptr).as_bytes());
+            Ok(buf)
+        }
     }
 }
 
