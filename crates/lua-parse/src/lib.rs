@@ -74,6 +74,11 @@ const LUA_MULTRET: i32 = -1;
 
 const MAX_UPVAL: u8 = 255;
 
+/// Lua 5.1's per-function upvalue ceiling (`LUAI_MAXUPVALUES` in 5.1's
+/// `luaconf.h`). Later versions raised this to [`MAX_UPVAL`] = 255; 5.1 caps it
+/// at 60. Enforced only on the [`lua_types::LuaVersion::V51`] path.
+const MAX_UPVAL_V51: i32 = 60;
+
 /// Largest value the 18-bit `Bx` instruction field can hold; the ceiling on a
 /// constant-table index reachable without an `EXTRAARG` prefix.
 const MAXARG_BX: i32 = (1 << 17) - 1;
@@ -2800,6 +2805,27 @@ fn check_limit(fs: &FuncState, v: i32, l: i32, what: &str) -> Result<(), LuaErro
     Ok(())
 }
 
+/// Constructs Lua 5.1's `errorlimit` message, which predates the modern
+/// `"too many %s (limit is %d) ..."` wording produced by [`error_limit`].
+///
+/// Lua 5.1's `lparser.c errorlimit` emits `"function at line %d has more than
+/// %d %s"` (or `"main function has more than %d %s"` when `linedefined == 0`),
+/// reporting the *limit* rather than the attempted count. The limit value also
+/// differs from later versions for upvalues: 5.1 caps a function at
+/// `LUAI_MAXUPVALUES = 60`, whereas 5.2+ allow `MAXUPVAL = 255`. Used only on
+/// the [`lua_types::LuaVersion::V51`] path so 5.2–5.5 stay byte-identical.
+fn error_limit_v51(fs: &FuncState, limit: i32, what: &str) -> LuaError {
+    let line = fs.f.linedefined;
+    if line == 0 {
+        LuaError::syntax(format_args!("main function has more than {} {}", limit, what))
+    } else {
+        LuaError::syntax(format_args!(
+            "function at line {} has more than {} {}",
+            line, limit, what
+        ))
+    }
+}
+
 // ── §2 Basic parse utilities ─────────────────────────────────────────────────
 
 /// If the current token matches `c`, consume it and return true.
@@ -3072,8 +3098,21 @@ fn search_upvalue(fs: &FuncState, name: &GcRef<LuaString>) -> i32 {
 }
 
 /// Grows upvalues array and returns index of the new slot.
-fn alloc_upvalue(fs: &mut FuncState) -> Result<usize, LuaError> {
-    if fs.nups as i32 + 1 > MAX_UPVAL as i32 {
+///
+/// `version` selects the upvalue ceiling and the limit-error wording: Lua 5.1
+/// caps a function at [`MAX_UPVAL_V51`] = 60 and reports it via
+/// [`error_limit_v51`] (`"function at line %d has more than 60 upvalues"`),
+/// while 5.2–5.5 keep [`MAX_UPVAL`] = 255 and the modern [`error_limit`]
+/// wording.
+fn alloc_upvalue(
+    fs: &mut FuncState,
+    version: lua_types::LuaVersion,
+) -> Result<usize, LuaError> {
+    if version == lua_types::LuaVersion::V51 {
+        if fs.nups as i32 + 1 > MAX_UPVAL_V51 {
+            return Err(error_limit_v51(fs, MAX_UPVAL_V51, "upvalues"));
+        }
+    } else if fs.nups as i32 + 1 > MAX_UPVAL as i32 {
         return Err(error_limit(fs, MAX_UPVAL as i32, "upvalues"));
     }
     let idx = fs.nups as usize;
@@ -3096,7 +3135,7 @@ fn new_upvalue(
     name: GcRef<LuaString>,
     v: &ExprDesc,
 ) -> Result<i32, LuaError> {
-    let idx = alloc_upvalue(fs)?;
+    let idx = alloc_upvalue(fs, ls.lex.version)?;
     let kind: u8 = if v.k == ExprKind::Local {
         let prev = fs
             .prev
@@ -6230,7 +6269,8 @@ fn mainfunc(
 
     let env_name = ls.envn.clone();
     {
-        let idx = alloc_upvalue(ls.fs.as_mut().unwrap())?;
+        let version = ls.lex.version;
+        let idx = alloc_upvalue(ls.fs.as_mut().unwrap(), version)?;
         let up = &mut ls.fs.as_mut().unwrap().f.upvalues[idx];
         up.instack = true;
         up.idx = 0;
