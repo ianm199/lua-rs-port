@@ -1570,6 +1570,98 @@ fn register_finalizable_object(state: &mut LuaState, object: FinalizerObject) {
     }
 }
 
+/// Lua 5.1 collect-time finalizability probe for one userdata.
+///
+/// Holds only a weak handle, so it never roots the userdata — the collector's
+/// roster can keep it indefinitely without preventing collection. `is_alive`
+/// reports whether the box has been swept (via the weak handle's allocation
+/// token), letting the collector prune dead probes safely. See
+/// [`lua_gc::Udata51Probe`] and C 5.1 `luaC_separateudata`.
+///
+/// `submitted` is C's permanent `FINALIZEDBIT`: once the scan hands a userdata
+/// to the finalizer machinery it is never re-submitted, so each userdata is
+/// finalized at most once. (The shared `is_finalized` header flag cannot serve
+/// this role — `pop_to_be_finalized` resets it so the object can be collected
+/// normally after its `__gc` runs, which would otherwise let the scan
+/// re-finalize it on every later collect.)
+struct Udata51RosterEntry {
+    weak: lua_types::gc::GcWeak<LuaUserData>,
+    submitted: std::cell::Cell<bool>,
+}
+
+impl lua_gc::Udata51Probe for Udata51RosterEntry {
+    fn is_alive(&self) -> bool {
+        self.weak.upgrade().is_some()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Record a userdata in the Lua 5.1 collect-time finalizability roster.
+///
+/// 5.1 decides finalizability at collect time by re-reading each userdata's
+/// live metatable, so a `__gc` installed on a shared metatable *after*
+/// `setmetatable` still takes effect (the `gc.lua` newproxy case). The eager
+/// `setmetatable`-time registration cannot see such late `__gc`, so on 5.1 we
+/// additionally roster every userdata that carries a metatable and re-scan
+/// them at each explicit collection. No-op on 5.2–5.5, which match C's eager
+/// `luaC_checkfinalizer` exactly.
+fn roster_v51_userdata(state: &LuaState, ud: &GcRef<LuaUserData>) {
+    if !matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        return;
+    }
+    let probe = std::rc::Rc::new(Udata51RosterEntry {
+        weak: ud.downgrade(),
+        submitted: std::cell::Cell::new(false),
+    });
+    state.global().heap.register_v51_udata(probe);
+}
+
+/// Lua 5.1 collect-time finalizability scan, run before an explicit collect.
+///
+/// Mirrors C 5.1 `luaC_separateudata`: walk every rostered userdata and, for
+/// each one whose live metatable now carries `__gc`, register it for
+/// finalization. `register_finalizable_object` is idempotent (it skips
+/// already-finalized objects), so a userdata registered eagerly at
+/// `setmetatable` or by an earlier scan is not double-registered. Reachability
+/// is decided later by the collector's post-mark hook: a still-reachable
+/// userdata stays pending and is finalized only once it actually dies.
+///
+/// No-op on 5.2–5.5.
+pub fn scan_v51_finalizable_userdata(state: &mut LuaState) {
+    if !matches!(state.global().lua_version, lua_types::LuaVersion::V51) {
+        return;
+    }
+    let probes = state.global().heap.scan_v51_finalizable();
+    if probes.is_empty() {
+        return;
+    }
+    let gc_name = state.global().tmname[crate::tagmethods::TagMethod::Gc as usize].clone();
+    for probe in &probes {
+        let entry = match probe.as_any().downcast_ref::<Udata51RosterEntry>() {
+            Some(entry) => entry,
+            None => continue,
+        };
+        if entry.submitted.get() {
+            continue;
+        }
+        let ud = match entry.weak.upgrade() {
+            Some(ud) => ud,
+            None => continue,
+        };
+        let has_gc = match ud.metatable() {
+            Some(mt) => !matches!(mt.get_short_str(&gc_name), LuaValue::Nil),
+            None => false,
+        };
+        if has_gc {
+            entry.submitted.set(true);
+            register_finalizable_object(state, FinalizerObject::UserData(ud));
+        }
+    }
+}
+
 /// Drain objects already promoted from `pending_finalizers` to
 /// `to_be_finalized` by the heap mark phase.
 pub fn run_pending_finalizers(state: &mut LuaState) {
@@ -1692,6 +1784,15 @@ fn run_pending_finalizers_limited(
 
         if let Some(errobj) = finalizer_error {
             match version {
+                lua_types::LuaVersion::V51 if propagate => {
+                    // C 5.1 `GCTM` invokes the finalizer with `luaD_call`
+                    // (unprotected), so a raised error propagates UNWRAPPED out
+                    // of `luaC_fullgc` / `lua_gc` to the enclosing pcall — no
+                    // `error in __gc metamethod (...)` decoration (that wrapping
+                    // arrived in 5.2). Re-throw the raw error object and abort
+                    // the drain, matching the C longjmp.
+                    return Err(LuaError::from_value(errobj));
+                }
                 lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53 if propagate => {
                     // C `GCTM`: wrap a string error object as
                     // `error in __gc metamethod (%s)` and re-throw. A
@@ -1839,6 +1940,11 @@ pub fn set_metatable(state: &mut LuaState, objindex: i32) -> Result<bool, LuaErr
                 if metatable_has_gc(state, mt_table) {
                     register_finalizable_object(state, FinalizerObject::UserData(ud.clone()));
                 }
+                // Lua 5.1 decides finalizability at collect time, so a `__gc`
+                // added to this (possibly shared) metatable later must still
+                // take effect. Roster the userdata for the collect-time scan;
+                // no-op on 5.2–5.5.
+                roster_v51_userdata(state, ud);
             }
             ud.set_metatable(mt);
         }
@@ -2116,6 +2222,10 @@ pub fn gc(state: &mut LuaState, args: GcArgs) -> i32 {
             if !state.allowhook {
                 return 0;
             }
+            // Lua 5.1 only: re-scan rostered userdata for a late-added `__gc`
+            // before the collect, mirroring C's collect-time
+            // `luaC_separateudata`. No-op on 5.2–5.5.
+            scan_v51_finalizable_userdata(state);
             // Under D-2, weak-table sweep happens INSIDE the heap's
             // post-mark hook (see GcHandle::full_collect), driven by
             // reachability rather than strong_count. The standalone weak
