@@ -583,10 +583,21 @@ pub fn token2str(ls: &LexState, token: i32) -> Vec<u8> {
 /// `<name>`, …) returned for `token >= TK_EOS` end up quoted. 5.2 leaves those
 /// bare and quotes only symbols/reserved/literals, so for 5.2+ the `>= TK_EOS`
 /// arm stays unquoted. (Issue #105.)
+///
+/// `version` also gates the rendering of a non-printable single byte. Lua 5.2's
+/// `luaX_token2str` formats such a byte as the bare label `char(%d)` (the
+/// surrounding `near '...'` quoting is suppressed for tokens whose text starts
+/// with `char(`), whereas 5.3+ render it as the quoted `'<\\%d>'`.
 fn token2str_raw(token: i32, version: lua_types::LuaVersion) -> Vec<u8> {
     if token < FIRST_RESERVED {
         if is_print(token) {
             vec![b'\'', token as u8, b'\'']
+        } else if version == lua_types::LuaVersion::V52 {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(b"char(");
+            let _ = write!(&mut v, "{}", token);
+            v.push(b')');
+            v
         } else {
             let mut v: Vec<u8> = Vec::new();
             v.extend_from_slice(b"'<\\");
