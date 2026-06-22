@@ -365,3 +365,15 @@ behind the **deferred architectural items** (task: supervised follow-up):
 - Residual cosmetic dep flagged by 3 agents: 5.1 pcall arg-errors should name a
   C function `'?'` (5.1 recorded no C names); gate `find_func_name_in_loaded` off
   for V51 in `crates/lua-vm/src/debug.rs::arg_error_impl`.
+
+### Autonomous loop progress (2026-06-22)
+
+Kit-first architectural waves, file-disjoint worktrees, oracle-gated, no 5.4/5.5 regression:
+- **dump headers + `_ENV` injection** (wave pre-loop): flipped `calls.lua` on 5.2 + 5.3.
+- **F1 funcname resolver + `error_wording_kit`**: fixed the baseline value-expected name-drop (5.3/4/5), 5.2 `_G.` prefix, 5.1 `?` C-fn naming.
+- **5.1 implicit `arg`** (parser V51-only) + **CLI `arg`-on-`-e` gating**: `arg` MATCHes all 5 versions.
+- **goto upvalue-closing** (block-scoped goto, 5.2/5.3): flipped `goto.lua` on **both 5.2 and 5.3** via a `CLOSE;JMP` trampoline in `movegotosout`.
+- **db.lua 5.1 trace_exec C-frame panic**: fixed (hook now saves/restores `ci`); db.lua advanced 5.1→184, 5.2→481 (not flipped; next links need lua-parse nups + auxlib traceback name).
+
+Running tally: 5.1 40%→52%, 5.2 54%→**79%**, 5.3 74%→**85%**, 5.4/5.5 100% (intact).
+Precise remaining diagnoses captured for: gc weak-value clear ordering (state.rs post-mark hook), 5.1 `_ENV`-upvalue→nups, 5.2 unqualified traceback name, 5.1 load reader streaming (cross-crate).
