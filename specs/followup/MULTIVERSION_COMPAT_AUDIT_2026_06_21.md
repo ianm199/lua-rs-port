@@ -377,3 +377,9 @@ Kit-first architectural waves, file-disjoint worktrees, oracle-gated, no 5.4/5.5
 
 Running tally: 5.1 40%→52%, 5.2 54%→**79%**, 5.3 74%→**85%**, 5.4/5.5 100% (intact).
 Precise remaining diagnoses captured for: gc weak-value clear ordering (state.rs post-mark hook), 5.1 `_ENV`-upvalue→nups, 5.2 unqualified traceback name, 5.1 load reader streaming (cross-crate).
+
+### Loop wave 3 (2026-06-22)
+- **gc weak-clear ordering** (state.rs): two-phase atomic (weak-value clear before finalizer resurrection) + 5.1 non-ephemeron weak-key. Advanced gc.lua on 5.1/5.2/5.3 (not flipped; next links = LuaProto::trace cache over-rooting in lua-types/trace_impls.rs + collect-time userdata-finalizer registration in api.rs).
+- **db/errors wording** (debug.rs+auxlib.rs): flipped **db.lua@5.2**; 4 version-gated wording fixes (5.2 unqualified traceback name, metamethod `__`-prefix per version, 5.1 nups excludes synthetic _ENV, 5.4+-only call-error attribution). db.lua@5.1 advanced 184→279. errors.lua chains blocked on lua-parse (5.1 empty-statement `;`, 5.2/5.3 CALL line attribution).
+
+Tally: 5.1 52%, 5.2 **83%**, 5.3 85%, 5.4/5.5 100%. Next: lua-parse (errors.lua on 3 versions) + finalizer (gc.lua trace_impls/api.rs).
