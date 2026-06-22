@@ -62,6 +62,28 @@ fn parse_stub(
 const LUAI_MAXSTACK: usize = 1_000_000;
 const ERRORSTACKSIZE: usize = LUAI_MAXSTACK + 200;
 
+/// Lua 5.1's `LUAI_MAXSTACK` (`luaconf.h`): the default 5.1 build caps the
+/// thread stack at 65500 slots, so deep recursion overflows after ~16k frames
+/// rather than the ~1M frames 5.2+ allow. The smaller cap is load-bearing for
+/// 5.1's `luaL_traceback`, whose `O(n^2)` middle-skip scan is only tractable
+/// over a bounded stack — at 1M frames it never returns (errors.lua@5.1's
+/// `xpcall(g, debug.traceback)` over a stack-overflow). The error-stack
+/// extension stays `ERRORSTACKSIZE` for every version so the message handler
+/// always has headroom above the cap.
+const LUAI_MAXSTACK_51: usize = 65500;
+
+/// Version-selected stack-growth ceiling (the threshold at which growing the
+/// stack raises `"stack overflow"`). 5.2+ keep the 1M cap; 5.1 uses its smaller
+/// faithful cap. The error-stack extension (`ERRORSTACKSIZE`) is unaffected.
+#[inline]
+fn max_stack(state: &LuaState) -> usize {
+    if state.global().lua_version == lua_types::LuaVersion::V51 {
+        LUAI_MAXSTACK_51
+    } else {
+        LUAI_MAXSTACK
+    }
+}
+
 const EXTRA_STACK: i32 = 5;
 
 const LUA_MINSTACK: i32 = 20;
@@ -90,6 +112,11 @@ const LUA_MASKRET: u8 = 1 << 1;
 const LUA_HOOKCALL: i32 = 0;
 const LUA_HOOKRET: i32 = 1;
 const LUA_HOOKTAILCALL: i32 = 4;
+/// Lua 5.1's `LUA_HOOKTAILRET`: a returning frame that absorbed tail calls
+/// fires one of these per lost level, after the ordinary `LUA_HOOKRET`. Shares
+/// event code 4 with 5.2+'s `LUA_HOOKTAILCALL`; the two are disambiguated by
+/// version when the hook name is resolved (`debug_lib::hookf`).
+const LUA_HOOKTAILRET: i32 = 4;
 
 // PORT NOTE: luaF_close takes StackIdx; this sentinel needs special handling.
 // TODO(port): settle representation with func.rs author.
@@ -266,24 +293,25 @@ pub(crate) fn grow_stack(
     raise_error: bool,
 ) -> Result<bool, LuaError> {
     let size = state.stack_size();
+    let cap = max_stack(state);
 
-    if size > LUAI_MAXSTACK {
+    if size > cap {
         // Thread already using the error-overflow extension; cannot grow further.
         debug_assert!(state.stack_size() == ERRORSTACKSIZE);
         if raise_error {
             return Err(LuaError::with_status(LuaStatus::ErrErr));
         }
         return Ok(false);
-    } else if (n as usize) < LUAI_MAXSTACK {
+    } else if (n as usize) < cap {
         let mut new_size = 2 * size;
         let needed = (state.top_idx().0 as i32 + n) as usize;
-        if new_size > LUAI_MAXSTACK {
-            new_size = LUAI_MAXSTACK;
+        if new_size > cap {
+            new_size = cap;
         }
         if new_size < needed {
             new_size = needed;
         }
-        if new_size <= LUAI_MAXSTACK {
+        if new_size <= cap {
             return realloc_stack(state, new_size, raise_error);
         }
     }
@@ -444,6 +472,26 @@ pub(crate) fn hookcall(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<(), 
     Ok(())
 }
 
+/// Fires Lua 5.1's `LUA_HOOKTAILRET` hooks for the frame at `ci_idx`.
+///
+/// Mirrors C 5.1's `callrethooks`: after the ordinary return hook, a Lua frame
+/// that absorbed tail calls fires one `"tail return"` event per lost level
+/// (`ci->tailcalls`), reported while the frame is still current (`poscall` pops
+/// it only after `rethook` returns). `tailcalls` is only ever nonzero on a 5.1
+/// Lua frame — `note_lua_tailcall` is 5.1-gated and `next_ci` resets it on reuse
+/// — so 5.2+ and any non-tail-calling frame pay a single zero-valued field read
+/// and skip the loop. The counter is consumed so a reused slot does not re-fire.
+fn fire_tail_returns(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<(), LuaError> {
+    if !state.get_ci(ci_idx).is_lua() {
+        return Ok(());
+    }
+    while state.get_ci(ci_idx).tailcalls > 0 {
+        state.get_ci_mut(ci_idx).tailcalls -= 1;
+        hook(state, LUA_HOOKTAILRET, -1, 0, 0)?;
+    }
+    Ok(())
+}
+
 /// Executes a return hook and corrects `oldpc`.
 ///
 fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), LuaError> {
@@ -469,6 +517,8 @@ fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), L
         hook(state, LUA_HOOKRET, -1, ftransfer as i32, nres)?;
 
         state.get_ci_mut(ci_idx).func = original_func;
+
+        fire_tail_returns(state, ci_idx)?;
     }
 
     // pcRel → (pc - proto.code_base()) as i32 - 1  (macros.tsv)
