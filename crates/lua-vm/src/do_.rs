@@ -90,6 +90,11 @@ const LUA_MASKRET: u8 = 1 << 1;
 const LUA_HOOKCALL: i32 = 0;
 const LUA_HOOKRET: i32 = 1;
 const LUA_HOOKTAILCALL: i32 = 4;
+/// Lua 5.1's `LUA_HOOKTAILRET`: a returning frame that absorbed tail calls
+/// fires one of these per lost level, after the ordinary `LUA_HOOKRET`. Shares
+/// event code 4 with 5.2+'s `LUA_HOOKTAILCALL`; the two are disambiguated by
+/// version when the hook name is resolved (`debug_lib::hookf`).
+const LUA_HOOKTAILRET: i32 = 4;
 
 // PORT NOTE: luaF_close takes StackIdx; this sentinel needs special handling.
 // TODO(port): settle representation with func.rs author.
@@ -444,6 +449,26 @@ pub(crate) fn hookcall(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<(), 
     Ok(())
 }
 
+/// Fires Lua 5.1's `LUA_HOOKTAILRET` hooks for the frame at `ci_idx`.
+///
+/// Mirrors C 5.1's `callrethooks`: after the ordinary return hook, a Lua frame
+/// that absorbed tail calls fires one `"tail return"` event per lost level
+/// (`ci->tailcalls`), reported while the frame is still current (`poscall` pops
+/// it only after `rethook` returns). `tailcalls` is only ever nonzero on a 5.1
+/// Lua frame — `note_lua_tailcall` is 5.1-gated and `next_ci` resets it on reuse
+/// — so 5.2+ and any non-tail-calling frame pay a single zero-valued field read
+/// and skip the loop. The counter is consumed so a reused slot does not re-fire.
+fn fire_tail_returns(state: &mut LuaState, ci_idx: CallInfoIdx) -> Result<(), LuaError> {
+    if !state.get_ci(ci_idx).is_lua() {
+        return Ok(());
+    }
+    while state.get_ci(ci_idx).tailcalls > 0 {
+        state.get_ci_mut(ci_idx).tailcalls -= 1;
+        hook(state, LUA_HOOKTAILRET, -1, 0, 0)?;
+    }
+    Ok(())
+}
+
 /// Executes a return hook and corrects `oldpc`.
 ///
 fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), LuaError> {
@@ -469,6 +494,8 @@ fn rethook(state: &mut LuaState, ci_idx: CallInfoIdx, nres: i32) -> Result<(), L
         hook(state, LUA_HOOKRET, -1, ftransfer as i32, nres)?;
 
         state.get_ci_mut(ci_idx).func = original_func;
+
+        fire_tail_returns(state, ci_idx)?;
     }
 
     // pcRel → (pc - proto.code_base()) as i32 - 1  (macros.tsv)
