@@ -400,6 +400,16 @@ fn is_print(c: i32) -> bool {
     c >= 0x20 && c <= 0x7E
 }
 
+/// C-locale `iscntrl`: the control characters are 0x00-0x1F and 0x7F.
+///
+/// Used only by Lua 5.1's `luaX_token2str`, which renders a control byte as
+/// `char(%d)` but any other non-printable byte (e.g. 0x80-0xFF) as the raw byte
+/// itself.
+#[inline]
+fn is_cntrl(c: i32) -> bool {
+    (0x00..=0x1F).contains(&c) || c == 0x7F
+}
+
 #[inline]
 fn curr_is_newline(ls: &LexState) -> bool {
     ls.current == b'\n' as i32 || ls.current == b'\r' as i32
@@ -528,14 +538,27 @@ pub fn token2str(ls: &LexState, token: i32) -> Vec<u8> {
 /// bare and quotes only symbols/reserved/literals, so for 5.2+ the `>= TK_EOS`
 /// arm stays unquoted. (Issue #105.)
 ///
-/// `version` also gates the rendering of a non-printable single byte. Lua 5.2's
-/// `luaX_token2str` formats such a byte as the bare label `char(%d)` (the
+/// `version` also gates the rendering of a non-printable single byte. Lua 5.1's
+/// `luaX_token2str` renders a control byte (`iscntrl`: 0x00-0x1F, 0x7F) as
+/// `char(%d)` and any other non-printable byte (e.g. 0x80-0xFF) as the byte
+/// itself; in both cases the result is wrapped in the `near '...'` quotes. Lua
+/// 5.2's `luaX_token2str` formats such a byte as the bare label `char(%d)` (the
 /// surrounding `near '...'` quoting is suppressed for tokens whose text starts
 /// with `char(`), whereas 5.3+ render it as the quoted `'<\\%d>'`.
 fn token2str_raw(token: i32, version: lua_types::LuaVersion) -> Vec<u8> {
     if token < FIRST_RESERVED {
         if is_print(token) {
             vec![b'\'', token as u8, b'\'']
+        } else if version == lua_types::LuaVersion::V51 {
+            if is_cntrl(token) {
+                let mut v: Vec<u8> = Vec::new();
+                v.extend_from_slice(b"'char(");
+                let _ = write!(&mut v, "{}", token);
+                v.extend_from_slice(b")'");
+                v
+            } else {
+                vec![b'\'', token as u8, b'\'']
+            }
         } else if version == lua_types::LuaVersion::V52 {
             let mut v: Vec<u8> = Vec::new();
             v.extend_from_slice(b"char(");
