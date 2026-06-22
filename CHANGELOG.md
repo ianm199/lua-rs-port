@@ -4,6 +4,56 @@ All notable changes to `lua-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-22
+
+### Added — multi-version compatibility (5.1–5.5)
+
+Substantial progress toward 1:1 reference parity on the older language versions,
+measured against the unmodified PUC-Rio reference suites under the identical
+stock harness. Official self-checking suite pass rates moved from
+5.1 40% → **86%**, 5.2 54% → **100%**, 5.3 74% → **93%** (its real-bug floor),
+with **5.4 and 5.5 held at 100%** (zero regression on the baseline throughout).
+
+- **5.2 now passes its full official suite.** 5.3 reaches its real-bug floor
+  (remaining failures are an `ltests`-dependent harness file and the
+  cross-cutting lazy-reader item below).
+- **Bytecode `string.dump`** emits the faithful per-version header for 5.1/5.2/5.3
+  (previously always the 5.4 header); `load`/`undump` validate each accordingly.
+- **Per-version error and traceback wording**: type-error attribution order,
+  C-function name resolution (`?` on 5.1, `_G.`-qualified on 5.2), metamethod
+  naming, and the numeric-for / arithmetic-on-string messages.
+- **GC fidelity**: weak-value clearing ordered before finalizer resurrection,
+  white proto-cache drop (C `traverseproto`), suspended-coroutine cycle
+  finalization, and collect-time userdata finalizability for 5.1.
+- **Lua 5.1 environment model**: per-thread `l_gt` (coroutine `setfenv(0)`),
+  per-closure environments for closures without an `_ENV` upvalue, the implicit
+  `arg` vararg table, the same-reference metamethod rule, and synthetic
+  tail-call debug frames.
+- **Number model** (5.1/5.2 float-only): oversized-hex `tonumber`, `next`
+  resumption-key normalization, and the `%x`/`%u`/`%o`/`%q`/`%g`/`%s`
+  `string.format` conversions.
+- **Lexer/parser version gates**: `\u{}` / hex-float / hex-overflow handling,
+  empty-statement rejection (5.1), `CALL` line attribution (5.2/5.3), and
+  invalid-byte token naming.
+
+### Fixed (also affected the 5.4/5.5 baseline)
+
+- `string.gsub` now accepts a number returned from a function/table replacement.
+- `string.format("%g"/"%e")` preserves the sign of negative zero.
+- The `stack overflow` runtime error carries its `file:line:` location prefix.
+- Arg-errors in the "value expected" path include the function name.
+
+### Harness
+
+- `harness/quick_file.sh` (8s-capped whole-file oracle check), `harness/gen_golden.sh`
+  + committed golden vectors, the `dump_kit` / `error_wording_kit` in-process kits,
+  and `harness/multiversion_diff_suite.sh` (per-version differential gate).
+- Official **5.1** and **5.2.2** test suites vendored under `reference/extra-tests/`;
+  `run_official_all.sh` wired for 5.1/5.2.
+
+Methodology and the full per-wave log live in
+`specs/followup/MULTIVERSION_COMPAT_AUDIT_2026_06_21.md`.
+
 ## [0.2.0] - 2026-06-13
 
 ### Fixed
