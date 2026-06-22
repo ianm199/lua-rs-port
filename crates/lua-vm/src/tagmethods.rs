@@ -1008,8 +1008,73 @@ pub(crate) fn adjust_varargs(
         state.set_at(base + nfixparams, LuaValue::Nil);
     }
 
+    build_legacy_arg_table(state, ci_idx, proto, nextra)?;
+
     debug_assert!(state.top_idx().0 <= state.call_info[ci_idx.as_usize()].top.0);
     Ok(())
+}
+
+/// Build the Lua 5.1 implicit `arg` table at call entry, mirroring C 5.1's
+/// `luaD_precall`, which fills `arg` inside `adjustvarargs` *before* any call or
+/// line hook fires.
+///
+/// Our architecture defers the `arg` materialization to a `VARARGPACK` body
+/// opcode, which runs after `OP_VARARGPREP` and therefore after the call hook.
+/// A hook (or a `debug.getlocal` from a frame above) would then observe `arg`
+/// as nil. Building it here restores the C ordering: by the time the call hook
+/// runs, the frame already holds a populated `arg`. The body `VARARGPACK` later
+/// rebuilds it idempotently for the non-hook path.
+///
+/// Only applies to Lua 5.1, only when the proto's first `VARARGPACK` carries the
+/// K bit set (`mark_vararg_table_needed`); the parser clears that bit when the
+/// body uses `...` directly, in which case stock 5.1 leaves `arg` declared but
+/// unfilled, and we mirror that by doing nothing here.
+fn build_legacy_arg_table(
+    state: &mut LuaState,
+    ci_idx: CallInfoIdx,
+    proto: &GcRef<lua_types::LuaProto>,
+    nextra: i32,
+) -> Result<(), LuaError> {
+    if state.global().lua_version != lua_types::LuaVersion::V51 {
+        return Ok(());
+    }
+    let Some(arg_reg) = legacy_arg_table_reg(proto) else {
+        return Ok(());
+    };
+
+    let base = state.call_info[ci_idx.as_usize()].func + 1;
+    let ra = base + arg_reg as i32;
+    let ci_func = base - 1;
+
+    let t = if nextra > 0 {
+        state.new_table_with_sizes(nextra as u32, 1)?
+    } else {
+        state.new_table()
+    };
+    for k in 0..nextra {
+        let src: StackIdx = ci_func - nextra + k;
+        let val = state.get_at(src);
+        t.raw_set_int(state, (k + 1) as i64, val)?;
+    }
+    let n_key = state.intern_str(b"n")?;
+    t.raw_set(state, LuaValue::Str(n_key), LuaValue::Int(nextra as i64))?;
+    state.set_at(ra, LuaValue::Table(t));
+    Ok(())
+}
+
+/// Return the register of the Lua 5.1 implicit `arg` table, or `None` when the
+/// proto should not build one at entry. The signal is the first `VARARGPACK`
+/// instruction with the K bit set (see `build_legacy_arg_table`).
+fn legacy_arg_table_reg(proto: &GcRef<lua_types::LuaProto>) -> Option<u8> {
+    for inst in proto.code.iter() {
+        if inst.opcode() == OpCode::VarArgPack {
+            if inst.test_k() {
+                return Some(inst.arg_a() as u8);
+            }
+            return None;
+        }
+    }
+    None
 }
 
 // ── luaT_getvarargs ──────────────────────────────────────────────────────────
