@@ -413,3 +413,8 @@ Remaining: 5.3 (3) = files@415, gc@502 (coroutine-cycle finalization, state.rs),
 - **locals.lua@5.1** advanced (58→67): getfenv explicit-nil → level 1. Next link is the fenv env-storage gap (closures with no free globals have no _ENV upvalue — needs closure.rs or parse+api).
 Tally: 5.1 **62%** (13/21), 5.2 100%, 5.3 **93%** (25/27), 5.4 100%, 5.5 100%.
 5.3 at real-bug floor: remaining = files@415 (load-with-reader, cross-crate) + all@131 (harness cwd, not a bug).
+
+### Loop wave 7 (2026-06-22)
+- **db.lua@5.1** advanced 279→336: 5.1 implicit `arg` table now built in `adjust_varargs` at call entry (before hooks), V51+K-bit gated. Next link = tail-call frame synthesis (vm.rs/state.rs/lua-stdlib).
+- **reader streaming**: documented-no-edit (finding **F6** in docs/IDIOMATIZATION_VM_FINDINGS.md). Confirmed it needs a 10-file coordinated change (api::load signature → reentrant `FnMut(&mut LuaState)`, zio getc/fill take `&mut LuaState`, ParserHook signature + 3 installers). Blocks calls@5.1, files-later@5.1, files@415@5.3. SUPERVISED.
+0 file flips. 5.1's remaining tail is cross-crate architectural: reader streaming (F6), fenv env-storage for closures w/o free globals, tail-call frame synthesis, collect-time userdata finalizability.
