@@ -548,6 +548,21 @@ pub fn get_stack(state: &LuaState, level: i32, ar: &mut LuaDebug) -> bool {
 
 // ─── Upvalue and local variable name lookup ───────────────────────────────────
 
+/// Counts the user-visible upvalues of a Lua function under Lua 5.1 semantics.
+///
+/// Lua 5.1 has no `_ENV`: globals compile to `GETGLOBAL`/`SETGLOBAL`, so a
+/// function that only touches globals reports `nups == 0`. Our core uses the
+/// Option-B fenv model and carries a synthetic `_ENV` upvalue regardless. Since
+/// 5.1 has no `_ENV` syntax, any upvalue named `_ENV` on a 5.1 instance is that
+/// synthetic cell, so excluding it reproduces the reference count
+/// (`debug.getinfo(g).nups` in db.lua:184).
+fn visible_upvalue_count_51(p: &LuaProto) -> usize {
+    p.upvalues
+        .iter()
+        .filter(|uv| uv.name.as_ref().map_or(true, |s| s.as_bytes() != LUA_ENV))
+        .count()
+}
+
 /// Returns the name of upvalue `uv` in proto `p` (as a byte slice), or `b"?"`.
 ///
 fn upval_name(p: &LuaProto, uv: usize) -> &[u8] {
@@ -878,6 +893,9 @@ fn aux_get_info(
                         // TODO(port): access proto via GcRef<LuaProto>
                         ar.isvararg = lua_cl.proto.is_vararg;
                         ar.nparams = lua_cl.proto.numparams;
+                        if state.global().lua_version == lua_types::LuaVersion::V51 {
+                            ar.nups = visible_upvalue_count_51(&lua_cl.proto) as u8;
+                        }
                     }
                     _ => {
                         ar.isvararg = true;
@@ -1259,15 +1277,22 @@ fn funcname_from_code<'a>(
 }
 
 /// Looks up the name for tag method `tm` from GlobalState and stores it in `*name`.
-/// Returns `Some("metamethod")`.
+/// Returns `Some("metamethod")`, or `None` on Lua 5.1.
 ///
-/// PORT NOTE: `+2` skips the leading `__` prefix in C; here we strip it from
-/// the byte slice.
+/// PORT NOTE: 5.1's `getfuncname` only recognises `OP_CALL`/`OP_TAILCALL`/
+/// `OP_TFORLOOP`; it never names a metamethod-dispatched call, so a 5.1
+/// metamethod handler reports `namewhat == "" , name == nil`. 5.2/5.3 added the
+/// metamethod cases and report the raw event name (`__index`). 5.4's
+/// `funcnamefromcode` advances the event name by `+2` to drop the leading `__`
+/// (`__index` -> `index`). db.lua (5.2) asserts `info.name == "__index"`.
 fn get_tm_name(
     state: &LuaState,
     tm: TagMethod,
     name: &mut Option<Vec<u8>>,
 ) -> Option<&'static [u8]> {
+    if state.global().lua_version == lua_types::LuaVersion::V51 {
+        return None;
+    }
     // macros.tsv: getshrstr(ts) → ts.as_bytes(); G → state.global()
     // PORT NOTE: reshaped for borrowck — tm_name returns Option<GcRef<LuaString>>;
     // materialise the bytes before stripping so there is no borrow of a temporary.
@@ -1276,8 +1301,16 @@ fn get_tm_name(
         .tm_name(tm)
         .map(|s| s.as_bytes().to_vec())
         .unwrap_or_default();
-    let stripped = raw_bytes.strip_prefix(b"__").unwrap_or(&raw_bytes).to_vec();
-    *name = Some(stripped);
+    let keeps_prefix = matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V52 | lua_types::LuaVersion::V53
+    );
+    let resolved = if keeps_prefix {
+        raw_bytes
+    } else {
+        raw_bytes.strip_prefix(b"__").unwrap_or(&raw_bytes).to_vec()
+    };
+    *name = Some(resolved);
     Some(b"metamethod")
 }
 
@@ -1576,15 +1609,28 @@ fn obj_type_name_static(val: &LuaValue) -> &'static [u8] {
 }
 
 /// Raises a "call" type error for a non-callable `val`.
-/// Prefers name from `funcnamefromcall`; falls back to `varinfo`.
 ///
+/// Lua 5.4 introduced `luaG_callerror`, which attributes the failed call via
+/// `funcnamefromcall`/`funcnamefromcode` on the calling instruction. That is how
+/// 5.4/5.5 name a generic-for iterator failure `(for iterator 'for iterator')`.
+/// Lua 5.1/5.2/5.3 had no such path: a non-callable value raised a plain
+/// `luaG_typeerror` whose `varinfo` only names the value's register or upvalue,
+/// so `for k,v in 3 do` reports the bare `attempt to call a number value`.
 pub(crate) fn call_error(state: &LuaState, val: &LuaValue, val_idx: StackIdx) -> LuaError {
-    let ci_idx = state.current_ci_idx();
-    let ci = state.get_ci(ci_idx).clone();
-    let mut name: Option<Vec<u8>> = None;
-    let kind = funcname_from_call(state, &ci, &mut name);
-    let (kind, name) = if kind.is_some() {
-        (kind.map(|k| k.to_vec()), name)
+    let uses_callerror = matches!(
+        state.global().lua_version,
+        lua_types::LuaVersion::V54 | lua_types::LuaVersion::V55
+    );
+    let (kind, name) = if uses_callerror {
+        let ci_idx = state.current_ci_idx();
+        let ci = state.get_ci(ci_idx).clone();
+        let mut name: Option<Vec<u8>> = None;
+        let kind = funcname_from_call(state, &ci, &mut name);
+        if kind.is_some() {
+            (kind.map(|k| k.to_vec()), name)
+        } else {
+            var_info_parts(state, val_idx)
+        }
     } else {
         var_info_parts(state, val_idx)
     };

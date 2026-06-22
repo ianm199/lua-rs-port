@@ -203,11 +203,32 @@ fn push_global_func_name_from_target(
 
 /// Push a human-readable name for the function described by `ar`.
 ///
+/// Lua 5.2's `pushfuncname` predates the global-name lookup
+/// (`pushglobalfuncname`/`findfield`), which was introduced in 5.3. It renders a
+/// named function as `function 'name'` directly from `namewhat`/`name`, so a C
+/// function reached by a `debug.traceback`-style call shows the unqualified
+/// `function 'traceback'` rather than the 5.3+ qualified `function
+/// 'debug.traceback'`. 5.1 has its own traceback path (`traceback_51`).
 fn push_func_name(
     state: &mut LuaState,
     ar: &mut LuaDebug,
     global_lookup_target: Option<&mut LuaState>,
 ) -> Result<(), LuaError> {
+    if state.global().lua_version == lua_types::LuaVersion::V52 {
+        if !ar.namewhat.is_empty() {
+            let name = ar.name.clone().unwrap_or_else(|| b"?".to_vec());
+            state.push_fstring(format_args!("function '{}'", BStr(&name)))?;
+        } else if ar.what == b'm' {
+            state.push_string(b"main chunk")?;
+        } else if ar.what == b'C' {
+            state.push_string(b"?")?;
+        } else {
+            let src = ar.short_src.clone();
+            let line = ar.linedefined;
+            state.push_fstring(format_args!("function <{}:{}>", BStr(&src), line))?;
+        }
+        return Ok(());
+    }
     // Lua 5.5 reordered `pushfuncname` to prefer the `namewhat`
     // (`global`/`field`/`method`/`local`/`upvalue`) over the global-name
     // lookup, so a global C/Lua function renders `in global 'name'` rather than
