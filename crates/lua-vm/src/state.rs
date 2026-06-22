@@ -4512,23 +4512,6 @@ fn lua_value_marked_or_old(marker: &lua_gc::Marker, value: &LuaValue) -> bool {
     }
 }
 
-fn lua_value_identity(value: &LuaValue) -> Option<usize> {
-    match value {
-        LuaValue::Str(v) => Some(v.identity()),
-        LuaValue::Table(v) => Some(v.identity()),
-        LuaValue::Function(LuaClosure::Lua(v)) => Some(v.identity()),
-        LuaValue::Function(LuaClosure::C(v)) => Some(v.identity()),
-        LuaValue::UserData(v) => Some(v.identity()),
-        LuaValue::Thread(v) => Some(v.identity()),
-        LuaValue::Nil
-        | LuaValue::Bool(_)
-        | LuaValue::Int(_)
-        | LuaValue::Float(_)
-        | LuaValue::LightUserData(_)
-        | LuaValue::Function(LuaClosure::LightC(_)) => None,
-    }
-}
-
 fn finalizer_marked_or_old(marker: &lua_gc::Marker, object: &FinalizerObject) -> bool {
     match object {
         FinalizerObject::Table(t) => marker.is_marked_or_old(t.0),
@@ -4816,8 +4799,6 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
-        let finalizing_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let dead_interned: std::cell::RefCell<Vec<(u32, usize)>> = std::cell::RefCell::new(Vec::new());
@@ -4834,21 +4815,36 @@ impl<'a> GcHandle<'a> {
                 collect_ran.set(true);
                 alive_ids.borrow_mut().reserve(weak_table_capacity);
                 newly_unreachable.borrow_mut().reserve(finalizer_capacity);
-                finalizing_ids.borrow_mut().reserve(finalizer_capacity);
                 alive_thread_ids.borrow_mut().reserve(thread_capacity);
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
+                // Lua 5.1 weak-key tables are NOT ephemerons. In 5.1
+                // `traversetable` (lgc.c) a `__mode='k'` table still marks its
+                // VALUES strongly (`if (!weakvalue) markvalue(g, gval(n))`), so
+                // a value that references its own weak key keeps that key alive
+                // (`a[t]=t` survives). Ephemeron semantics — a value reachable
+                // only if the key is independently reachable — arrived in 5.2.
+                let legacy_weak_key_values =
+                    matches!(global.lua_version, lua_types::LuaVersion::V51);
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot.ephemeron {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
-                            lua_value_marked_or_old(marker, v)
-                        });
-                        for v in &to_mark {
-                            v.trace(marker);
+                        if legacy_weak_key_values {
+                            let mut to_mark = Vec::new();
+                            t.for_each_entry(|_k, v| to_mark.push(v.clone()));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
+                        } else {
+                            let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
+                                lua_value_marked_or_old(marker, v)
+                            });
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
                         }
                     }
                     marker.drain_gray_queue();
@@ -4856,10 +4852,44 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
+                // Clear dead weak VALUES before finalizer resurrection,
+                // mirroring C's `clearvalues(g->weak, NULL)` /
+                // `clearvalues(g->allweak, NULL)` which run in `atomic`
+                // *before* `separatetobefnz`/`markbeingfnz` (lua-5.3.6
+                // lgc.c). An object that is only reachable through a
+                // to-be-finalized table is still white at this point, so a
+                // weak-value reference to it is dropped — and stays dropped
+                // even after resurrection re-marks the object — so the
+                // finalizer observes the already-cleared slot. Keys are left
+                // untouched here; they are cleared post-resurrection.
+                //
+                // C iterates the *entire* weak list regardless of table mark
+                // state, so a weak-value table reachable only via a soon-to-be
+                // resurrected object (its `__gc` closure stored weakly is the
+                // canonical case) still has its dead values dropped here, not
+                // after resurrection re-marks the table. The mark check only
+                // gates whether surviving value-strings are re-marked: strings
+                // are values weak tables never collect, but only when the
+                // owning table itself is reachable.
+                for t in weak_tables_snapshot
+                    .weak_values
+                    .iter()
+                    .chain(weak_tables_snapshot.all_weak.iter())
+                {
+                    let to_mark = t.prune_weak_dead_with_value(
+                        &|_| true,
+                        &|v| lua_value_marked_or_old(marker, v),
+                    );
+                    if marker.is_marked_or_old(t.0) {
+                        for v in &to_mark {
+                            v.trace(marker);
+                        }
+                    }
+                }
+                marker.drain_gray_queue();
                 for pf in &pending_snapshot {
                     if !finalizer_marked_or_old(marker, pf) {
                         pf.mark(marker);
-                        finalizing_ids.borrow_mut().insert(pf.identity());
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
@@ -4870,11 +4900,19 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_marked_or_old(t.0) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
-                            lua_value_marked_or_old(marker, v)
-                        });
-                        for v in &to_mark {
-                            v.trace(marker);
+                        if legacy_weak_key_values {
+                            let mut to_mark = Vec::new();
+                            t.for_each_entry(|_k, v| to_mark.push(v.clone()));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
+                        } else {
+                            let to_mark = t.ephemeron_values_to_mark_with_value(&|v| {
+                                lua_value_marked_or_old(marker, v)
+                            });
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
                         }
                     }
                     marker.drain_gray_queue();
@@ -4882,24 +4920,37 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
+                // Clear dead weak KEYS post-resurrection, mirroring C's
+                // `clearkeys(g->ephemeron, NULL)` / `clearkeys(g->allweak,
+                // NULL)`. A key kept alive only by a resurrected (now-marked)
+                // object survives; a key pending its own finalization is
+                // already marked by `markbeingfnz`, so `marked_or_old`
+                // keeps it visible until its `__gc` runs. Values in these
+                // originally-tracked tables were already settled in the
+                // pre-resurrection value pass and must not be re-evaluated
+                // (resurrection can re-mark a value that was correctly
+                // cleared), so this pass touches keys only — matching the
+                // `origweak` skip in C's later `clearvalues(g->weak,
+                // origweak)`.
+                for t in weak_tables_snapshot
+                    .ephemeron
+                    .iter()
+                    .chain(weak_tables_snapshot.all_weak.iter())
+                {
+                    if !marker.is_marked_or_old(t.0) {
+                        continue;
+                    }
+                    let to_mark = t.prune_weak_dead_with_value(
+                        &|v| lua_value_marked_or_old(marker, v),
+                        &|_| true,
+                    );
+                    for v in &to_mark {
+                        v.trace(marker);
+                    }
+                }
                 for t in weak_snapshot_tables(&weak_tables_snapshot) {
-                    let id = t.identity();
                     if marker.is_marked_or_old(t.0) {
-                        let to_mark = {
-                            let finalizing = finalizing_ids.borrow();
-                            t.prune_weak_dead_with_value(
-                                &|v| lua_value_marked_or_old(marker, v),
-                                &|v| {
-                                    lua_value_marked_or_old(marker, v)
-                                        && lua_value_identity(v)
-                                            .map_or(true, |id| !finalizing.contains(&id))
-                                },
-                            )
-                        };
-                        for v in &to_mark {
-                            v.trace(marker);
-                        }
-                        alive_ids.borrow_mut().insert(id);
+                        alive_ids.borrow_mut().insert(t.identity());
                     }
                 }
                 marker.drain_gray_queue();
@@ -5071,8 +5122,6 @@ impl<'a> GcHandle<'a> {
             std::cell::RefCell::new(std::collections::HashSet::new());
         let newly_unreachable: std::cell::RefCell<Vec<FinalizerObject>> =
             std::cell::RefCell::new(Vec::new());
-        let finalizing_ids: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
         let alive_thread_ids: std::cell::RefCell<std::collections::HashSet<u64>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
         let dead_interned: std::cell::RefCell<Vec<(u32, usize)>> = std::cell::RefCell::new(Vec::new());
@@ -5098,10 +5147,14 @@ impl<'a> GcHandle<'a> {
                 atomic_ran.set(true);
                 alive_ids.borrow_mut().reserve(weak_table_capacity);
                 newly_unreachable.borrow_mut().reserve(finalizer_capacity);
-                finalizing_ids.borrow_mut().reserve(finalizer_capacity);
                 alive_thread_ids.borrow_mut().reserve(thread_capacity);
                 trace_reachable_threads(&*global, global.current_thread_id, marker);
                 close_open_upvalues_for_unreachable_threads(&*global, marker);
+                // Lua 5.1 weak-key tables are NOT ephemerons; see the
+                // full-collect hook above. `__mode='k'` still marks its values
+                // strongly so a value referencing its own weak key survives.
+                let legacy_weak_key_values =
+                    matches!(global.lua_version, lua_types::LuaVersion::V51);
                 loop {
                     let visited_before = marker.visited_count();
                     for t in &weak_tables_snapshot.ephemeron {
@@ -5109,9 +5162,17 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_visited(t_id) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
-                        for v in &to_mark {
-                            v.trace(marker);
+                        if legacy_weak_key_values {
+                            let mut to_mark = Vec::new();
+                            t.for_each_entry(|_k, v| to_mark.push(v.clone()));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
+                        } else {
+                            let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
                         }
                     }
                     marker.drain_gray_queue();
@@ -5119,10 +5180,35 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
+                // Clear dead weak VALUES before finalizer resurrection,
+                // mirroring C's `clearvalues(g->weak, NULL)` /
+                // `clearvalues(g->allweak, NULL)` which run *before*
+                // `markbeingfnz` in `atomic` (lua-5.3.6 lgc.c). See the
+                // full-collect hook above for the rationale; this is the
+                // incremental atomic and is the path the in-mode gc.lua
+                // weak-table-plus-finalizer test exercises. C iterates the
+                // entire weak list regardless of table mark state, so a
+                // weak-value table reachable only via a soon-to-be-resurrected
+                // object (canonically a `__gc` closure stored weakly) still
+                // has its dead values dropped here. The visited check only
+                // gates re-marking surviving value-strings. Keys untouched.
+                for t in weak_tables_snapshot
+                    .weak_values
+                    .iter()
+                    .chain(weak_tables_snapshot.all_weak.iter())
+                {
+                    let to_mark =
+                        t.prune_weak_dead_with(&|_| true, &|id| marker.is_visited(id));
+                    if marker.is_visited(t.identity()) {
+                        for v in &to_mark {
+                            v.trace(marker);
+                        }
+                    }
+                }
+                marker.drain_gray_queue();
                 for pf in &pending_snapshot {
                     if !marker.is_visited(pf.identity()) {
                         pf.mark(marker);
-                        finalizing_ids.borrow_mut().insert(pf.identity());
                         newly_unreachable.borrow_mut().push(pf.clone());
                     }
                 }
@@ -5134,9 +5220,17 @@ impl<'a> GcHandle<'a> {
                         if !marker.is_visited(t_id) {
                             continue;
                         }
-                        let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
-                        for v in &to_mark {
-                            v.trace(marker);
+                        if legacy_weak_key_values {
+                            let mut to_mark = Vec::new();
+                            t.for_each_entry(|_k, v| to_mark.push(v.clone()));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
+                        } else {
+                            let to_mark = t.ephemeron_values_to_mark(&|id| marker.is_visited(id));
+                            for v in &to_mark {
+                                v.trace(marker);
+                            }
                         }
                     }
                     marker.drain_gray_queue();
@@ -5144,19 +5238,29 @@ impl<'a> GcHandle<'a> {
                         break;
                     }
                 }
+                // Clear dead weak KEYS post-resurrection, mirroring C's
+                // `clearkeys(g->ephemeron, NULL)` / `clearkeys(g->allweak,
+                // NULL)`. Values in these originally-tracked tables were
+                // already settled in the pre-resurrection pass and must not
+                // be re-evaluated, so this pass is keys-only (the `origweak`
+                // skip in C's later `clearvalues(g->weak, origweak)`).
+                for t in weak_tables_snapshot
+                    .ephemeron
+                    .iter()
+                    .chain(weak_tables_snapshot.all_weak.iter())
+                {
+                    if !marker.is_visited(t.identity()) {
+                        continue;
+                    }
+                    let to_mark =
+                        t.prune_weak_dead_with(&|id| marker.is_visited(id), &|_| true);
+                    for v in &to_mark {
+                        v.trace(marker);
+                    }
+                }
                 for t in weak_snapshot_tables(&weak_tables_snapshot) {
-                    let id = t.identity();
-                    if marker.is_visited(id) {
-                        let to_mark = {
-                            let finalizing = finalizing_ids.borrow();
-                            t.prune_weak_dead_with(&|id| marker.is_visited(id), &|id| {
-                                marker.is_visited(id) && !finalizing.contains(&id)
-                            })
-                        };
-                        for v in &to_mark {
-                            v.trace(marker);
-                        }
-                        alive_ids.borrow_mut().insert(id);
+                    if marker.is_visited(t.identity()) {
+                        alive_ids.borrow_mut().insert(t.identity());
                     }
                 }
                 marker.drain_gray_queue();
