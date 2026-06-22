@@ -464,3 +464,9 @@ Branch `fix/multiversion-compat`, 76 commits, every wave oracle-gated, zero 5.4/
 - **5.3 is effectively 26/27** — the ONLY real remaining item is `files.lua@415` (lazy-reader F6).
 - **5.1 is 18/21** — remaining: `calls.lua@250` (F6), `errors.lua` (xpcall+C-stack-overflow hang), `db.lua@366` ("tail return" hook events).
 Path to 100%: F6 (shared) → 5.3 = 100%, 5.1 = 19/21; + errors-hang → 20/21; + db-tail-return → 5.1 = 100%.
+
+### F6 reader-streaming LANDED (2026-06-22) — 5.3 to 100%
+- **files.lua@5.3 flipped → 5.3 = 100% (27/27).** Lazy reentrant `load()` reader streaming: unified the duplicate ZIO types (lua-lex now uses `lua_vm::zio::ZIO`), `ChunkReader = FnMut(&mut LuaState) -> Result<Option<Vec<u8>>>` threaded through ParserHook/parse so the lexer pulls on demand and stops at the first error. Reader-call-count repro now MATCHes (was 9, now 2). Public `omnilua::load()` signature unchanged (internal `lua_vm::api::load` only). Bonus: fixed a GC use-after-sweep (collectgarbage mid-parse) + io.lines arity (5.4-only 4th to-be-closed result). All-version load() regression clean.
+- files.lua@5.1 also flipped; calls.lua@5.1 advanced (F6 cleared) to a dump/undump-with-upvalues blocker at calls.lua:277.
+Tally: 5.1 18/21 (calls@277 dump/undump-upvalues, db@366 tail-return hooks, errors hang), 5.2 100%, **5.3 100%**, 5.4 100%, 5.5 100%.
+PERF: overall 1.46x vs C; _long workloads at parity (table_ops_long 0.43x); tall poles = table-set-same-key + method_calls (~2x).
