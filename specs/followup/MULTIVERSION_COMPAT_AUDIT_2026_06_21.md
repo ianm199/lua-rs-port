@@ -406,3 +406,10 @@ New known hang: errors.lua@5.1 (xpcall+C-stack-overflow+traceback loop on legacy
 
 **MILESTONE: 5.2, 5.4, 5.5 all at 100% (0 our-bugs).** Tally: 5.1 **57%** (12/21), 5.2 **100%**, 5.3 **89%** (24/27), 5.4 100%, 5.5 100%.
 Remaining: 5.3 (3) = files@415, gc@502 (coroutine-cycle finalization, state.rs), all@131 (harness cwd); 5.1 (9) = calls/closure/db/errors(hang)/events/files/gc/locals/vararg + the documented VM-side links (getlocal base-shift, collect-time userdata finalizability, metamethod same-ref, reader streaming).
+
+### Loop wave 6 (2026-06-22)
+- **gc.lua@5.3** flipped: version-gated legacy `remark_legacy_open_upvalues` pass (5.1/5.2/5.3 re-mark a suspended thread's touched open upvalues once/cycle, keeping a co↔closure↔table cycle alive one extra collect; 5.4+ already matched). state.rs.
+- **events.lua@5.1** flipped: 5.1 metamethod same-reference rule for __eq/__lt/__le (TM fires only when both operands carry the same handler; else 'attempt to compare'). tagmethods.rs + vm.rs, V51-gated.
+- **locals.lua@5.1** advanced (58→67): getfenv explicit-nil → level 1. Next link is the fenv env-storage gap (closures with no free globals have no _ENV upvalue — needs closure.rs or parse+api).
+Tally: 5.1 **62%** (13/21), 5.2 100%, 5.3 **93%** (25/27), 5.4 100%, 5.5 100%.
+5.3 at real-bug floor: remaining = files@415 (load-with-reader, cross-crate) + all@131 (harness cwd, not a bug).
