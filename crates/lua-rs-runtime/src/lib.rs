@@ -214,8 +214,11 @@ impl From<Error> for LuaError {
 }
 
 impl fmt::Display for Error {
+    /// Render the human-readable error payload (via [`LuaError::message_lossy`]),
+    /// not the `Debug` form — so `format!("{err}")` gives an embedder the message
+    /// text (e.g. `input:1: boom`) rather than `Runtime(Str(GcRef(..)))`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.inner, f)
+        f.write_str(&self.inner.message_lossy())
     }
 }
 
