@@ -3576,6 +3576,108 @@ impl Value {
     }
 }
 
+fn coerce_int(dst: &Lua, i: i64) -> Value {
+    match dst.version().number_model() {
+        NumberModel::FloatOnly => Value::Number(i as f64),
+        NumberModel::Dual => Value::Integer(i),
+    }
+}
+
+/// Wrap a function living in `src` as a function callable in `dst`. Invoking it
+/// marshals the arguments back into `src`, calls the original, and marshals the
+/// results forward into `dst`.
+fn bridge_function(dst: &Lua, src: &Lua, f: Function) -> Result<Function> {
+    let src = src.clone();
+    dst.create_function(move |dst, args: Variadic<Value>| {
+        let mut seen = HashMap::new();
+        let mut into_src = Vec::with_capacity(args.len());
+        for a in args.into_iter() {
+            into_src.push(marshal_value(&src, dst, &a, &mut seen)?);
+        }
+        let rets: Variadic<Value> = f.call(Variadic::from(into_src))?;
+        let mut seen = HashMap::new();
+        let mut out = Vec::with_capacity(rets.len());
+        for r in rets.into_iter() {
+            out.push(marshal_value(dst, &src, &r, &mut seen)?);
+        }
+        Ok(Variadic::from(out))
+    })
+}
+
+/// Deep-copy `v` (which lives in `src`) into `dst`, creating fresh objects in
+/// `dst`. `seen` maps a source table's identity to its already-created `dst`
+/// copy so cyclic and shared tables are reproduced once. See
+/// [`Lua::marshal_from`].
+fn marshal_value(
+    dst: &Lua,
+    src: &Lua,
+    v: &Value,
+    seen: &mut HashMap<usize, Table>,
+) -> Result<Value> {
+    Ok(match v {
+        Value::Nil => Value::Nil,
+        Value::Boolean(b) => Value::Boolean(*b),
+        Value::Integer(i) => coerce_int(dst, *i),
+        Value::Number(n) => Value::Number(*n),
+        Value::LightUserData(p) => Value::LightUserData(*p),
+        Value::String(s) => Value::String(dst.create_string(s.as_bytes()?)?),
+        Value::Table(t) => {
+            let id = t.to_pointer()?;
+            if let Some(existing) = seen.get(&id) {
+                Value::Table(existing.clone())
+            } else {
+                let out = dst.create_table()?;
+                seen.insert(id, out.clone());
+                for (k, val) in t.raw_pairs()? {
+                    let mk = marshal_value(dst, src, &k, seen)?;
+                    let mv = marshal_value(dst, src, &val, seen)?;
+                    out.raw_set(mk, mv)?;
+                }
+                Value::Table(out)
+            }
+        }
+        Value::Function(f) => Value::Function(bridge_function(dst, src, f.clone())?),
+        Value::UserData(_) => {
+            return Err(LuaError::runtime(format_args!(
+                "userdata cannot cross an instance boundary"
+            ))
+            .into())
+        }
+        Value::Thread(_) => {
+            return Err(LuaError::runtime(format_args!(
+                "thread cannot cross an instance boundary"
+            ))
+            .into())
+        }
+    })
+}
+
+impl Lua {
+    /// Deep-copy a value out of `src` into this instance.
+    ///
+    /// omniLua can hold several version instances at once, each on its own heap.
+    /// The monomorphic-instance rule forbids *mixing handles* between them; this
+    /// method instead produces a fresh, structurally-equal value in `self`, so no
+    /// handles cross. It is the substrate for incremental version migration.
+    ///
+    /// - Numbers translate to this instance's number model — an integer copied
+    ///   into a float-only (5.1/5.2) instance widens to a float, matching what
+    ///   that version's engine natively holds. Magnitudes above `2^53` lose
+    ///   precision; an exact-or-error policy is tracked in the WebLua
+    ///   number-model seam.
+    /// - Strings copy by bytes; tables copy structurally with cycle detection, so
+    ///   the result is a snapshot, not a shared object.
+    /// - Functions become call proxies (arguments and results are marshalled at
+    ///   each call). The proxy keeps `src` alive, so bridging functions in *both*
+    ///   directions can form a cross-instance reference cycle that leaks; a
+    ///   `Weak`-based fix is tracked in the bridge issue.
+    /// - Userdata and threads cannot cross and produce an error.
+    pub fn marshal_from(&self, src: &Lua, v: &Value) -> Result<Value> {
+        let mut seen = HashMap::new();
+        marshal_value(self, src, v, &mut seen)
+    }
+}
+
 fn type_error_raw(value: &RawLuaValue, expected: &str) -> Error {
     Error::from(LuaError::runtime(format_args!(
         "{} expected, got {}",
