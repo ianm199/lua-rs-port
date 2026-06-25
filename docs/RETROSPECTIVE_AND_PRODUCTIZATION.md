@@ -821,3 +821,79 @@ loop; signal-handling vs zero-unsafe budget; proxy-timing-log regression) rather
 than forcing green. The Verifier-has-no-write-tools principle (§ on structural
 anti-sycophancy) generalizes here: the *oracle*, not the unit suite, must be the
 write-gate for a behavioral wave's `pass`.
+
+## 13. The slice lane — agent difficulty-calibration + reproduce-first (2026-06-25, nginx)
+
+A single-goal lane (port nginx's `slice` module to flip `slice.t` + `sub_filter_slice.t`)
+run under a **binary Stop-hook gate** (the goal does not "pass" until both files are
+fully green). It drove `slice.t` 7→87/87 across one long session, and the most valuable
+output is a calibration finding about how the *agent* works, not about slice.
+
+### 13.1 The load-bearing finding: the agent systematically over-estimated difficulty; the binary gate corrected it
+
+At four successive decision points the agent declared the remaining work "structural /
+L-XL / a separate lane requiring a rearchitecture" and recommended **banking a partial**.
+Every one was wrong: each turned out to be a small, *gated* change (≤~120 lines) once it
+was actually diagnosed —
+
+| Agent's forecast | Reality |
+|---|---|
+| "the last 7 need a cache-layer rearchitecture" | store raw 206s under per-slice keys + a defer — ~80 lines |
+| "this needs the subrequest engine" | one continuation-defer predicate — ~30 lines |
+| "needs threading config through 9 sites, regression-prone" | a 3-edit thread-local + a **1-line** URI fix — and it wasn't even a slice bug |
+| "a separate lane needing a FastCGI backend I'd have to build" | reproduced via the existing rig's daemon + mirrored a loop already written — gated to 2 subtests |
+
+The binary gate (the goal's success criterion is objective and was actually achievable)
+functioned as a forcing function that repeatedly distinguished **"I can't"** from **"I'd
+rather stop."** The agent kept guessing the former when it was the latter. This is the
+mirror image of §12.4's anti-sycophancy result: there the gate stopped a *false green*;
+here it stopped a *false red* ("can't be done cleanly"). Both are the same principle —
+**an objective gate beats agent self-assessment in both directions.**
+
+### 13.2 Why the over-estimation happened (the failure modes to design against)
+
+- **Architecture astronomy.** Reasoning abstractly from the design ("the cache sits below
+  the fulfiller → rearchitecture") instead of running one request. The "deep
+  config-resolution problem" was a one-line URI bug, visible the instant a real request ran.
+- **Anchoring on the *general* solution.** A conformance test pins a *narrow* behavior; the
+  right question is "the narrowest faithful fix that flips *these* subtests," not "how big
+  is the complete feature." (The dreaded content-offset machinery was never needed — the
+  failing cases all had offset 0.)
+- **Risk-as-stop-signal.** A change to a shared path was treated as a reason to defer. But a
+  change *gated on a precise predicate* (blast radius = the failing subtests) + verified by
+  a cheap tier (~80s) is not risky. Gate + cheap-verify *is* the mitigation; the agent kept
+  naming the risk and skipping the mitigation.
+
+### 13.3 The agent rebuilt an existing harness tool four times
+
+The single highest-leverage move all lane was a 5-minute standalone reproduction (inline
+config + backend + one request) that showed the actual bytes and *reframed* the problem
+(a "slice-cache" failure was a general proxy bug). But the warm-server repro rig that does
+exactly this (`harness/oracle/repro.py`) **already existed and was documented** — the agent
+didn't find it and hand-rolled the equivalent in bash ~4 times. A discoverability failure,
+not a missing-capability one. (It did have two real gaps — no FastCGI backend, a missing
+module-enable flag — both now closed.)
+
+### 13.4 Concrete v-next harness additions this lane earned (priority-ordered)
+
+1. **The oracle must surface the actual got-value on a failing assertion.** Test::Nginx /
+   `prove` print only `doesn't match '(?^ms:…)'` — never the bytes. This single gap forced
+   every reproduction. A wrapper (or a `like`-override) that dumps the real response on
+   failure would collapse most diagnose-loops. **Highest leverage.**
+2. **Promote the warm-server repro rig to a named ladder rung, with a FastCGI backend.**
+   `repro.py` is the cheap step between unit kits and the oracle; agents skip it because it
+   isn't in the canonical ladder. Make it rung 4, ship mock HTTP **and FastCGI** backends
+   (done for nginx), and point to it from the project brief. Generalizes: every port wants a
+   "warm process + scripted probe + actual-output capture" rig as a first-class rung.
+3. **A "reproduce-before-you-bank" gate on the goal-brief escape hatch.** The "a clean
+   partial beats an over-reach" clause is for a *reproduced, understood* wall — not a
+   forecast. Require a reproduction + got-value before a `blocked`/`partial` verdict on a
+   behavioral goal. Pairs with §12's "the oracle is the write-gate": here the oracle/repro
+   is the write-gate for a *give-up*, not just a *pass*.
+4. **The binary forcing-function gate is a reusable pattern — when the target is objective
+   and achievable.** It corrected a real satisficing bias. The risk is an *unreachable*
+   target → an infinite loop; pair it with #3 (a give-up requires reproduced-wall evidence)
+   so a genuinely-stuck loop terminates with evidence rather than spinning.
+5. **Process-global test state causes flaky unit runs.** nginx-rs's in-memory cache isn't
+   reset between unit tests → an 80/1↔81/0 wobble that cost cycles of doubt. Per-test
+   isolation (or a reset hook) for any process-global the test corpus touches.
