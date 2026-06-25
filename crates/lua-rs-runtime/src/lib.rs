@@ -3453,6 +3453,129 @@ fn integer_out_of_range_error() -> Error {
     Error::from(LuaError::runtime(format_args!("integer out of range")))
 }
 
+/// The object identity of a reference-typed raw value, as a `usize` token —
+/// the same mapping `lua_topointer` uses. Reference types (string, table,
+/// function, userdata, thread, light userdata) yield `Some`; the value types
+/// (nil, boolean, integer, number) yield `None` because they have no identity.
+fn raw_value_pointer(raw: &RawLuaValue) -> Option<usize> {
+    match raw {
+        RawLuaValue::Function(RawLuaClosure::LightC(f)) => Some(*f as usize),
+        RawLuaValue::LightUserData(p) => Some(*p as usize),
+        RawLuaValue::Str(s) => Some(GcRef::identity(s)),
+        RawLuaValue::Table(t) => Some(GcRef::identity(t)),
+        RawLuaValue::Function(RawLuaClosure::Lua(f)) => Some(GcRef::identity(f)),
+        RawLuaValue::Function(RawLuaClosure::C(f)) => Some(GcRef::identity(f)),
+        RawLuaValue::UserData(u) => Some(GcRef::identity(u)),
+        RawLuaValue::Thread(t) => Some(GcRef::identity(t)),
+        _ => None,
+    }
+}
+
+/// Resolve a handle's underlying object identity. Errors only if the rooted
+/// value is somehow not a reference type, which would mean a corrupted handle.
+fn handle_pointer(root: &RootedValue, expected: &str) -> Result<usize> {
+    let raw = root.raw()?;
+    raw_value_pointer(&raw).ok_or_else(|| type_error_raw(&raw, expected))
+}
+
+impl Table {
+    /// A stable identity token for this table: equal across every handle that
+    /// refers to the same underlying table, distinct between different tables.
+    /// Mirrors `lua_topointer`. Usable as a `HashMap`/`HashSet` key for
+    /// "is this the same object" lookups — e.g. cycle detection when walking a
+    /// table graph.
+    pub fn to_pointer(&self) -> Result<usize> {
+        handle_pointer(&self.root, "table")
+    }
+}
+
+impl PartialEq for Table {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.to_pointer(), other.to_pointer()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+impl Eq for Table {}
+
+impl Function {
+    /// A stable identity token for this function. See [`Table::to_pointer`].
+    pub fn to_pointer(&self) -> Result<usize> {
+        handle_pointer(&self.root, "function")
+    }
+}
+
+impl PartialEq for Function {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.to_pointer(), other.to_pointer()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+impl Eq for Function {}
+
+impl Thread {
+    /// A stable identity token for this thread. See [`Table::to_pointer`].
+    pub fn to_pointer(&self) -> Result<usize> {
+        handle_pointer(&self.root, "thread")
+    }
+}
+
+impl PartialEq for Thread {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.to_pointer(), other.to_pointer()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+impl Eq for Thread {}
+
+impl AnyUserData {
+    /// A stable identity token for this userdata. See [`Table::to_pointer`].
+    pub fn to_pointer(&self) -> Result<usize> {
+        handle_pointer(&self.root, "userdata")
+    }
+}
+
+impl PartialEq for AnyUserData {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.to_pointer(), other.to_pointer()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+impl Eq for AnyUserData {}
+
+impl LuaString {
+    /// A stable identity token for the interned string object. Note that string
+    /// *equality* ([`PartialEq`]) compares bytes, not identity, matching Lua's
+    /// `==` on strings.
+    pub fn to_pointer(&self) -> Result<usize> {
+        handle_pointer(&self.root, "string")
+    }
+}
+
+impl PartialEq for LuaString {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.as_bytes(), other.as_bytes()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+impl Eq for LuaString {}
+
+impl Value {
+    /// The object identity of this value as a `usize`, or `None` for the value
+    /// types (nil, boolean, integer, number) that have no identity. Mirrors
+    /// `lua_topointer`.
+    pub fn to_pointer(&self) -> Result<Option<usize>> {
+        Ok(match self {
+            Value::Table(t) => Some(t.to_pointer()?),
+            Value::Function(f) => Some(f.to_pointer()?),
+            Value::String(s) => Some(s.to_pointer()?),
+            Value::UserData(u) => Some(u.to_pointer()?),
+            Value::Thread(t) => Some(t.to_pointer()?),
+            Value::LightUserData(p) => Some(*p as usize),
+            _ => None,
+        })
+    }
+}
+
 fn type_error_raw(value: &RawLuaValue, expected: &str) -> Error {
     Error::from(LuaError::runtime(format_args!(
         "{} expected, got {}",
