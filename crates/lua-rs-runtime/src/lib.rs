@@ -1241,10 +1241,8 @@ impl Lua {
         self.create_registered_function(callable)
     }
 
-    pub fn create_userdata<T>(&self, data: T) -> Result<AnyUserData>
-    where
-        T: UserData,
-    {
+    /// The cached metatable for userdata type `T` (built once per `TypeId`).
+    fn userdata_metatable<T: UserData>(&self) -> Result<GcRef<RawLuaTable>> {
         let type_id = TypeId::of::<T>();
         let cached = self
             .inner
@@ -1252,8 +1250,8 @@ impl Lua {
             .borrow()
             .get(&type_id)
             .cloned();
-        let metatable = match cached {
-            Some(metatable) => metatable,
+        match cached {
+            Some(metatable) => Ok(metatable),
             None => {
                 let mut methods = UserDataMethodRegistry::<T>::new(self);
                 T::add_methods(&mut methods);
@@ -1263,10 +1261,32 @@ impl Lua {
                     .userdata_metatables
                     .borrow_mut()
                     .insert(type_id, metatable.clone());
-                metatable
+                Ok(metatable)
             }
-        };
-        self.attach_userdata(data, metatable)
+        }
+    }
+
+    pub fn create_userdata<T>(&self, data: T) -> Result<AnyUserData>
+    where
+        T: UserData,
+    {
+        let metatable = self.userdata_metatable::<T>()?;
+        self.attach_userdata(data, metatable, 0)
+    }
+
+    /// Create a userdata with `nuvalue` Lua uservalue slots (1-based), each
+    /// initialized to nil — the host can then attach extra Lua values with
+    /// [`AnyUserData::set_user_value`]. ([`Self::create_userdata`] keeps 0 slots.)
+    pub fn create_userdata_with_uservalues<T>(
+        &self,
+        data: T,
+        nuvalue: usize,
+    ) -> Result<AnyUserData>
+    where
+        T: UserData,
+    {
+        let metatable = self.userdata_metatable::<T>()?;
+        self.attach_userdata(data, metatable, nuvalue)
     }
 
     /// Wrap `data` in a fresh Lua userdata that shares `metatable` (built once per
@@ -1276,6 +1296,7 @@ impl Lua {
         &self,
         data: T,
         metatable: GcRef<RawLuaTable>,
+        nuvalue: usize,
     ) -> Result<AnyUserData> {
         let cell: Rc<dyn Any> = Rc::new(UserDataCell {
             value: RefCell::new(data),
@@ -1283,12 +1304,16 @@ impl Lua {
         let host_value = cell.clone();
         let root = self.with_state(|state| {
             let userdata = with_heap_guard(state, || {
-                GcRef::new(RawLuaUserData {
+                let ud = GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: RefCell::new(Vec::new()),
+                    uv: RefCell::new(vec![RawLuaValue::Nil; nuvalue]),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
-                })
+                });
+                if nuvalue > 0 {
+                    ud.account_buffer(ud.buffer_bytes() as isize);
+                }
+                ud
             });
             userdata.set_metatable(Some(metatable));
             userdata.set_host_value(Some(cell));
@@ -3736,6 +3761,65 @@ impl Table {
             self.raw_set(k, Value::Nil)?;
         }
         Ok(())
+    }
+}
+
+/// A valid 1-based uservalue slot as `i32`, or `None` if `n` is 0 or exceeds
+/// `i32::MAX` (which would otherwise wrap to a spurious valid slot).
+fn checked_uservalue_slot(n: usize) -> Option<i32> {
+    i32::try_from(n).ok().filter(|s| *s >= 1)
+}
+
+impl AnyUserData {
+    /// Set the `n`-th uservalue (1-based). The userdata must have been created
+    /// with at least `n` slots via [`Lua::create_userdata_with_uservalues`];
+    /// this never grows the slot vector, so an out-of-range `n` errors. The
+    /// store is GC-write-barriered by the VM (`set_i_uservalue`).
+    pub fn set_user_value<V: IntoLua>(&self, n: usize, value: V) -> Result<()> {
+        let slot = checked_uservalue_slot(n).ok_or_else(|| {
+            Error::from(LuaError::runtime(format_args!(
+                "uservalue index {n} out of range"
+            )))
+        })?;
+        let lua = self.root.lua.clone();
+        let value = value.into_lua(&lua)?;
+        lua.with_state(|state| {
+            let ud_raw = self.root.raw_for_lua(&lua, state)?;
+            let val_raw = value.to_raw_for_lua(&lua, state)?;
+            let saved_top = state.top_idx();
+            state.push(ud_raw);
+            state.push(val_raw);
+            let ok = lua_vm::api::set_i_uservalue(state, -2, slot)
+                .map_err(|err| lua.capture_error_in_state(state, err))?;
+            state.set_top_idx(saved_top);
+            if ok {
+                Ok(())
+            } else {
+                Err(Error::from(LuaError::runtime(format_args!(
+                    "uservalue index {n} out of range (userdata has fewer slots)"
+                ))))
+            }
+        })
+    }
+
+    /// Read the `n`-th uservalue (1-based); `nil` if unset or out of range.
+    pub fn user_value<V: FromLua>(&self, n: usize) -> Result<V> {
+        let slot = match checked_uservalue_slot(n) {
+            Some(slot) => slot,
+            None => return V::from_lua(Value::Nil, &self.root.lua),
+        };
+        let lua = self.root.lua.clone();
+        let raw = lua.with_state(|state| -> Result<RawLuaValue> {
+            let ud_raw = self.root.raw_for_lua(&lua, state)?;
+            let saved_top = state.top_idx();
+            state.push(ud_raw);
+            lua_vm::api::get_i_uservalue(state, -1, slot);
+            let value = state.pop();
+            state.set_top_idx(saved_top);
+            Ok(value)
+        })?;
+        let value = Value::from_raw(&lua, raw)?;
+        V::from_lua(value, &lua)
     }
 }
 
