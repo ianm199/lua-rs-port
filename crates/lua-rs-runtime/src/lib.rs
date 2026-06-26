@@ -160,6 +160,11 @@ pub struct Error {
     /// dropped, so it is `_`-prefixed. `None` for errors with no collectable
     /// payload or constructed entirely on the Rust side.
     _root: Option<RootedValue>,
+    /// A captured `debug.traceback()` stack (bytes — Lua error/source names are
+    /// not guaranteed UTF-8), present only when traceback capture was enabled on
+    /// the instance ([`Lua::set_capture_tracebacks`]) at the time of the error.
+    /// The error *message* is unaffected by capture.
+    traceback: Option<Vec<u8>>,
 }
 
 impl Error {
@@ -167,6 +172,25 @@ impl Error {
     /// [`LuaError::Runtime`] / [`LuaError::Syntax`]).
     pub fn as_lua_error(&self) -> &LuaError {
         &self.inner
+    }
+
+    /// The captured stack traceback bytes, if capture was enabled when this error
+    /// was raised. See [`Lua::set_capture_tracebacks`].
+    pub fn traceback_bytes(&self) -> Option<&[u8]> {
+        self.traceback.as_deref()
+    }
+
+    /// The captured traceback as a lossy-UTF8 string, if any.
+    pub fn traceback_lossy(&self) -> Option<String> {
+        self.traceback
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+    }
+
+    /// Attach a captured traceback (consumed at the protected-call site).
+    fn with_traceback(mut self, traceback: Option<Vec<u8>>) -> Self {
+        self.traceback = traceback;
+        self
     }
 
     /// Synonym for [`Error::as_lua_error`]: borrow the inner [`LuaError`] kind.
@@ -195,7 +219,7 @@ impl Deref for Error {
 
 impl From<LuaError> for Error {
     fn from(inner: LuaError) -> Self {
-        Error { inner, _root: None }
+        Error { inner, _root: None, traceback: None }
     }
 }
 
@@ -408,6 +432,13 @@ struct LuaInner {
     /// `Rc<ScopedCell<T>>` and check the cell's validity flag before
     /// dereferencing the pointer it holds.
     userdata_scoped_metatables: RefCell<HashMap<TypeId, GcRef<RawLuaTable>>>,
+    /// How a host `i64` with no exact `f64` representation is lowered when it
+    /// crosses into a float-only (5.1/5.2) instance. See [`LossyIntPolicy`].
+    lossy_int_policy: Cell<LossyIntPolicy>,
+    /// When true, protected calls install a message handler that captures a
+    /// stack traceback into the raised [`Error`]. Off by default (zero cost;
+    /// the error message is unaffected either way).
+    capture_tracebacks: Cell<bool>,
 }
 
 struct UserDataCell<T> {
@@ -892,6 +923,56 @@ impl Lua {
         self.inner.version
     }
 
+    /// Set how a host `i64` with no exact `f64` representation is lowered when it
+    /// crosses into a float-only (5.1/5.2) instance. Default [`LossyIntPolicy::WidenLossy`].
+    pub fn set_lossy_int_policy(&self, policy: LossyIntPolicy) {
+        self.inner.lossy_int_policy.set(policy);
+    }
+
+    /// The current [`LossyIntPolicy`] for this instance.
+    pub fn lossy_int_policy(&self) -> LossyIntPolicy {
+        self.inner.lossy_int_policy.get()
+    }
+
+    /// Enable or disable capturing a stack traceback into [`Error`]s raised by
+    /// protected calls (`Chunk::exec`/`eval`, `Function::call`) on this instance.
+    /// Off by default. When off, error handling is byte-for-byte unchanged and
+    /// [`Error::traceback_bytes`] is always `None`; the error *message* is never
+    /// affected by this setting.
+    pub fn set_capture_tracebacks(&self, on: bool) {
+        self.inner.capture_tracebacks.set(on);
+    }
+
+    /// Whether traceback capture is currently enabled.
+    pub fn captures_tracebacks(&self) -> bool {
+        self.inner.capture_tracebacks.get()
+    }
+
+    /// Build a one-shot traceback message handler bound to `slot`, plus the raw
+    /// value to install as `errfunc`. Returns `None` when capture is off.
+    fn make_capture(
+        &self,
+    ) -> Result<Option<(Rc<RefCell<Option<Vec<u8>>>>, Function, RawLuaValue)>> {
+        if !self.captures_tracebacks() {
+            return Ok(None);
+        }
+        let slot: Rc<RefCell<Option<Vec<u8>>>> = Rc::new(RefCell::new(None));
+        let slot_for_handler = slot.clone();
+        let callable: lua_vm::state::LuaRustFunction = Rc::new(move |state: &mut LuaState| {
+            let saved = lua_vm::api::get_top(state);
+            if lua_stdlib::auxlib::traceback(state, None, None, 1).is_ok() {
+                if let Ok(Some(s)) = lua_vm::api::to_lua_string(state, -1) {
+                    *slot_for_handler.borrow_mut() = Some(s.as_bytes().to_vec());
+                }
+            }
+            let _ = lua_vm::api::set_top(state, saved);
+            Ok(1)
+        });
+        let handler = self.create_registered_function(callable)?;
+        let raw = handler.root.raw()?;
+        Ok(Some((slot, handler, raw)))
+    }
+
     /// Make the `_VERSION` global reflect [`Lua::version`].
     ///
     /// `open_libs` writes the stdlib's compiled-in default (`"Lua 5.4"`); this
@@ -912,6 +993,8 @@ impl Lua {
                 pending_external_unroots: RefCell::new(Vec::new()),
                 userdata_metatables: RefCell::new(HashMap::new()),
                 userdata_scoped_metatables: RefCell::new(HashMap::new()),
+                lossy_int_policy: Cell::new(LossyIntPolicy::default()),
+                capture_tracebacks: Cell::new(false),
             }),
         }
     }
@@ -1010,7 +1093,7 @@ impl Lua {
             _ => None,
         };
         let root = payload.map(|value| self.root_raw_in_state(state, value));
-        Error { inner: err, _root: root }
+        Error { inner: err, _root: root, traceback: None }
     }
 
     fn userdata_cell<'a, T: 'static>(
@@ -1241,10 +1324,8 @@ impl Lua {
         self.create_registered_function(callable)
     }
 
-    pub fn create_userdata<T>(&self, data: T) -> Result<AnyUserData>
-    where
-        T: UserData,
-    {
+    /// The cached metatable for userdata type `T` (built once per `TypeId`).
+    fn userdata_metatable<T: UserData>(&self) -> Result<GcRef<RawLuaTable>> {
         let type_id = TypeId::of::<T>();
         let cached = self
             .inner
@@ -1252,8 +1333,8 @@ impl Lua {
             .borrow()
             .get(&type_id)
             .cloned();
-        let metatable = match cached {
-            Some(metatable) => metatable,
+        match cached {
+            Some(metatable) => Ok(metatable),
             None => {
                 let mut methods = UserDataMethodRegistry::<T>::new(self);
                 T::add_methods(&mut methods);
@@ -1263,10 +1344,38 @@ impl Lua {
                     .userdata_metatables
                     .borrow_mut()
                     .insert(type_id, metatable.clone());
-                metatable
+                Ok(metatable)
             }
-        };
-        self.attach_userdata(data, metatable)
+        }
+    }
+
+    pub fn create_userdata<T>(&self, data: T) -> Result<AnyUserData>
+    where
+        T: UserData,
+    {
+        let metatable = self.userdata_metatable::<T>()?;
+        self.attach_userdata(data, metatable, 0)
+    }
+
+    /// Create a userdata with `nuvalue` Lua uservalue slots (1-based), each
+    /// initialized to nil — the host can then attach extra Lua values with
+    /// [`AnyUserData::set_user_value`]. ([`Self::create_userdata`] keeps 0 slots.)
+    pub fn create_userdata_with_uservalues<T>(
+        &self,
+        data: T,
+        nuvalue: usize,
+    ) -> Result<AnyUserData>
+    where
+        T: UserData,
+    {
+        if nuvalue > MAX_USERVALUE_SLOTS {
+            return Err(LuaError::runtime(format_args!(
+                "too many uservalue slots: {nuvalue} (max {MAX_USERVALUE_SLOTS})"
+            ))
+            .into());
+        }
+        let metatable = self.userdata_metatable::<T>()?;
+        self.attach_userdata(data, metatable, nuvalue)
     }
 
     /// Wrap `data` in a fresh Lua userdata that shares `metatable` (built once per
@@ -1276,19 +1385,32 @@ impl Lua {
         &self,
         data: T,
         metatable: GcRef<RawLuaTable>,
+        nuvalue: usize,
     ) -> Result<AnyUserData> {
+        let mut uv = Vec::new();
+        uv.try_reserve_exact(nuvalue).map_err(|_| {
+            Error::from(LuaError::runtime(format_args!(
+                "cannot allocate {nuvalue} uservalue slots"
+            )))
+        })?;
+        uv.resize(nuvalue, RawLuaValue::Nil);
+
         let cell: Rc<dyn Any> = Rc::new(UserDataCell {
             value: RefCell::new(data),
         });
         let host_value = cell.clone();
         let root = self.with_state(|state| {
-            let userdata = with_heap_guard(state, || {
-                GcRef::new(RawLuaUserData {
+            let userdata = with_heap_guard(state, move || {
+                let ud = GcRef::new(RawLuaUserData {
                     data: Box::new([]),
-                    uv: RefCell::new(Vec::new()),
+                    uv: RefCell::new(uv),
                     metatable: RefCell::new(None),
                     host_value: RefCell::new(None),
-                })
+                });
+                if nuvalue > 0 {
+                    ud.account_buffer(ud.buffer_bytes() as isize);
+                }
+                ud
             });
             userdata.set_metatable(Some(metatable));
             userdata.set_host_value(Some(cell));
@@ -1650,14 +1772,22 @@ impl Chunk {
     }
 
     pub fn exec(self) -> Result<()> {
-        self.lua.with_state(|state| {
-            exec_state(state, &self.source, &self.name)
+        let capture = self.lua.make_capture()?;
+        let handler_raw = capture.as_ref().map(|(_, _, raw)| *raw);
+        let result = self.lua.with_state(|state| {
+            exec_state(state, &self.source, &self.name, handler_raw)
                 .map_err(|err| self.lua.capture_error_in_state(state, err))
-        })
+        });
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) => Err(err.with_traceback(take_traceback(&capture))),
+        }
     }
 
     pub fn eval<T: FromLuaMulti>(self) -> Result<T> {
-        let raws = self.lua.with_state(|state| {
+        let capture = self.lua.make_capture()?;
+        let handler_raw = capture.as_ref().map(|(_, _, raw)| *raw);
+        let result = self.lua.with_state(|state| {
             let saved_top = state.top_idx();
             let status = load_buffer(state, &self.source, &self.name).map_err(|err| {
                 self.lua.capture_error_in_state(state, err)
@@ -1669,8 +1799,8 @@ impl Chunk {
                 state.set_top_idx(saved_top);
                 return Err(captured);
             }
-            match lua_vm::api::pcall_k(state, 0, T::NRESULTS, 0, 0, None) {
-                Ok(_) => {
+            match protected_call_with_handler(state, 0, T::NRESULTS, handler_raw) {
+                Ok(()) => {
                     let nresults = if T::NRESULTS < 0 {
                         state.top_idx().0.saturating_sub(saved_top.0) as i32
                     } else {
@@ -1690,7 +1820,11 @@ impl Chunk {
                     Err(captured)
                 }
             }
-        })?;
+        });
+        let raws = match result {
+            Ok(values) => values,
+            Err(err) => return Err(err.with_traceback(take_traceback(&capture))),
+        };
         let values = raws
             .into_iter()
             .map(|raw| Value::from_raw(&self.lua, raw))
@@ -1820,7 +1954,10 @@ impl Value {
         match self {
             Value::Nil => Ok(RawLuaValue::Nil),
             Value::Boolean(v) => Ok(RawLuaValue::Bool(*v)),
-            Value::Integer(v) => Ok(RawLuaValue::Int(*v)),
+            Value::Integer(v) => Ok(match lower_host_int(lua.version(), lua.lossy_int_policy(), *v)? {
+                LoweredInt::Int(i) => RawLuaValue::Int(i),
+                LoweredInt::Float(f) => RawLuaValue::Float(f),
+            }),
             Value::Number(v) => Ok(RawLuaValue::Float(*v)),
             Value::String(v) => v.root.raw_for_lua(lua, state),
             Value::Table(v) => v.root.raw_for_lua(lua, state),
@@ -2007,7 +2144,9 @@ impl Function {
     {
         let lua = self.root.lua.clone();
         let args = args.into_lua_multi(&lua)?;
-        let result_raws = lua.with_state(|state| {
+        let capture = lua.make_capture()?;
+        let handler_raw = capture.as_ref().map(|(_, _, raw)| *raw);
+        let result = lua.with_state(|state| {
             let arg_raws = args
                 .iter()
                 .map(|value| value.to_raw_for_lua(&lua, state))
@@ -2018,8 +2157,8 @@ impl Function {
             for arg in &arg_raws {
                 state.push(*arg);
             }
-            match lua_vm::api::pcall_k(state, arg_raws.len() as i32, R::NRESULTS, 0, 0, None) {
-                Ok(_) => {
+            match protected_call_with_handler(state, arg_raws.len() as i32, R::NRESULTS, handler_raw) {
+                Ok(()) => {
                     let nresults = if R::NRESULTS < 0 {
                         state.top_idx().0.saturating_sub(saved_top.0) as i32
                     } else {
@@ -2039,7 +2178,11 @@ impl Function {
                     Err(captured)
                 }
             }
-        })?;
+        });
+        let result_raws = match result {
+            Ok(results) => results,
+            Err(err) => return Err(err.with_traceback(take_traceback(&capture))),
+        };
         let values = result_raws
             .into_iter()
             .map(|raw| Value::from_raw(&lua, raw))
@@ -3739,10 +3882,117 @@ impl Table {
     }
 }
 
-fn coerce_int(dst: &Lua, i: i64) -> Value {
-    match dst.version().number_model() {
-        NumberModel::FloatOnly => Value::Number(i as f64),
-        NumberModel::Dual => Value::Integer(i),
+/// Upper bound on uservalue slots a userdata may be created with. Generous (real
+/// usage is a handful) but bounded, so an absurd request is a clean `Err` rather
+/// than a multi-GB allocation — deterministic across targets including wasm,
+/// where `try_reserve` can't be relied on under overcommit.
+const MAX_USERVALUE_SLOTS: usize = u16::MAX as usize;
+
+/// A valid 1-based uservalue slot as `i32`, or `None` if `n` is 0 or exceeds
+/// `i32::MAX` (which would otherwise wrap to a spurious valid slot).
+fn checked_uservalue_slot(n: usize) -> Option<i32> {
+    i32::try_from(n).ok().filter(|s| *s >= 1)
+}
+
+impl AnyUserData {
+    /// Set the `n`-th uservalue (1-based). The userdata must have been created
+    /// with at least `n` slots via [`Lua::create_userdata_with_uservalues`];
+    /// this never grows the slot vector, so an out-of-range `n` errors. The
+    /// store is GC-write-barriered by the VM (`set_i_uservalue`).
+    pub fn set_user_value<V: IntoLua>(&self, n: usize, value: V) -> Result<()> {
+        let slot = checked_uservalue_slot(n).ok_or_else(|| {
+            Error::from(LuaError::runtime(format_args!(
+                "uservalue index {n} out of range"
+            )))
+        })?;
+        let lua = self.root.lua.clone();
+        let value = value.into_lua(&lua)?;
+        lua.with_state(|state| {
+            let ud_raw = self.root.raw_for_lua(&lua, state)?;
+            let val_raw = value.to_raw_for_lua(&lua, state)?;
+            let saved_top = state.top_idx();
+            state.push(ud_raw);
+            state.push(val_raw);
+            let ok = lua_vm::api::set_i_uservalue(state, -2, slot)
+                .map_err(|err| lua.capture_error_in_state(state, err))?;
+            state.set_top_idx(saved_top);
+            if ok {
+                Ok(())
+            } else {
+                Err(Error::from(LuaError::runtime(format_args!(
+                    "uservalue index {n} out of range (userdata has fewer slots)"
+                ))))
+            }
+        })
+    }
+
+    /// Read the `n`-th uservalue (1-based); `nil` if unset or out of range.
+    pub fn user_value<V: FromLua>(&self, n: usize) -> Result<V> {
+        let slot = match checked_uservalue_slot(n) {
+            Some(slot) => slot,
+            None => return V::from_lua(Value::Nil, &self.root.lua),
+        };
+        let lua = self.root.lua.clone();
+        let raw = lua.with_state(|state| -> Result<RawLuaValue> {
+            let ud_raw = self.root.raw_for_lua(&lua, state)?;
+            let saved_top = state.top_idx();
+            state.push(ud_raw);
+            lua_vm::api::get_i_uservalue(state, -1, slot);
+            let value = state.pop();
+            state.set_top_idx(saved_top);
+            Ok(value)
+        })?;
+        let value = Value::from_raw(&lua, raw)?;
+        V::from_lua(value, &lua)
+    }
+}
+
+/// How a host `i64` that has no exact `f64` representation is lowered when it
+/// crosses into a float-only (5.1/5.2) Lua instance, which has no integer subtype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LossyIntPolicy {
+    /// Default. Widen to the nearest `f64` even when inexact — what a float-only
+    /// Lua natively does with a large integer literal.
+    #[default]
+    WidenLossy,
+    /// Raise a runtime error instead of silently losing precision.
+    ErrorOnInexact,
+}
+
+enum LoweredInt {
+    Int(i64),
+    Float(f64),
+}
+
+/// Whether `i` round-trips through `f64` exactly. The range guard is essential:
+/// `i as f64` rounds `i64::MAX` up to 2^63, and casting that back saturates to
+/// `i64::MAX`, so the unguarded `i as f64 as i64 == i` would falsely accept it.
+/// Unlike `vm::int_fits_float` (the conservative |i| ≤ 2^53 "always-safe" range),
+/// this accepts exact values above 2^53 such as `1 << 60` and `i64::MIN`.
+fn int_is_exact_f64(i: i64) -> bool {
+    const MIN_F: f64 = -9_223_372_036_854_775_808.0;
+    const MAX_PLUS_1_F: f64 = 9_223_372_036_854_775_808.0;
+    let f = i as f64;
+    f >= MIN_F && f < MAX_PLUS_1_F && f as i64 == i
+}
+
+/// The host→Lua integer lowering seam — single source of truth. On a dual-subtype
+/// instance (5.3+) an `i64` stays an integer; on a float-only instance (5.1/5.2) it
+/// becomes a float — always under `WidenLossy`, or only when it round-trips
+/// exactly under `ErrorOnInexact`.
+fn lower_host_int(version: LuaVersion, policy: LossyIntPolicy, i: i64) -> Result<LoweredInt> {
+    match version.number_model() {
+        NumberModel::Dual => Ok(LoweredInt::Int(i)),
+        NumberModel::FloatOnly => {
+            if policy == LossyIntPolicy::WidenLossy || int_is_exact_f64(i) {
+                Ok(LoweredInt::Float(i as f64))
+            } else {
+                Err(LuaError::runtime(format_args!(
+                    "integer {i} has no exact representation in this version's float-only number model"
+                ))
+                .into())
+            }
+        }
     }
 }
 
@@ -3780,7 +4030,10 @@ fn marshal_value(
     Ok(match v {
         Value::Nil => Value::Nil,
         Value::Boolean(b) => Value::Boolean(*b),
-        Value::Integer(i) => coerce_int(dst, *i),
+        Value::Integer(i) => match lower_host_int(dst.version(), dst.lossy_int_policy(), *i)? {
+            LoweredInt::Int(i) => Value::Integer(i),
+            LoweredInt::Float(f) => Value::Number(f),
+        },
         Value::Number(n) => Value::Number(*n),
         Value::LightUserData(p) => Value::LightUserData(*p),
         Value::String(s) => Value::String(dst.create_string(s.as_bytes()?)?),
@@ -3839,6 +4092,44 @@ impl Lua {
         let mut seen = HashMap::new();
         marshal_value(self, src, v, &mut seen)
     }
+}
+
+/// Run a protected call, optionally installing a traceback message handler.
+///
+/// With `handler_raw = None` this is exactly `pcall_k(.., errfunc=0, ..)` — the
+/// default path, byte-for-byte unchanged. With a handler it mirrors the CLI's
+/// `docall`: insert the handler just below the function as `errfunc`, then remove
+/// it on *both* the success and error paths. This leaves the stack identical to
+/// the no-handler case (results/error at the function's original slot), because
+/// `protected_call_raw` cleans the stack to `func` on error and the handler sits
+/// below `func`, so it survives the unwind and the `rotate`+`set_top` removal is
+/// valid either way.
+/// Consume the captured traceback (if any) from a `make_capture` triple.
+fn take_traceback(
+    capture: &Option<(Rc<RefCell<Option<Vec<u8>>>>, Function, RawLuaValue)>,
+) -> Option<Vec<u8>> {
+    capture.as_ref().and_then(|(slot, _, _)| slot.borrow_mut().take())
+}
+
+fn protected_call_with_handler(
+    state: &mut LuaState,
+    nargs: i32,
+    nresults: i32,
+    handler_raw: Option<RawLuaValue>,
+) -> std::result::Result<(), LuaError> {
+    let result = match handler_raw {
+        None => lua_vm::api::pcall_k(state, nargs, nresults, 0, 0, None),
+        Some(handler) => {
+            let base = lua_vm::api::get_top(state) - nargs;
+            state.push(handler);
+            state.insert(base)?;
+            let r = lua_vm::api::pcall_k(state, nargs, nresults, base, 0, None);
+            lua_vm::api::rotate(state, base, -1);
+            let _ = lua_vm::api::set_top(state, -2);
+            r
+        }
+    };
+    result.map(|_| ())
 }
 
 fn type_error_raw(value: &RawLuaValue, expected: &str) -> Error {
@@ -3942,7 +4233,7 @@ impl LuaRuntime {
     /// queue for external roots, so the returned [`Error`] carries the inner
     /// [`LuaError`] verbatim. Read the message before triggering a collection.
     pub fn exec(&mut self, source: &[u8], name: &[u8]) -> Result<()> {
-        exec_state(&mut self.state, source, name).map_err(Error::from)
+        exec_state(&mut self.state, source, name, None).map_err(Error::from)
     }
 
     /// Apply sandbox limits to this runtime — the lower-level equivalent of
@@ -3979,14 +4270,14 @@ fn exec_state(
     state: &mut LuaState,
     source: &[u8],
     name: &[u8],
+    handler_raw: Option<RawLuaValue>,
 ) -> std::result::Result<(), LuaError> {
     let status = load_buffer(state, source, name)?;
     if status != 0 {
         let err = state.pop();
         return Err(LuaError::from_value(err));
     }
-    lua_vm::api::pcall_k(state, 0, 0, 0, 0, None)?;
-    Ok(())
+    protected_call_with_handler(state, 0, 0, handler_raw)
 }
 
 pub fn install_parser_hook(state: &mut LuaState) {
