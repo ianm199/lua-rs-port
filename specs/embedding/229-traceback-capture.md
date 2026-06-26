@@ -108,3 +108,54 @@ CLI `traceback_oracle` (16) green, full `cargo test -p omnilua` green.
 - Home for the slot → **per-call upvalue**, not `GlobalState` (finding 4).
 - String vs bytes → **bytes** (finding 5).
 - Single consumer → **the call site**, not `capture_error_in_state` (finding 3).
+
+## Implementation recipe (mapped; ready to execute)
+
+Substrate confirmed. Concrete steps:
+
+1. `Error` (lib.rs:156) gains `traceback: Option<Vec<u8>>`; add `traceback_bytes()`
+   / `traceback_lossy()` and a private `with_traceback(self, Option<Vec<u8>>)`.
+   `Error::from` sets `None`; `capture_error_in_state` does NOT touch it.
+2. `LuaInner` gains `capture_tracebacks: Cell<bool>` (init false); `Lua::
+   set_capture_tracebacks` / `captures_tracebacks`.
+3. Handler via `create_registered_function` (it gives a raw `&mut LuaState`
+   closure — no re-entrancy through `with_state`), capturing
+   `Rc<RefCell<Option<Vec<u8>>>>`:
+   ```
+   let saved = api::get_top(state);
+   if auxlib::traceback(state, None, None, 1).is_ok() {        // msg=None → NO metamethods
+       if let Ok(Some(s)) = api::to_lua_string(state, -1) {    // the tb string itself, no mm
+           *slot.borrow_mut() = Some(s.as_bytes().to_vec());
+       }
+   }
+   let _ = api::set_top(state, saved);                          // best-effort, restore to arg 1
+   Ok(1)                                                        // return arg 1 unchanged
+   ```
+4. Helper mirroring the CLI `docall` (interp.rs:385) exactly:
+   ```
+   let base = api::get_top(state) - nargs;
+   state.push(handler_raw); state.insert(base)?;
+   let r = api::pcall_k(state, nargs, nresults, base, 0, None);
+   api::rotate(state, base, -1); let _ = api::set_top(state, -2);   // lua_remove(base)
+   r
+   ```
+   After this the stack is identical to the no-handler case (results/error start at
+   the function's original slot), so each site's existing `set_top_idx(saved_top)`
+   cleanup and result counting work unchanged.
+5. Sites: `eval` (lib.rs:1719), `Function::call` (lib.rs:2064), and `exec_state`
+   (lib.rs:4123 — thread an `Option<RawLuaValue>` handler through it). When capture
+   is on, create the handler+slot **before** the site's `with_state`, get
+   `handler_raw = handler.root.raw()?`, pass it into the helper, and after the call
+   attach `slot.take()` to the `Error` via `with_traceback`. When off, pass `None`
+   → `errfunc=0`, byte-identical to today.
+
+### OPEN QUESTION to resolve before/while implementing (the one real risk)
+
+`pcall_k`'s **error-path stack contract**: when the message handler runs and the
+call errors, exactly what does `pcall_k` leave on the stack (error object present
+at `base`? already popped into the returned `Err`?). The `rotate(base,-1)+set_top(-2)`
+handler-removal must be valid in that state without underflow. Verify against
+`do_.rs` `run_message_handler` / the pcall error unwind, OR rely on the contained
+blast radius (capture-off is byte-identical; capture-on is opt-in + the tests
+below catch stack mismanagement). Tests MUST include nested Rust-callback errors
+and the `<close>`-replacement case to exercise the unwind paths.
