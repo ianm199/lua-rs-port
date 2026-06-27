@@ -124,7 +124,7 @@ use lua_vm::state::{
     TempNameHook, UnixTimeHook,
 };
 
-pub use lua_types::{LuaError, LuaFileHandle, LuaVersion, NumberModel};
+pub use lua_types::{Feature, LuaError, LuaFileHandle, LuaVersion, NumberModel, Unsupported};
 pub use lua_vm::state::{DynLibId, DynamicSymbol, OsExecuteReason, OsExecuteResult};
 
 #[cfg(feature = "derive")]
@@ -165,6 +165,13 @@ pub struct Error {
     /// the instance ([`Lua::set_capture_tracebacks`]) at the time of the error.
     /// The error *message* is unaffected by capture.
     traceback: Option<Vec<u8>>,
+    /// Typed classification when this error is a #234 [`Unsupported`] divergence
+    /// raised by a host-API verb. A side-channel on the wrapper: it survives only
+    /// while the error stays an `omnilua::Error` returned directly to the host —
+    /// converting back to the inner VM `LuaError` (e.g. a callback re-raising
+    /// through Lua) drops it, leaving the message. Set only by
+    /// [`Error::unsupported`].
+    unsupported: Option<Unsupported>,
 }
 
 impl Error {
@@ -203,9 +210,42 @@ impl Error {
     /// The GC root (if any) is dropped, so the returned [`LuaError`] is once
     /// again subject to the #189 hazard — only call this when the value has
     /// already been consumed or when no collection can intervene before the
-    /// returned error is read.
+    /// returned error is read. The typed [`Unsupported`] classification, if any,
+    /// is also dropped: it lives on the wrapper, not the VM error.
     pub fn into_lua_error(self) -> LuaError {
         self.inner
+    }
+
+    /// Build the error for a #234 [`Unsupported`] divergence — a host-API verb
+    /// asked for a [`Feature`] the active version lacks. This is the **only**
+    /// path that couples the typed payload with its message, so the two cannot
+    /// desync: the inner `LuaError` is a `Runtime` error carrying
+    /// `"<feature> is not available in <version>"`, and the same record is
+    /// stored typed for [`Error::as_unsupported`].
+    pub(crate) fn unsupported(feature: Feature, version: LuaVersion) -> Self {
+        let record = Unsupported { feature, version };
+        let mut err = Error::from(LuaError::runtime(format_args!("{record}")));
+        err.unsupported = Some(record);
+        err
+    }
+
+    /// The typed [`Unsupported`] classification if this error was produced by a
+    /// host-API verb for a version-absent feature, else `None`.
+    ///
+    /// Note: this reflects the classification only for an error returned
+    /// **directly** from the host API. An `Unsupported` error raised inside a
+    /// Rust callback and re-raised through Lua loses the typed record when it is
+    /// converted to the inner VM error (only the message survives), and
+    /// [`Error::kind`] still returns the inner `Runtime` payload either way — so
+    /// match on this, not on `kind()`, to detect the divergence.
+    pub fn as_unsupported(&self) -> Option<&Unsupported> {
+        self.unsupported.as_ref()
+    }
+
+    /// Whether this error is a #234 [`Unsupported`] divergence (see
+    /// [`Error::as_unsupported`]).
+    pub fn is_unsupported(&self) -> bool {
+        self.unsupported.is_some()
     }
 }
 
@@ -219,7 +259,7 @@ impl Deref for Error {
 
 impl From<LuaError> for Error {
     fn from(inner: LuaError) -> Self {
-        Error { inner, _root: None, traceback: None }
+        Error { inner, _root: None, traceback: None, unsupported: None }
     }
 }
 
@@ -923,6 +963,17 @@ impl Lua {
         self.inner.version
     }
 
+    /// Whether this instance supports a [`Feature`] — *as built*. This is
+    /// [`LuaVersion::supports`] (the reference-backed version capability) ANDed
+    /// with compile-time availability for library-backed features: a lean build
+    /// that compiles out `utf8`/`bit32`/`coroutine` reports those absent even on
+    /// a version that has them, matching what the host can actually call. Use
+    /// this as the pre-check before a version-divergent host verb; use
+    /// `self.version().supports(f)` for the build-independent answer.
+    pub fn supports(&self, f: Feature) -> bool {
+        self.version().supports(f) && feature_compiled_in(f)
+    }
+
     /// Set how a host `i64` with no exact `f64` representation is lowered when it
     /// crosses into a float-only (5.1/5.2) instance. Default [`LossyIntPolicy::WidenLossy`].
     pub fn set_lossy_int_policy(&self, policy: LossyIntPolicy) {
@@ -1093,7 +1144,7 @@ impl Lua {
             _ => None,
         };
         let root = payload.map(|value| self.root_raw_in_state(state, value));
-        Error { inner: err, _root: root, traceback: None }
+        Error { inner: err, _root: root, traceback: None, unsupported: None }
     }
 
     fn userdata_cell<'a, T: 'static>(
@@ -1837,10 +1888,16 @@ impl GcControl {
     }
 
     /// Whether automatic collection is currently running. Equivalent to
-    /// `collectgarbage("isrunning")`; this option does not exist before Lua
-    /// 5.2 and errors there (typed `Unsupported` divergence reporting arrives
-    /// with the multi-version backend seam, issue #234).
+    /// `collectgarbage("isrunning")`. The `isrunning` option does not exist
+    /// before Lua 5.2; on such an instance this returns a typed
+    /// [`Error::is_unsupported`] error ([`Feature::GcIsRunning`]) rather than the
+    /// raw Lua "invalid option" message (issue #234). Pre-check with
+    /// [`Lua::supports`].
     pub fn is_running(&self) -> Result<bool> {
+        let version = self.lua.version();
+        if !version.supports(Feature::GcIsRunning) {
+            return Err(Error::unsupported(Feature::GcIsRunning, version));
+        }
         self.collectgarbage()?.call("isrunning")
     }
 }
@@ -4271,6 +4328,20 @@ fn int_is_exact_f64(i: i64) -> bool {
 /// instance (5.3+) an `i64` stays an integer; on a float-only instance (5.1/5.2) it
 /// becomes a float — always under `WidenLossy`, or only when it round-trips
 /// exactly under `ErrorOnInexact`.
+/// Whether a library-backed [`Feature`] was compiled into this build. Library
+/// modules are Cargo-feature-gated (a lean/sandboxed build can omit
+/// `utf8`/`bit32`/`coroutine`), so [`Lua::supports`] narrows the version
+/// capability by what is actually present. Non-library features are always
+/// "compiled in" — their availability is purely a version question.
+fn feature_compiled_in(f: Feature) -> bool {
+    match f {
+        Feature::Utf8Lib => cfg!(feature = "utf8"),
+        Feature::Bit32Lib => cfg!(feature = "bit32"),
+        Feature::CoroutineClose => cfg!(feature = "coroutine"),
+        _ => true,
+    }
+}
+
 fn lower_host_int(version: LuaVersion, policy: LossyIntPolicy, i: i64) -> Result<LoweredInt> {
     match version.number_model() {
         NumberModel::Dual => Ok(LoweredInt::Int(i)),
