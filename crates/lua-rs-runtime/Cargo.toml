@@ -35,6 +35,9 @@ bit32 = ["lua-stdlib/bit32"]
 derive = ["dep:lua-rs-derive"]
 # serde integration: `LuaSerdeExt::to_value` / `from_value`. Pure-Rust, wasm-safe.
 serde = ["dep:serde"]
+# async host functions + driver (create_async_function / call_async). Built on the
+# coroutine machinery (so it requires it); pure-std, executor-agnostic, no deps.
+async = ["coroutine"]
 
 [[example]]
 name = "scope_delegate_macro"

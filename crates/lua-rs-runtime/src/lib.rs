@@ -135,6 +135,9 @@ mod serde_impl;
 #[cfg(feature = "serde")]
 pub use serde_impl::LuaSerdeExt;
 
+#[cfg(feature = "async")]
+mod async_impl;
+
 /// The embedding error type returned by every fallible public method.
 ///
 /// This wraps the inner [`LuaError`] enum (still re-exported and matchable via
@@ -484,6 +487,11 @@ struct LuaInner {
     /// stack traceback into the raised [`Error`]. Off by default (zero cost;
     /// the error message is unaffected either way).
     capture_tracebacks: Cell<bool>,
+    /// Host async callbacks registered via [`Lua::create_async_function`],
+    /// indexed by the token the returned Lua function yields. Each produces a
+    /// future when the driver resolves an async suspension.
+    #[cfg(feature = "async")]
+    async_registry: RefCell<Vec<crate::async_impl::AsyncEntry>>,
 }
 
 struct UserDataCell<T> {
@@ -1041,7 +1049,7 @@ impl Lua {
     }
 
     fn from_initialized_state(state: LuaState, version: LuaVersion) -> Self {
-        Lua {
+        let lua = Lua {
             inner: Rc::new(LuaInner {
                 version,
                 state: RefCell::new(state),
@@ -1051,8 +1059,13 @@ impl Lua {
                 userdata_scoped_metatables: RefCell::new(HashMap::new()),
                 lossy_int_policy: Cell::new(LossyIntPolicy::default()),
                 capture_tracebacks: Cell::new(false),
+                #[cfg(feature = "async")]
+                async_registry: RefCell::new(Vec::new()),
             }),
-        }
+        };
+        #[cfg(feature = "async")]
+        lua.capture_async_coroutine_primitives();
+        lua
     }
 
     fn with_state<R>(&self, f: impl FnOnce(&mut LuaState) -> R) -> R {
