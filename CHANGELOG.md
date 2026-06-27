@@ -35,6 +35,27 @@ the same code purely in Lua (per-version nuances and provenance come for free).
   registry, so the resume registry-miss path is special-cased to the
   version-aware non-suspended message, matching the reference.
 
+### Added — multi-version capability seam (#234)
+
+Makes the multi-version differentiator usable at the API boundary instead of
+inert. A version-indexed **capability matrix** is the realized form of the
+WebLua spec's `Backend` contract (per-version `enum Engine` backend structs are
+deferred — the single versioned core already meets the goal).
+
+- **`Feature` enum + `LuaVersion::supports`/`features`** — the capability matrix,
+  whose authority is `ANALYSES/version_feature_matrix.tsv`, generated from the
+  reference binaries (`specs/oracle/gen_feature_matrix.sh`); a test asserts
+  `supports()` against it for every `(version, feature)` so it can't drift.
+- **`Lua::supports(Feature)`** ANDs version capability with compile-time stdlib
+  availability (a lean build reports `utf8`/`bit32` absent); `LuaVersion::supports`
+  stays build-independent. `Feature`/`Unsupported` are re-exported.
+- **Typed `Unsupported { feature, version }`** on the embedding `Error`
+  (`as_unsupported`/`is_unsupported`) for host-API verbs that name a
+  version-absent feature — e.g. `gc().is_running()` on pre-5.2 now returns a
+  typed error, not a raw Lua "invalid option" message.
+- Internal: the `utf8`/`bit32` registration gates now consume the matrix
+  (single source), keeping the `#[cfg(feature)]` compile-time gate.
+
 Gate: `cargo test --workspace` green, official 5.4 suite 44/44, the
 multi-version oracle green across 5.1–5.5.
 
