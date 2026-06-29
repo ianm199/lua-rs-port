@@ -4,6 +4,23 @@ All notable changes to `lua-rs` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-06-29
+
+### Fixed — CLI startup banner
+
+The `omnilua -v` / interactive REPL banner no longer claims the PUC-Rio copyright
+and now reflects the Lua version actually selected. omniLua is an independent
+implementation, so it names itself and its own version — following the LuaJIT
+precedent of printing its own identity rather than the reference interpreter's:
+
+```
+omniLua 0.4.3 (Lua 5.4) -- pure-Rust Lua. https://github.com/ianm199/omnilua
+```
+
+Previously it printed a hardcoded `Lua 5.4.7  Copyright (C) 1994-2024 Lua.org,
+PUC-Rio` regardless of `OMNILUA_VERSION`. The `Lua 5.x` language level remains a
+substring of the banner for tooling that greps it.
+
 ## [0.4.2] - 2026-06-27
 
 ### Added — async host functions (`async` feature)
