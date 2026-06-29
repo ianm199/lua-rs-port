@@ -27,14 +27,6 @@ const MULTRET: i32 = -1;
 /// `luaconf.h`: `LUA_PROGNAME`.
 const PROGNAME_DEFAULT: &[u8] = b"lua";
 
-/// `lua.c`: `LUA_COPYRIGHT`, printed by `-v` and on entry to an interactive
-/// session. The language level implemented is Lua 5.4.7, so the banner names
-/// that release.
-//
-// PORT NOTE: lua-rs is not C-Lua, but the REPL/`-v` banner mirrors the
-// upstream copyright line so tooling that greps `lua -v` behaves unchanged.
-const LUA_COPYRIGHT: &[u8] = b"Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio";
-
 /// `LUA_REGISTRYINDEX` pseudo-index. Used to plant `LUA_NOENV` for `-E`.
 const LUA_REGISTRYINDEX: i32 = -1_001_000;
 
@@ -109,10 +101,22 @@ fn msghandler(state: &mut LuaState) -> Result<usize, LuaError> {
     Ok(1)
 }
 
-/// `lua.c`: `print_version` — write the copyright banner to stdout.
-fn print_version() {
+/// `lua.c`: `print_version` — write the startup banner to stdout.
+///
+/// Unlike upstream's `LUA_COPYRIGHT`, omniLua is an independent implementation,
+/// so the banner names omniLua and its crate version rather than claiming the
+/// PUC-Rio copyright (the LuaJIT precedent: it prints its own name and URL, not
+/// PUC-Rio's). The implemented Lua language level is included both for the user
+/// and so tooling that greps the banner for `Lua 5.x` still matches; it tracks
+/// the version selected for this state instead of a hardcoded release.
+fn print_version(state: &LuaState) {
+    let banner = format!(
+        "omniLua {} ({}) -- pure-Rust Lua. https://github.com/ianm199/omnilua",
+        env!("CARGO_PKG_VERSION"),
+        state.global().lua_version.version_str(),
+    );
     let mut out = std::io::stdout();
-    let _ = out.write_all(LUA_COPYRIGHT);
+    let _ = out.write_all(banner.as_bytes());
     let _ = out.write_all(b"\n");
     let _ = out.flush();
 }
@@ -677,7 +681,7 @@ fn pmain_body(
     }
 
     if args & HAS_V != 0 {
-        print_version();
+        print_version(state);
     }
 
     if args & HAS_BIG_E != 0 {
@@ -759,7 +763,7 @@ fn pmain_body(
         crate::repl::do_repl(state, &mut cli);
     } else if script < 1 && args & (HAS_E | HAS_V) == 0 {
         if stdin_is_tty() {
-            print_version();
+            print_version(state);
             crate::repl::do_repl(state, &mut cli);
         } else {
             cli.dofile(state, None);
@@ -822,7 +826,7 @@ pub(crate) fn run(
 //                      lua-stdlib gap: os_lib.rs returns a placeholder
 //                      with_status error; a LuaError::Exit(i32) variant is
 //                      needed for faithful behaviour — out of scope here)
-//   port_notes:    3  (LUA_COPYRIGHT banner reused; shebang stripped in
+//   port_notes:    3  (banner is omniLua's own, version-aware; shebang stripped in
 //                      buffer not reader; script-dir prepended to LUA_PATH —
 //                      a lua-rs extension preserved from the prior CLI)
 //   unsafe_blocks: 0
